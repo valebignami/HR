@@ -301,7 +301,9 @@ async function saveDoc(e, row) {
       });
       if (up.error) throw up.error;
       documento_path = path;
-      admId = targetAdmId;
+      // targetAdmId serve solo al path dello storage: NON va passato come
+      // p_adempimento_id. Per un documento nuovo admId resta vuoto così la
+      // RPC INSERISCE, invece di tentare un UPDATE su un id inesistente.
     } catch (err) {
       progress.hidden = true;
       saveBtn.disabled = false;
