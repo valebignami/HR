@@ -1,0 +1,3063 @@
+// ============================================================
+// HR Overland — app.js
+// Frontend vanilla. Sorgente unica = Supabase (stesso progetto
+// dello Scadenziario). Le REGOLE sono dati (tabella requisiti_ruolo).
+// Il "motore gap" calcola lato client lo stato di compliance.
+// ============================================================
+
+// ---------- Config Supabase (progetto condiviso, anon key pubblica) ----------
+const SUPABASE_URL = "https://cqdmfhdcdvaezmexzxrq.supabase.co";
+const SUPABASE_KEY = "sb_publishable_1ECriACxKWx6_4GPxyMXVQ_MPVc2GYy";
+
+// Guardia CDN: se la libreria non si carica, avvisa invece di crashare muto.
+if (!window.supabase || !window.supabase.createClient) {
+  document.addEventListener("DOMContentLoaded", () => {
+    document.body.innerHTML =
+      '<div style="padding:40px;font-family:sans-serif;color:#991b1b">' +
+      "Impossibile caricare la libreria Supabase (CDN bloccato?). Ricarica la pagina.</div>";
+  });
+  throw new Error("supabase-js non disponibile");
+}
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ---------- Stato in memoria ----------
+const state = {
+  ruoli: [],
+  tipi: [],
+  requisiti: [],          // requisiti_ruolo (la matrice)
+  dipendenti: [],
+  dipRuoli: [],           // dipendente_ruoli
+  adempimenti: [],
+  categorie: [],          // catalogo categorie (caricato da DB)
+  provvedimenti: [],      // provvedimenti disciplinari (caricati da DB)
+  onboardItems: [],       // template voci onboarding (catalogo)
+  onboardProgressi: [],   // istanze per dipendente
+  accettazioni: [],       // firme elettroniche leggere ricevute dal portale
+  modelli: [],            // documenti_template (lettera assunzione, GDPR, ecc.)
+  dpiTipi: [],            // catalogo DPI
+  dpiConsegne: [],        // registro consegne DPI per dipendente
+  view: "compliance",
+  compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
+  configTab: "ruoli",
+  search: "",
+  compFilter: { dipendente: "", mansione: "", incarico: "", stato: "" },
+  storicoFilter: { dipendente: "", tipo: "", categoria: "", anno: "", mese: "" },
+  calRef: new Date(),
+  user: null,
+};
+
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne"];
+const STORE_BY_TABLE = {
+  categorie: "categorie",
+  ruoli: "ruoli",
+  tipi_requisito: "tipi",
+  requisiti_ruolo: "requisiti",
+  dipendenti: "dipendenti",
+  dipendente_ruoli: "dipRuoli",
+  adempimenti: "adempimenti",
+  provvedimenti: "provvedimenti",
+  onboarding_items: "onboardItems",
+  onboarding_progressi: "onboardProgressi",
+  accettazioni: "accettazioni",
+  documenti_template: "modelli",
+  dpi_tipi: "dpiTipi",
+  dpi_consegne: "dpiConsegne",
+};
+
+// ---------- Helpers ----------
+const $ = (id) => document.getElementById(id);
+const el = (sel, root = document) => root.querySelector(sel);
+const els = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const sanitizeName = (s) => String(s || "").trim().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+
+const STORAGE_BUCKET = "hr-documenti";
+
+function localISO(d) {
+  if (!d) return "";
+  const x = d instanceof Date ? d : new Date(d);
+  if (isNaN(x)) return "";
+  const off = x.getTimezoneOffset();
+  const local = new Date(x.getTime() - off * 60000);
+  return local.toISOString().slice(0, 10);
+}
+function parseISO(s) {
+  if (!s) return null;
+  const [y, m, d] = String(s).slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+function fmtDate(s) {
+  const d = parseISO(s);
+  if (!d) return "—";
+  return String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0") + "/" + d.getFullYear();
+}
+function addMonths(s, months) {
+  const d = parseISO(s);
+  if (!d || months == null) return null;
+  // Clamp al fine mese: 31/01 + 1 mese → 28/02 (o 29/02 in bisestile), NON 03/03.
+  // Evita overflow JS che farebbe scadere una visita medica in un mese sbagliato.
+  const targetY = d.getFullYear();
+  const targetM = d.getMonth() + Number(months);
+  const lastDayOfTarget = new Date(targetY, targetM + 1, 0).getDate();
+  const day = Math.min(d.getDate(), lastDayOfTarget);
+  return localISO(new Date(targetY, targetM, day));
+}
+function addDays(date, days) {
+  const r = new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+  return r;
+}
+function todayMid() {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+}
+function daysUntil(s) {
+  const d = parseISO(s);
+  if (!d) return null;
+  return Math.round((d - todayMid()) / 86400000);
+}
+function initials(nome, cognome) {
+  return ((nome || "?")[0] + (cognome || "")[0]).toUpperCase();
+}
+
+const GG_SCAD = window.GIORNI_SCADENZA_IMMINENTE || 30;
+const GG_ONBOARD = window.GIORNI_ONBOARDING || 60;
+// Etichetta del tipo contratto a tempo determinato (deve coincidere con TIPI_CONTRATTO[1] in data.js).
+const CONTRATTO_DETERMINATO = "Determinato";
+// Helper: il tipo requisito è di categoria sanitaria? (era hardcoded come prefisso "tr-san-")
+function isTipoSanitario(tipoReqId) {
+  const t = tipoById(tipoReqId);
+  return t ? t.categoria === "sanitario" : false;
+}
+// Categorie: dalla tabella DB (state.categorie) con fallback ai default data.js.
+function categoriaInfo(key) {
+  const dbRow = state.categorie.find((c) => c.id === key);
+  if (dbRow) return { key: dbRow.id, label: dbRow.label, icon: dbRow.icon || "" };
+  const fallback = (window.CATEGORIE_REQUISITO || []).find((c) => c.key === key);
+  if (fallback) return fallback;
+  return { key, label: key, icon: "" };
+}
+// Comoda per leggere/iconare in modo retrocompatibile col vecchio CAT_BY_KEY.
+const CAT_BY_KEY = new Proxy({}, { get: (_t, k) => categoriaInfo(k) });
+function categorieList() {
+  if (state.categorie.length) {
+    return state.categorie.slice().sort((a, b) => (a.ordine || 0) - (b.ordine || 0) || (a.label || "").localeCompare(b.label || ""));
+  }
+  return (window.CATEGORIE_REQUISITO || []).map((c) => ({ id: c.key, label: c.label, icon: c.icon, ordine: 100 }));
+}
+const STATO_INFO = {
+  scaduto:     { label: "Scaduto",     order: 1 },
+  in_scadenza: { label: "In scadenza", order: 2 },
+  ok:          { label: "In regola",   order: 3 },
+};
+
+// ---------- Storage (PDF su Supabase) ----------
+function downloadName(dip, tipo, adm) {
+  const date = (adm?.data_rilascio || adm?.data_scadenza || localISO(new Date())).slice(0, 10);
+  const parts = [
+    sanitizeName(dip?.cognome) || "Cognome",
+    sanitizeName(dip?.nome) || "Nome",
+    sanitizeName(tipo?.nome) || "Doc",
+    date,
+  ];
+  const path = adm?.documento_path || "";
+  const ext = path.includes(".") ? path.split(".").pop().toLowerCase() : "pdf";
+  return parts.join("_") + "." + ext;
+}
+
+async function uploadDoc(adempimentoId, file) {
+  // Path con timestamp così rinnovi successivi NON sovrascrivono il file precedente
+  // (il vecchio resta nel bucket, recuperabile dallo storico).
+  const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+  const path = `${adempimentoId}/${Date.now()}.${ext}`;
+  const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, file, {
+    upsert: false,
+    contentType: file.type || "application/octet-stream",
+  });
+  if (error) throw error;
+  return path;
+}
+
+// TTL 10 minuti: i PDF contengono dati sanitari (idoneità) o provvedimenti
+// disciplinari — link a 1h è troppo se vengono inoltrati per errore.
+async function getSignedDocUrl(path, dlName) {
+  if (!path) return null;
+  const opts = dlName ? { download: dlName } : {};
+  const { data, error } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 600, opts);
+  if (error) throw error;
+  return data?.signedUrl || null;
+}
+
+async function deleteDoc(path) {
+  if (!path) return;
+  try { await sb.storage.from(STORAGE_BUCKET).remove([path]); }
+  catch (e) { console.warn("deleteDoc failed:", e); }
+}
+
+// Helper unico per aprire un PDF dal bucket: signed url + nuova tab + alert errore.
+// Sostituisce 9 callsite identici (DPI, onboarding, provv, storico ×3, ecc.).
+async function openSignedDoc(path, dlName) {
+  if (!path) return;
+  try {
+    const url = await getSignedDocUrl(path, dlName);
+    if (url) window.open(url, "_blank", "noopener");
+  } catch (err) {
+    alert("Errore apertura documento: " + err.message);
+  }
+}
+
+// Apre il PDF di un adempimento dato il suo {dip, tipo, path}, con download name leggibile.
+async function openAdempimentoDoc(adm, path) {
+  if (!path) return;
+  const dip = adm ? dipById(adm.dipendente_id) : null;
+  const tipo = adm ? tipoById(adm.tipo_requisito_id) : null;
+  const dl = downloadName(dip, tipo, { ...adm, documento_path: path });
+  await openSignedDoc(path, dl);
+}
+
+async function openDoc(adm) {
+  if (!adm) return;
+  if (adm.documento_path) {
+    await openAdempimentoDoc(adm, adm.documento_path);
+  } else if (adm.documento_url) {
+    window.open(adm.documento_url, "_blank", "noopener");
+  }
+}
+
+// ---------- Auth ----------
+function isAuthError(e) {
+  if (!e) return false;
+  const status = e.status || e.code;
+  if (status === 401 || status === 403) return true;
+  const code = String(e.code || "");
+  if (code === "PGRST301" || code === "PGRST302") return true;
+  const name = String(e.name || "");
+  if (/AuthError|AuthApiError/i.test(name)) return true;
+  const msg = String(e.message || "").toLowerCase();
+  return /jwt|unauthorized|rls|not authenticated|row-level/.test(msg);
+}
+
+function showLogin(msg) {
+  $("app-root").hidden = true;
+  $("login-overlay").style.display = "flex";
+  const errBox = $("login-error");
+  if (msg) { errBox.textContent = msg; errBox.hidden = false; }
+  else { errBox.hidden = true; }
+}
+function hideLogin() {
+  $("login-overlay").style.display = "none";
+  $("app-root").hidden = false;
+}
+
+async function handleLoginSubmit(e) {
+  e.preventDefault();
+  const btn = $("login-submit");
+  btn.disabled = true;
+  btn.textContent = "Accesso…";
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: $("login-email").value.trim(),
+    password: $("login-password").value,
+  });
+  btn.disabled = false;
+  btn.textContent = "Accedi";
+  if (error) { showLogin("Credenziali non valide. Riprova."); return; }
+  state.user = data.user;
+  hideLogin();
+  await startApp();
+}
+
+async function handleLogout() {
+  await sb.auth.signOut();
+  unsubscribeAll();
+  state.user = null;
+  showLogin();
+}
+
+// ---------- CRUD ----------
+async function sbLoadAll() {
+  const results = await Promise.all(TABLES.map((t) => sb.from(t).select("*")));
+  const failed = [];
+  for (let i = 0; i < TABLES.length; i++) {
+    const { data, error } = results[i];
+    if (error) {
+      if (isAuthError(error)) { showLogin("Sessione scaduta. Rientra."); throw error; }
+      // Errore non-auth: NON sovrascrivere lo state (evita "tutto in regola" fittizio
+      // perché una tabella vuota azzererebbe il motore gap). Segnala però all'utente.
+      failed.push(`${TABLES[i]}: ${error.message}`);
+      continue;
+    }
+    state[STORE_BY_TABLE[TABLES[i]]] = data || [];
+  }
+  if (failed.length) {
+    alert("Errore caricamento dati (refresha la pagina):\n" + failed.join("\n"));
+  }
+}
+
+async function sbUpsert(table, row) {
+  const store = STORE_BY_TABLE[table];
+  const arr = state[store];
+  const idx = arr.findIndex((r) => r.id === row.id);
+  const prev = idx >= 0 ? arr[idx] : null;
+  if (idx >= 0) arr[idx] = row; else arr.push(row);   // optimistic
+  renderAll();
+  const { error } = await sb.from(table).upsert(row);
+  if (error) {
+    // Rollback safe contro realtime concorrente: ritrova la riga per id ORA,
+    // non riusare l'idx vecchio (potrebbe essere stale dopo eventi RT).
+    const now = arr.findIndex((r) => r.id === row.id);
+    if (prev) {
+      if (now >= 0) arr[now] = prev;
+      else arr.push(prev);
+    } else if (now >= 0) {
+      arr.splice(now, 1);
+    }
+    renderAll();
+    if (isAuthError(error)) showLogin("Sessione scaduta. Rientra.");
+    else alert("Errore salvataggio: " + error.message);
+    return false;
+  }
+  return true;
+}
+
+async function sbDelete(table, id) {
+  const store = STORE_BY_TABLE[table];
+  const arr = state[store];
+  const idx = arr.findIndex((r) => r.id === id);
+  const prev = idx >= 0 ? arr[idx] : null;
+  if (idx >= 0) arr.splice(idx, 1);                   // optimistic
+  renderAll();
+  const { error } = await sb.from(table).delete().eq("id", id);
+  if (error) {
+    if (prev) { arr.splice(idx, 0, prev); renderAll(); }
+    if (isAuthError(error)) showLogin("Sessione scaduta. Rientra.");
+    else alert("Errore eliminazione: " + error.message);
+    return false;
+  }
+  return true;
+}
+
+// ---------- Realtime ----------
+let rtChannel = null;
+function subscribeRealtime() {
+  rtChannel = sb.channel("hr-all");
+  for (const t of TABLES) {
+    rtChannel.on("postgres_changes", { event: "*", schema: "public", table: t }, (payload) => {
+      const store = STORE_BY_TABLE[t];
+      const arr = state[store];
+      if (payload.eventType === "DELETE") {
+        const i = arr.findIndex((r) => r.id === payload.old.id);
+        if (i >= 0) arr.splice(i, 1);
+      } else {
+        const row = payload.new;
+        const i = arr.findIndex((r) => r.id === row.id);
+        if (i >= 0) arr[i] = row; else arr.push(row);
+      }
+      renderAll();
+    });
+  }
+  rtChannel.subscribe();
+}
+function unsubscribeAll() {
+  if (rtChannel) { sb.removeChannel(rtChannel); rtChannel = null; }
+}
+
+// ---------- Lookups ----------
+const ruoloById = (id) => state.ruoli.find((r) => r.id === id);
+const tipoById = (id) => state.tipi.find((t) => t.id === id);
+const dipById = (id) => state.dipendenti.find((d) => d.id === id);
+function ruoliOfDip(dipId) {
+  return state.dipRuoli.filter((dr) => dr.dipendente_id === dipId).map((dr) => ruoloById(dr.ruolo_id)).filter(Boolean);
+}
+function mansioniList() { return state.ruoli.filter((r) => r.tipo === "mansione"); }
+function incarichiList() { return state.ruoli.filter((r) => r.tipo === "incarico"); }
+
+// ============================================================
+// MOTORE GAP — cuore dell'app
+// Per ogni dipendente attivo: unione dei requisiti obbligatori
+// dei suoi ruoli, confronto con l'adempimento valido più recente.
+// ============================================================
+function computeGaps(dip) {
+  const ruoli = ruoliOfDip(dip.id);
+  const ruoloIds = new Set(ruoli.map((r) => r.id));
+  // Requisiti dovuti (dedup per tipo_requisito; tiene la regola con validità più stringente).
+  const dovutiByTipo = new Map();
+  for (const req of state.requisiti) {
+    if (!ruoloIds.has(req.ruolo_id) || !req.obbligatorio) continue;
+    const prev = dovutiByTipo.get(req.tipo_requisito_id);
+    if (!prev) { dovutiByTipo.set(req.tipo_requisito_id, req); continue; }
+    const a = req.validita_mesi == null ? Infinity : req.validita_mesi;
+    const b = prev.validita_mesi == null ? Infinity : prev.validita_mesi;
+    if (a < b) dovutiByTipo.set(req.tipo_requisito_id, req);
+  }
+  const onboardDeadline = dip.data_assunzione ? localISO(addDays(parseISO(dip.data_assunzione), GG_ONBOARD)) : null;
+
+  const rows = [];
+  for (const [tipoId, req] of dovutiByTipo) {
+    const tipo = tipoById(tipoId);
+    if (!tipo) continue;
+    // Adempimento valido più recente per questo tipo.
+    const insts = state.adempimenti
+      .filter((a) => a.dipendente_id === dip.id && a.tipo_requisito_id === tipoId)
+      .sort((a, b) => (b.data_scadenza || b.data_rilascio || "").localeCompare(a.data_scadenza || a.data_rilascio || ""));
+    const inst = insts[0];
+
+    let stato, scadenza;
+    const hasRilascio = !!(inst && inst.data_rilascio);
+    if (!hasRilascio) {
+      // Mai registrato (neoassunto + non ha ancora fatto, oppure adempimento mai creato).
+      // La scadenza è quella del DB (onboarding+60gg per neoassunti) o calcolata.
+      scadenza = (inst?.data_scadenza) || onboardDeadline || null;
+      if (!scadenza) {
+        // Nessuna scadenza nota: classifica come "scaduto" per visibilità.
+        stato = "scaduto";
+      } else {
+        const gg = daysUntil(scadenza);
+        // I non-registrati appaiono sempre in "scaduto" o "in_scadenza", mai "ok".
+        stato = gg < 0 ? "scaduto" : "in_scadenza";
+      }
+    } else {
+      // Registrato: classifica per scadenza.
+      scadenza = inst.data_scadenza || null;
+      if (!scadenza) {
+        stato = "ok";               // rilasciato e non scade (es. formazione generale)
+      } else {
+        const gg = daysUntil(scadenza);
+        if (gg < 0) stato = "scaduto";
+        else if (gg <= GG_SCAD) stato = "in_scadenza";
+        else stato = "ok";
+      }
+    }
+    rows.push({ dip, tipo, req, stato, scadenza, adempimento: inst || null });
+  }
+  rows.sort((a, b) => STATO_INFO[a.stato].order - STATO_INFO[b.stato].order);
+  return rows;
+}
+
+// Tutti i gap di tutti i dipendenti attivi.
+function allGapRows() {
+  const out = [];
+  for (const dip of state.dipendenti) {
+    if (dip.attivo === false) continue;
+    out.push(...computeGaps(dip));
+  }
+  // Ordine globale: prima i problemi (scaduto/mancante/in_scadenza), in regola in fondo.
+  // A parità di stato, ordina per scadenza (più imminenti prima).
+  out.sort((a, b) => {
+    const so = STATO_INFO[a.stato].order - STATO_INFO[b.stato].order;
+    if (so !== 0) return so;
+    return (a.scadenza || "9999-99-99").localeCompare(b.scadenza || "9999-99-99");
+  });
+  return out;
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+function renderAll() {
+  if (!state.user) return;
+  renderCounts();
+  if (state.view === "compliance") renderCompliance();
+  else if (state.view === "cariche") renderCariche();
+  else if (state.view === "dipendenti") renderDipendenti();
+  else if (state.view === "storico") renderStorico();
+  else if (state.view === "config") renderConfig();
+}
+
+function renderCounts() {
+  const gaps = allGapRows();
+  const openGaps = gaps.filter((g) => g.stato !== "ok").length;
+  $("count-gap").textContent = openGaps;
+  $("count-dip").textContent = state.dipendenti.filter((d) => d.attivo !== false).length;
+  // Cariche aziendali sotto soglia.
+  const sottoSoglia = caricheStato().filter((c) => c.sottoSoglia).length;
+  $("count-cariche").textContent = sottoSoglia;
+  // Storico: totale eventi (correnti + archiviati).
+  $("count-storico").textContent = collectStoricoEvents().length;
+}
+
+// Ritorna lo stato di ogni incarico aziendale con minimo > 0.
+function caricheStato() {
+  return state.ruoli
+    .filter((r) => r.tipo === "incarico" && (r.minimo_richiesto || 0) > 0)
+    .map((r) => {
+      const nominati = state.dipendenti.filter((d) => d.attivo !== false &&
+        state.dipRuoli.some((dr) => dr.dipendente_id === d.id && dr.ruolo_id === r.id));
+      const minimo = r.minimo_richiesto || 0;
+      return { ruolo: r, nominati, minimo, sottoSoglia: nominati.length < minimo };
+    })
+    .sort((a, b) => (a.sottoSoglia === b.sottoSoglia ? a.ruolo.nome.localeCompare(b.ruolo.nome) : (a.sottoSoglia ? -1 : 1)));
+}
+
+function renderCariche() {
+  const cariche = caricheStato();
+  $("cariche-empty").hidden = cariche.length > 0;
+  const host = $("cariche-list");
+  host.innerHTML = cariche.map((c) => {
+    const stato = c.sottoSoglia
+      ? `${c.nominati.length}/${c.minimo} — sotto soglia`
+      : `${c.nominati.length}/${c.minimo} — in regola`;
+    const nominati = c.nominati.length
+      ? `<div class="nominati">${c.nominati.map((d) => `<span class="chip">${esc(d.cognome)} ${esc(d.nome)}</span>`).join("")}</div>`
+      : `<div class="vuoto">Nessun dipendente attivo nominato.</div>`;
+    return `<div class="carica-card ${c.sottoSoglia ? "warn" : "ok"}">
+      <div>
+        <div class="nome">${esc(c.ruolo.nome)}</div>
+        <div class="meta">Minimo richiesto: ${c.minimo} · Nominati attivi: ${c.nominati.length}</div>
+      </div>
+      <div class="stato">${c.sottoSoglia ? "⚠️ " : "✅ "}${stato}</div>
+      ${nominati}
+    </div>`;
+  }).join("");
+}
+
+// ---------- Compliance ----------
+function matchSearch(text) {
+  if (!state.search) return true;
+  return text.toLowerCase().includes(state.search.toLowerCase());
+}
+
+function renderCompliance() {
+  let rows = allGapRows();
+
+  // KPI globali (prima dei filtri tabella, ma il filtro stato applica alla tabella).
+  const counts = { scaduto: 0, in_scadenza: 0, ok: 0 };
+  rows.forEach((r) => counts[r.stato]++);
+  $("kpi-scaduto").textContent = counts.scaduto;
+  $("kpi-inscadenza").textContent = counts.in_scadenza;
+  $("kpi-ok").textContent = counts.ok;
+  els('#view-compliance .kpi').forEach((k) => k.classList.toggle("active", k.dataset.cstatus === (state.compFilter.stato || "all")));
+
+  // Filtri.
+  const f = state.compFilter;
+  rows = rows.filter((r) => {
+    if (f.stato && r.stato !== f.stato) return false;
+    if (f.dipendente && r.dip.id !== f.dipendente) return false;
+    const ruoli = ruoliOfDip(r.dip.id);
+    if (f.mansione && !ruoli.some((x) => x.id === f.mansione)) return false;
+    if (f.incarico && !ruoli.some((x) => x.id === f.incarico)) return false;
+    const hay = r.dip.nome + " " + r.dip.cognome + " " + (r.tipo.nome || "");
+    if (!matchSearch(hay)) return false;
+    return true;
+  });
+
+  // Modalità Calendario: nasconde la lista e disegna il mese con gli stessi eventi.
+  if (state.compView === "calendar") {
+    $("comp-wrap").hidden = true;
+    $("comp-cal-wrap").hidden = false;
+    // Eventi calendario = righe con una data di scadenza utile.
+    const events = rows.filter((r) => r.scadenza && r.adempimento).map((r) => ({
+      a: r.adempimento,
+      tipo: r.tipo,
+      dip: r.dip,
+      gg: daysUntil(r.scadenza),
+    }));
+    renderCalendar(events);
+    return;
+  }
+  $("comp-wrap").hidden = false;
+  $("comp-cal-wrap").hidden = true;
+
+  const host = $("comp-rows");
+  $("comp-empty").hidden = rows.length > 0;
+  host.innerHTML = rows.map((r) => {
+    const ruoli = ruoliOfDip(r.dip.id);
+    const man = ruoli.find((x) => x.tipo === "mansione");
+    const inc = ruoli.filter((x) => x.tipo === "incarico");
+    const rolesHtml =
+      (man ? `<span class="chip mansione">${esc(man.nome)}</span>` : "") +
+      inc.map((i) => `<span class="chip incarico">${esc(i.nome)}</span>`).join("");
+    const cat = r.tipo.categoria;
+    return `<div class="comp-row" data-dip="${r.dip.id}" data-tipo="${r.tipo.id}" data-ad="${r.adempimento ? r.adempimento.id : ''}">
+      <div><strong>${esc(r.dip.cognome)} ${esc(r.dip.nome)}</strong></div>
+      <div class="comp-roles">${rolesHtml || '<span class="muted">—</span>'}</div>
+      <div>${esc(r.tipo.nome)}</div>
+      <div><span class="chip cat-${cat}">${CAT_BY_KEY[cat]?.icon || ""} ${CAT_BY_KEY[cat]?.label || cat}</span></div>
+      <div>${r.scadenza ? fmtDate(r.scadenza) : '<span class="muted">—</span>'}</div>
+      <div><span class="stato ${r.stato}">${STATO_INFO[r.stato].label}</span></div>
+    </div>`;
+  }).join("");
+
+  // Click sulla riga = apre la scheda di quel SINGOLO adempimento (non quella del dipendente).
+  // Se MANCANTE (nessun adempimento ancora creato), pre-popola il tipo requisito.
+  els(".comp-row", host).forEach((el2) => el2.addEventListener("click", () => {
+    const dipId = el2.dataset.dip;
+    const admId = el2.dataset.ad;
+    const tipoId = el2.dataset.tipo;
+    if (admId) openAdmModal(dipId, admId);
+    else openAdmModal(dipId, null, tipoId);
+  }));
+}
+
+// ---------- Dipendenti ----------
+function renderDipendenti() {
+  const host = $("dip-cards");
+  const list = state.dipendenti
+    .filter((d) => matchSearch(d.nome + " " + d.cognome + " " + (d.email || "")))
+    .sort((a, b) => (a.cognome || "").localeCompare(b.cognome || ""));
+  $("dip-empty").hidden = list.length > 0;
+  host.innerHTML = list.map((d) => {
+    const ruoli = ruoliOfDip(d.id);
+    const man = ruoli.find((x) => x.tipo === "mansione");
+    const inc = ruoli.filter((x) => x.tipo === "incarico");
+    const rolesHtml =
+      (man ? `<span class="chip mansione">${esc(man.nome)}</span>` : "") +
+      inc.map((i) => `<span class="chip incarico">${esc(i.nome)}</span>`).join("");
+    const gaps = computeGaps(d);
+    const c = { scaduto: 0, mancante: 0, in_scadenza: 0, ok: 0 };
+    gaps.forEach((g) => c[g.stato]++);
+    const pills = [];
+    if (c.scaduto) pills.push(`<span class="gap-pill scaduto">${c.scaduto} scaduti</span>`);
+    if (c.mancante) pills.push(`<span class="gap-pill mancante">${c.mancante} mancanti</span>`);
+    if (c.in_scadenza) pills.push(`<span class="gap-pill in_scadenza">${c.in_scadenza} in scad.</span>`);
+    if (!c.scaduto && !c.mancante && !c.in_scadenza) pills.push(`<span class="gap-pill ok">In regola</span>`);
+    // Flag onboarding: assunto da meno di 60gg con gap aperti.
+    let onboard = "";
+    if (d.data_assunzione && d.attivo !== false) {
+      const gg = daysUntil(localISO(addDays(parseISO(d.data_assunzione), GG_ONBOARD)));
+      if (gg != null && gg >= 0 && (c.mancante || c.scaduto)) onboard = `<span class="onboard-flag">⏳ ${gg}gg onboarding</span>`;
+    }
+    return `<div class="dip-card ${d.attivo === false ? "cessato" : ""}" data-dip="${d.id}">
+      <div class="dip-card-head">
+        <div class="dip-avatar">${esc(initials(d.nome, d.cognome))}</div>
+        <div>
+          <div class="name">${esc(d.cognome)} ${esc(d.nome)}</div>
+          <div class="meta">${d.attivo === false ? "Cessato" : "In forza"}${d.livello_ccnl ? " · Liv. " + esc(d.livello_ccnl) : ""}</div>
+        </div>
+      </div>
+      <div class="dip-card-roles">${rolesHtml || '<span class="muted">Nessun ruolo</span>'}</div>
+      <div class="dip-card-foot">
+        <div class="dip-gap-summary">${pills.join("")}</div>
+        ${onboard}
+      </div>
+    </div>`;
+  }).join("");
+  els(".dip-card", host).forEach((el2) => el2.addEventListener("click", () => openDipModal(el2.dataset.dip)));
+}
+
+// ---------- Scadenze ----------
+function scadEnriched() {
+  // Tutti gli adempimenti con data_scadenza, neoassunti compresi (per loro il sync ha
+  // settato data_scadenza = assunzione + 60gg sui mancanti). Trattati come scadenze normali.
+  return state.adempimenti
+    .filter((a) => a.data_scadenza)
+    .map((a) => {
+      const tipo = tipoById(a.tipo_requisito_id);
+      const dip = dipById(a.dipendente_id);
+      return { a, tipo, dip, gg: daysUntil(a.data_scadenza) };
+    })
+    .filter((x) => x.tipo && x.dip && (x.dip.attivo !== false));
+}
+
+function urgencyColor(gg) {
+  if (gg < 0) return "red";
+  if (gg <= 7) return "orange";
+  if (gg <= 30) return "yellow";
+  return "green";
+}
+
+function renderCalendar(all) {
+  const ref = state.calRef;
+  const y = ref.getFullYear(), m = ref.getMonth();
+  $("cal-title").textContent = ref.toLocaleDateString("it-IT", { month: "long", year: "numeric" });
+  const first = new Date(y, m, 1);
+  let startDow = (first.getDay() + 6) % 7; // lun=0
+  const start = new Date(y, m, 1 - startDow);
+  const byDay = {};
+  all.forEach((x) => { (byDay[x.a.data_scadenza] = byDay[x.a.data_scadenza] || []).push(x); });
+
+  const grid = $("cal-grid");
+  let html = "";
+  const todayISO = localISO(new Date());
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const iso = localISO(d);
+    const other = d.getMonth() !== m;
+    const evs = byDay[iso] || [];
+    const shown = evs.slice(0, 3);
+    const evHtml = shown.map((x) =>
+      `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`
+    ).join("");
+    const more = evs.length > 3 ? `<div class="cal-more">+${evs.length - 3} altri</div>` : "";
+    html += `<div class="cal-day ${other ? "other-month" : ""} ${iso === todayISO ? "today" : ""}">
+      <div class="cal-day-num">${d.getDate()}</div>${evHtml}${more}</div>`;
+  }
+  grid.innerHTML = html;
+  els(".cal-event", grid).forEach((ev) => ev.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openAdmModal(ev.dataset.dip, ev.dataset.ad);
+  }));
+}
+
+// ---------- Config ----------
+function renderConfig() {
+  els(".ct-btn").forEach((b) => b.classList.toggle("active", b.dataset.ctab === state.configTab));
+  $("cfg-ruoli").hidden = state.configTab !== "ruoli";
+  $("cfg-categorie").hidden = state.configTab !== "categorie";
+  $("cfg-tipi").hidden = state.configTab !== "tipi";
+  $("cfg-matrice").hidden = state.configTab !== "matrice";
+  $("cfg-onboarding").hidden = state.configTab !== "onboarding";
+  $("cfg-modelli").hidden = state.configTab !== "modelli";
+  if (state.configTab === "ruoli") renderRuoliTable();
+  else if (state.configTab === "categorie") renderCategorieTable();
+  else if (state.configTab === "tipi") renderTipiTable();
+  else if (state.configTab === "matrice") renderMatriceTable();
+  else if (state.configTab === "onboarding") renderOnboardingItemsTable();
+  else if (state.configTab === "modelli") renderModelliTable();
+}
+
+function renderCategorieTable() {
+  const rows = categorieList();
+  $("categorie-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-tipi"><div>Nome</div><div>Icona</div><div>Ordine</div><div>ID</div></div>` +
+    rows.map((c) => `<div class="cfg-row cfg-cols-tipi" data-id="${esc(c.id)}">
+      <div><strong>${esc(c.label)}</strong></div>
+      <div>${esc(c.icon || "—")}</div>
+      <div class="muted">${c.ordine ?? 100}</div>
+      <div class="muted">${esc(c.id)}</div>
+    </div>`).join("");
+  els("#categorie-table .cfg-row:not(.head)").forEach((el2) => el2.addEventListener("click", () => openCategoriaModal(el2.dataset.id)));
+}
+
+function renderRuoliTable() {
+  const rows = state.ruoli.slice().sort((a, b) => (a.tipo + a.nome).localeCompare(b.tipo + b.nome));
+  $("ruoli-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-ruoli"><div>Nome</div><div>Tipo</div><div>Minimo richiesto</div></div>` +
+    rows.map((r) => {
+      const detail = r.tipo === "incarico"
+        ? (r.minimo_richiesto ? `min. ${r.minimo_richiesto}` : "—")
+        : "—";
+      return `<div class="cfg-row cfg-cols-ruoli" data-id="${r.id}">
+        <div><strong>${esc(r.nome)}</strong></div>
+        <div>${r.tipo === "mansione" ? "🏭 Mansione" : "📌 Incarico"}</div>
+        <div class="muted">${detail}</div>
+      </div>`;
+    }).join("");
+  els("#ruoli-table .cfg-row:not(.head)").forEach((el2) => el2.addEventListener("click", () => openRuoloModal(el2.dataset.id)));
+}
+
+function renderTipiTable() {
+  const rows = state.tipi.slice().sort((a, b) => (a.categoria + a.nome).localeCompare(b.categoria + b.nome));
+  $("tipi-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-tipi"><div>Nome</div><div>Categoria</div><div>Durata</div><div>Riferimento</div></div>` +
+    rows.map((t) => `<div class="cfg-row cfg-cols-tipi" data-id="${t.id}">
+      <div><strong>${esc(t.nome)}</strong></div>
+      <div><span class="chip cat-${t.categoria}">${CAT_BY_KEY[t.categoria]?.icon || ""} ${CAT_BY_KEY[t.categoria]?.label || t.categoria}</span></div>
+      <div class="muted">${esc(t.durata_iniziale || "—")}</div>
+      <div class="muted">${esc(t.riferimento_normativo || "—")}</div>
+    </div>`).join("");
+  els("#tipi-table .cfg-row:not(.head)").forEach((el2) => el2.addEventListener("click", () => openTipoModal(el2.dataset.id)));
+}
+
+function renderMatriceTable() {
+  const rows = state.requisiti.slice().sort((a, b) => {
+    const ra = ruoloById(a.ruolo_id), rb = ruoloById(b.ruolo_id);
+    return ((ra?.nome || "") + (tipoById(a.tipo_requisito_id)?.nome || "")).localeCompare((rb?.nome || "") + (tipoById(b.tipo_requisito_id)?.nome || ""));
+  });
+  $("matrice-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-matrice"><div>Ruolo</div><div>Requisito</div><div>Obblig.</div><div>Validità</div></div>` +
+    rows.map((req) => {
+      const r = ruoloById(req.ruolo_id), t = tipoById(req.tipo_requisito_id);
+      return `<div class="cfg-row cfg-cols-matrice" data-id="${req.id}">
+        <div><strong>${esc(r?.nome || "?")}</strong></div>
+        <div>${esc(t?.nome || "?")}</div>
+        <div>${req.obbligatorio ? "Sì" : "No"}</div>
+        <div class="muted">${req.validita_mesi == null ? "non scade" : req.validita_mesi + " mesi"}</div>
+      </div>`;
+    }).join("");
+  els("#matrice-table .cfg-row:not(.head)").forEach((el2) => el2.addEventListener("click", () => openReqModal(el2.dataset.id)));
+}
+
+// ============================================================
+// STORICO — eventi cronologici aggregati: cicli correnti + history archiviati.
+// ============================================================
+function collectStoricoEvents() {
+  const events = [];
+  for (const a of state.adempimenti) {
+    const dip = dipById(a.dipendente_id);
+    const tipo = tipoById(a.tipo_requisito_id);
+    if (!dip || !tipo) continue;
+    // Voci archiviate (dalla history).
+    if (Array.isArray(a.history)) {
+      for (const h of a.history) {
+        if (!h.doneAt && !h.rilascio) continue;
+        events.push({
+          data: h.doneAt || h.rilascio,
+          dip, tipo,
+          rilascio: h.rilascio || null,
+          scadenza: h.scadenza || h.dueDate || null,
+          docPath: h.documentoPath || null,
+          docUrl: null,
+          note: h.note || null,
+          source: "history",
+          admId: a.id,
+        });
+      }
+    }
+    // Ciclo corrente (se registrato).
+    if (a.data_rilascio) {
+      events.push({
+        data: a.data_rilascio,
+        dip, tipo,
+        rilascio: a.data_rilascio,
+        scadenza: a.data_scadenza || null,
+        docPath: a.documento_path || null,
+        docUrl: a.documento_url || null,
+        note: a.note || null,
+        source: "current",
+        admId: a.id,
+      });
+    }
+  }
+  // Ordina dal più recente al più vecchio.
+  events.sort((x, y) => (y.data || "").localeCompare(x.data || ""));
+  return events;
+}
+
+function filterStorico(events) {
+  const f = state.storicoFilter;
+  return events.filter((e) => {
+    if (f.dipendente && e.dip.id !== f.dipendente) return false;
+    if (f.tipo && e.tipo.id !== f.tipo) return false;
+    if (f.categoria && e.tipo.categoria !== f.categoria) return false;
+    if (f.anno) {
+      const y = (e.data || "").slice(0, 4);
+      if (y !== f.anno) return false;
+    }
+    if (f.mese) {
+      const m = (e.data || "").slice(5, 7);
+      if (m !== f.mese) return false;
+    }
+    const hay = `${e.dip.nome} ${e.dip.cognome} ${e.tipo.nome} ${e.note || ""}`;
+    if (!matchSearch(hay)) return false;
+    return true;
+  });
+}
+
+function populateStoricoFilters() {
+  // Dipendenti
+  const dips = state.dipendenti.slice().sort((a, b) => (a.cognome || "").localeCompare(b.cognome || ""));
+  fillSelect($("filter-st-dipendente"), dips, {
+    placeholder: "Tutti i dipendenti",
+    label: (d) => `${d.cognome} ${d.nome}`,
+  });
+  // Tipi
+  const tipi = state.tipi.slice().sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
+  fillSelect($("filter-st-tipo"), tipi, {
+    placeholder: "Tutti i tipi",
+    label: (t) => `${CAT_BY_KEY[t.categoria]?.icon || ""} ${t.nome}`,
+  });
+  // Categorie (da DB)
+  const cats = categorieList();
+  $("filter-st-categoria").innerHTML = `<option value="">Tutte le categorie</option>` +
+    cats.map((c) => `<option value="${esc(c.id)}">${esc((c.icon ? c.icon + " " : "") + c.label)}</option>`).join("");
+  // Anni (dalle date degli eventi).
+  const anni = [...new Set(collectStoricoEvents().map((e) => (e.data || "").slice(0, 4)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
+  $("filter-st-anno").innerHTML = `<option value="">Tutti gli anni</option>` + anni.map((y) => `<option value="${y}">${y}</option>`).join("");
+  // Ripristina selezioni.
+  const f = state.storicoFilter;
+  $("filter-st-dipendente").value = f.dipendente;
+  $("filter-st-tipo").value = f.tipo;
+  $("filter-st-categoria").value = f.categoria;
+  $("filter-st-anno").value = f.anno;
+  $("filter-st-mese").value = f.mese;
+}
+
+function renderStorico() {
+  populateStoricoFilters();
+  const all = collectStoricoEvents();
+  const filtered = filterStorico(all);
+  // Riepilogo.
+  const dipsCount = new Set(filtered.map((e) => e.dip.id)).size;
+  $("storico-summary").innerHTML = `Eventi: <strong>${filtered.length}</strong> · Dipendenti coinvolti: <strong>${dipsCount}</strong>`;
+  // Lista.
+  const host = $("storico-rows");
+  $("storico-empty").hidden = filtered.length > 0;
+  host.innerHTML = filtered.map((e) => {
+    const cat = e.tipo.categoria;
+    const hasDoc = e.docPath || e.docUrl;
+    const sourceTxt = e.source === "history" ? "archiviato" : "corrente";
+    return `<div class="storico-row ${e.source === "history" ? "archived" : ""}" data-source="${e.source}" data-ad="${e.admId}" data-doc="${esc(e.docPath || "")}" data-docurl="${esc(e.docUrl || "")}">
+      <div></div>
+      <div><strong>${fmtDate(e.data)}</strong><div class="sub">${sourceTxt}</div></div>
+      <div>${esc(e.dip.cognome)} ${esc(e.dip.nome)}</div>
+      <div><strong>${esc(e.tipo.nome)}</strong></div>
+      <div>${e.scadenza ? fmtDate(e.scadenza) : '<span class="muted">—</span>'}</div>
+      <div><span class="chip cat-${cat}">${CAT_BY_KEY[cat]?.icon || ""} ${CAT_BY_KEY[cat]?.label || cat}</span></div>
+      <div>${hasDoc ? `<button type="button" class="doc-link doc-link-btn" title="Apri documento">📎</button>` : '<span class="doc-link disabled">📎</span>'}</div>
+    </div>`;
+  }).join("");
+  // Click riga → apre l'adempimento di provenienza (per vedere contesto / history).
+  els(".storico-row", host).forEach((row) => row.addEventListener("click", () => {
+    const adm = state.adempimenti.find((a) => a.id === row.dataset.ad);
+    if (adm) openAdmModal(adm.dipendente_id, adm.id);
+  }));
+  // Click 📎 → apre il PDF (signed url se path, link diretto se url esterno).
+  els(".doc-link-btn", host).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const row = btn.closest(".storico-row");
+    const path = row.dataset.doc;
+    const url = row.dataset.docurl;
+    if (path) {
+      const adm = state.adempimenti.find((a) => a.id === row.dataset.ad);
+      await openAdempimentoDoc(adm, path);
+    } else if (url) {
+      window.open(url, "_blank", "noopener");
+    }
+  }));
+}
+
+function exportStoricoExcel() {
+  if (!window.XLSX) { alert("Libreria Excel non caricata."); return; }
+  const rows = filterStorico(collectStoricoEvents()).map((e) => ({
+    Data: e.data ? fmtDate(e.data) : "",
+    Cognome: e.dip.cognome,
+    Nome: e.dip.nome,
+    Requisito: e.tipo.nome,
+    Categoria: CAT_BY_KEY[e.tipo.categoria]?.label || e.tipo.categoria,
+    "Data rilascio": e.rilascio ? fmtDate(e.rilascio) : "",
+    "Data scadenza": e.scadenza ? fmtDate(e.scadenza) : "",
+    "Documento": (e.docPath || e.docUrl) ? "Sì" : "No",
+    Stato: e.source === "history" ? "Archiviato" : "Corrente",
+  }));
+  if (!rows.length) { alert("Nessun evento da esportare con i filtri attuali."); return; }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Storico");
+  XLSX.writeFile(wb, `HR-storico-${localISO(new Date())}.xlsx`);
+}
+
+// ============================================================
+// MODALI
+// ============================================================
+function openModal(id) { $(id).hidden = false; }
+function closeModal(id) { $(id).hidden = true; }
+
+// ---------- Dipendente ----------
+function fillSelect(sel, items, { value = "id", label = "nome", placeholder = null } = {}) {
+  sel.innerHTML = (placeholder ? `<option value="">${esc(placeholder)}</option>` : "") +
+    items.map((i) => `<option value="${esc(i[value])}">${esc(typeof label === "function" ? label(i) : i[label])}</option>`).join("");
+}
+
+function openDipModal(id) {
+  const d = id ? dipById(id) : null;
+  $("dip-title").textContent = d ? `${d.cognome} ${d.nome}` : "Nuovo dipendente";
+  $("dip-id").value = d ? d.id : "";
+  $("dip-nome").value = d?.nome || "";
+  $("dip-cognome").value = d?.cognome || "";
+  $("dip-cf").value = d?.codice_fiscale || "";
+  $("dip-nascita").value = d?.data_nascita || "";
+  $("dip-assunzione").value = d?.data_assunzione || "";
+  fillSelect($("dip-livello"), (window.LIVELLI_CCNL || []).map((l) => ({ id: l, nome: "Livello " + l })), { placeholder: "—" });
+  $("dip-livello").value = d?.livello_ccnl || "";
+  $("dip-email").value = d?.email || "";
+  $("dip-telefono").value = d?.telefono || "";
+  $("dip-attivo").checked = d ? d.attivo !== false : true;
+  $("dip-note").value = d?.note || "";
+
+  // ----- Anagrafica estesa (Iterazione A) -----
+  // Popolo i select dei lookup (idempotente — riscrivere le option è ok).
+  fillSelect($("dip-sesso"), (window.SESSI || []).map((s) => ({ id: s.key, nome: s.label })), { placeholder: "—" });
+  fillSelect($("dip-stato-civile"), (window.STATI_CIVILI || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
+  fillSelect($("dip-tipo-contratto"), (window.TIPI_CONTRATTO || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
+  fillSelect($("dip-qualifica"), (window.QUALIFICHE || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
+  fillSelect($("dip-orario"), (window.ORARI || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
+  fillSelect($("dip-emerg-parentela"), (window.PARENTELE || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
+  fillSelect($("dip-motivo-cessazione"), (window.MOTIVI_CESSAZIONE || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
+
+  // Dati personali estesi
+  $("dip-luogo-nascita").value = d?.luogo_nascita || "";
+  $("dip-sesso").value = d?.sesso || "";
+  $("dip-cittadinanza").value = d?.cittadinanza || "";
+  $("dip-stato-civile").value = d?.stato_civile || "";
+  $("dip-titolo-studio").value = d?.titolo_studio || "";
+
+  // Residenza
+  $("dip-res-indirizzo").value = d?.residenza_indirizzo || "";
+  $("dip-res-cap").value = d?.residenza_cap || "";
+  $("dip-res-citta").value = d?.residenza_citta || "";
+  $("dip-res-prov").value = d?.residenza_provincia || "";
+  $("dip-dom-diverso").checked = !!d?.domicilio_diverso;
+  $("dip-dom-block").hidden = !d?.domicilio_diverso;
+  $("dip-dom-indirizzo").value = d?.domicilio_indirizzo || "";
+  $("dip-dom-cap").value = d?.domicilio_cap || "";
+  $("dip-dom-citta").value = d?.domicilio_citta || "";
+  $("dip-dom-prov").value = d?.domicilio_provincia || "";
+
+  // Contratto
+  $("dip-tipo-contratto").value = d?.tipo_contratto || "";
+  $("dip-data-fine-contratto").value = d?.data_fine_contratto || "";
+  $("dip-fine-contr-wrap").hidden = (d?.tipo_contratto || "") !== CONTRATTO_DETERMINATO;
+  $("dip-data-fine-prova").value = d?.data_fine_prova || "";
+  $("dip-qualifica").value = d?.qualifica || "";
+  $("dip-orario").value = d?.orario_tipo || "";
+  $("dip-ore").value = d?.ore_settimanali ?? "";
+  $("dip-sede").value = d?.sede_lavoro || "";
+  $("dip-iban").value = d?.iban || "";
+  $("dip-ral").value = d?.ral ?? "";
+
+  // Emergenza
+  $("dip-emerg-nome").value = d?.emergenza_nome || "";
+  $("dip-emerg-tel").value = d?.emergenza_telefono || "";
+  $("dip-emerg-parentela").value = d?.emergenza_parentela || "";
+
+  // Taglie DPI: popola i dropdown con le taglie disponibili dei tipi nel catalogo
+  // e pre-riempi coi valori salvati sul dipendente.
+  populaTaglieDipDropdowns();
+  const taglie = d?.taglie_dpi || {};
+  $("dip-taglia-scarpe").value = taglie.scarpe || "";
+  $("dip-taglia-tuta").value = taglie.tuta || "";
+  $("dip-taglia-guanti").value = taglie.guanti || "";
+  $("dip-taglia-maschera").value = taglie.maschera || "";
+
+  // Cessazione (visibile solo se NON attivo)
+  $("dip-cessazione-section").hidden = !(d && d.attivo === false);
+  $("dip-data-cessazione").value = d?.data_cessazione || "";
+  $("dip-motivo-cessazione").value = d?.motivo_cessazione || "";
+
+  // Tutte le sezioni collassabili partono chiuse.
+  els(".dip-section .dip-section-body").forEach((b) => (b.hidden = true));
+  els(".dip-section .history-arrow").forEach((a) => a.classList.remove("expanded"));
+
+  // Mansione (1) + incarichi (checkbox).
+  const assigned = d ? new Set(ruoliOfDip(d.id).map((r) => r.id)) : new Set();
+  fillSelect($("dip-mansione"), mansioniList(), { placeholder: "— seleziona —" });
+  const curMan = d ? ruoliOfDip(d.id).find((r) => r.tipo === "mansione") : null;
+  $("dip-mansione").value = curMan ? curMan.id : "";
+  $("dip-incarichi").innerHTML = incarichiList().map((i) =>
+    `<label><input type="checkbox" value="${i.id}" ${assigned.has(i.id) ? "checked" : ""}> ${esc(i.nome)}</label>`
+  ).join("") || '<span class="muted">Nessun incarico configurato.</span>';
+
+  $("dip-delete").hidden = !d;
+  // Genera link self-service: per qualunque dipendente esistente.
+  $("dip-invite").hidden = !d;
+
+  // Adempimenti del dipendente.
+  const section = $("dip-adempimenti-section");
+  section.hidden = !d;
+  if (d) renderDipAdempimenti(d.id);
+
+  // Checklist onboarding — sincronizza progressi mancanti, poi renderizza.
+  if (d) {
+    syncOnboardingProgressi(d.id).then(() => renderDipOnboarding(d.id));
+  } else {
+    $("dip-onboard-section").hidden = true;
+  }
+
+  // DPI consegnati.
+  if (d) renderDipDPI(d.id);
+  else $("dip-dpi-section").hidden = true;
+
+  // Provvedimenti disciplinari del dipendente.
+  if (d) renderDipProvvedimenti(d.id);
+  else $("dip-provv-section").hidden = true;
+
+  // Storico esecuzioni del dipendente (tutte).
+  if (d) renderDipHistory(d.id);
+  else $("dip-history-section").hidden = true;
+
+  openModal("modal-dip");
+}
+
+// ============================================================
+// DPI — Dispositivi di Protezione Individuale
+// ============================================================
+function renderDipDPI(dipId) {
+  const dip = dipById(dipId);
+  const section = $("dip-dpi-section");
+  if (!dip) { section.hidden = true; return; }
+  const list = state.dpiConsegne
+    .filter((c) => c.dipendente_id === dipId)
+    .sort((a, b) => (b.data_consegna || "").localeCompare(a.data_consegna || ""));
+  section.hidden = false;
+  $("dip-dpi-count").textContent = `${list.length}`;
+
+  const host = $("dip-dpi-list");
+  if (!list.length) {
+    host.innerHTML = '<div class="muted" style="padding:8px 0">Nessuna consegna registrata. Click su "+ Consegna DPI" per la prima.</div>';
+    return;
+  }
+  host.innerHTML = list.map((c) => {
+    const t = state.dpiTipi.find((x) => x.id === c.dpi_tipo_id);
+    const tagliaTxt = c.taglia ? ` · taglia ${esc(c.taglia)}` : "";
+    const qtaTxt = c.quantita > 1 ? ` · ${c.quantita} pz` : "";
+    return `<div class="hist-row dpi-row" data-id="${esc(c.id)}">
+      <div><strong>${esc(t?.icon || "🦺")} ${esc(t?.nome || c.dpi_tipo_id)}</strong><div class="hist-note">${esc(fmtDate(c.data_consegna))}${tagliaTxt}${qtaTxt}${c.consegnato_da ? " · cons. " + esc(c.consegnato_da) : ""}</div></div>
+      ${c.modulo_path ? `<button type="button" class="hist-doc dpi-doc-btn" data-path="${esc(c.modulo_path)}" title="Apri modulo firmato">📎</button>` : '<span class="hist-doc disabled">—</span>'}
+    </div>`;
+  }).join("");
+  els(".dpi-row", host).forEach((row) => row.addEventListener("click", (ev) => {
+    if (ev.target.tagName === "BUTTON") return;
+    openDpiModal(dipId, row.dataset.id);
+  }));
+  els(".dpi-doc-btn", host).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await openSignedDoc(btn.dataset.path);
+  }));
+}
+
+function toggleDipDpi() {
+  const list = $("dip-dpi-list");
+  const arrow = el(".history-arrow", $("dip-dpi-toggle"));
+  const willShow = list.hidden;
+  list.hidden = !willShow;
+  if (arrow) arrow.classList.toggle("expanded", willShow);
+  $("dip-dpi-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
+}
+
+let pendingDpiFile = null;
+
+function openDpiModal(dipId, consegnaId) {
+  const c = consegnaId ? state.dpiConsegne.find((x) => x.id === consegnaId) : null;
+  const dip = dipById(dipId);
+  $("dpi-title").textContent = c ? "Consegna DPI" : "Nuova consegna DPI";
+  $("dpi-id").value = c ? c.id : "";
+  $("dpi-dip-id").value = dipId;
+  $("dpi-target").textContent = dip ? `${dip.cognome} ${dip.nome}` : "—";
+
+  // Popola dropdown dei tipi DPI ordinato per "ordine".
+  const tipiOrdinati = state.dpiTipi.slice().sort((a, b) => (a.ordine ?? 100) - (b.ordine ?? 100));
+  fillSelect($("dpi-tipo"), tipiOrdinati.map((t) => ({ id: t.id, nome: (t.icon ? t.icon + " " : "") + t.nome })), { placeholder: "— seleziona —" });
+  $("dpi-tipo").value = c?.dpi_tipo_id || "";
+
+  // Popola taglie in base al tipo selezionato e alle preferenze del dipendente.
+  aggiornaTaglieDpi();
+  $("dpi-taglia").value = c?.taglia || tagliaSuggeritaDip(dip, c?.dpi_tipo_id) || "";
+
+  $("dpi-quantita").value = c?.quantita ?? 1;
+  $("dpi-data").value = c?.data_consegna || localISO(new Date());
+  $("dpi-consegnato-da").value = c?.consegnato_da || localStorage.getItem("hr_last_operator") || "";
+  $("dpi-note").value = c?.note || "";
+  $("dpi-delete").hidden = !c;
+  pendingDpiFile = null;
+  $("dpi-doc-file").value = "";
+  $("dpi-doc-upload-label").textContent = "Carica un file";
+  $("dpi-doc-progress").hidden = true;
+  $("dpi-doc-current").hidden = !c?.modulo_path;
+  if (c?.modulo_path) $("dpi-doc-current-name").textContent = "Modulo del " + fmtDate(c.data_consegna);
+  openModal("modal-dpi");
+}
+
+function aggiornaTaglieDpi() {
+  const tipoId = $("dpi-tipo").value;
+  const tipo = state.dpiTipi.find((t) => t.id === tipoId);
+  const taglie = tipo?.taglie_disponibili || [];
+  const cur = $("dpi-taglia").value;
+  $("dpi-taglia").innerHTML = '<option value="">—</option>' + (Array.isArray(taglie) ? taglie : [])
+    .map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  if (cur && taglie.includes(cur)) $("dpi-taglia").value = cur;
+}
+
+// Popola i dropdown "Taglie DPI" nella modale dipendente.
+function populaTaglieDipDropdowns() {
+  const popula = (selId, tipoId) => {
+    const tipo = state.dpiTipi.find((t) => t.id === tipoId);
+    const taglie = tipo?.taglie_disponibili || [];
+    $(selId).innerHTML = '<option value="">—</option>' +
+      (Array.isArray(taglie) ? taglie : [])
+        .map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  };
+  popula("dip-taglia-scarpe",   "dpi-scarpe");
+  popula("dip-taglia-tuta",     "dpi-tuta");
+  popula("dip-taglia-guanti",   "dpi-guanti-chim");
+  popula("dip-taglia-maschera", "dpi-maschera");
+}
+
+function tagliaSuggeritaDip(dip, tipoId) {
+  if (!dip?.taglie_dpi || !tipoId) return "";
+  // dip.taglie_dpi è un oggetto del tipo {scarpe:"43", tuta:"L", ...} con chiave libera.
+  // Mappa "tipo dpi" → chiave preferita.
+  const key = tipoId.replace(/^dpi-/, "").replace(/-.*/, ""); // dpi-scarpe → "scarpe"
+  return dip.taglie_dpi[key] || "";
+}
+
+async function saveDpiConsegna(e) {
+  e.preventDefault();
+  const id = $("dpi-id").value || uid();
+  const dipId = $("dpi-dip-id").value;
+  const prev = state.dpiConsegne.find((x) => x.id === id) || null;
+  const consegnatoDa = $("dpi-consegnato-da").value.trim() || null;
+  if (consegnatoDa) localStorage.setItem("hr_last_operator", consegnatoDa);
+
+  // Upload modulo se selezionato.
+  let modulo_path = prev?.modulo_path || null;
+  if (pendingDpiFile) {
+    $("dpi-doc-progress").hidden = false;
+    try {
+      if (modulo_path) await deleteDoc(modulo_path);
+      const ext = (pendingDpiFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `dpi-${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingDpiFile, {
+        upsert: false, contentType: pendingDpiFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      modulo_path = path;
+    } catch (err) {
+      $("dpi-doc-progress").hidden = true;
+      alert("Errore upload modulo: " + err.message);
+      return;
+    }
+    $("dpi-doc-progress").hidden = true;
+  }
+
+  const row = {
+    id,
+    dipendente_id: dipId,
+    dpi_tipo_id: $("dpi-tipo").value,
+    data_consegna: $("dpi-data").value,
+    prossima_sostituzione: null,
+    taglia: $("dpi-taglia").value || null,
+    quantita: parseInt($("dpi-quantita").value, 10) || 1,
+    modulo_path,
+    consegnato_da: consegnatoDa,
+    note: $("dpi-note").value.trim() || null,
+  };
+  if (!row.dpi_tipo_id || !row.data_consegna) { alert("Tipo DPI e data consegna sono obbligatori."); return; }
+  const ok = await sbUpsert("dpi_consegne", row);
+  if (!ok) return;
+  pendingDpiFile = null;
+  closeModal("modal-dpi");
+  renderDipDPI(dipId);
+}
+
+async function deleteDpiConsegna() {
+  const id = $("dpi-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questa consegna DPI e il modulo firmato?")) return;
+  const dipId = $("dpi-dip-id").value;
+  const prev = state.dpiConsegne.find((x) => x.id === id);
+  if (prev?.modulo_path) await deleteDoc(prev.modulo_path);
+  await sbDelete("dpi_consegne", id);
+  closeModal("modal-dpi");
+  renderDipDPI(dipId);
+}
+
+// ============================================================
+// ONBOARDING CHECKLIST
+// ============================================================
+// Crea le righe progressi mancanti per un dipendente (idempotente).
+async function syncOnboardingProgressi(dipId) {
+  const dip = dipById(dipId);
+  if (!dip) return;
+  const have = new Set(state.onboardProgressi.filter((p) => p.dipendente_id === dipId).map((p) => p.item_id));
+  for (const item of state.onboardItems) {
+    if (have.has(item.id)) continue;
+    // Le voci "crea_adempimento" non hanno un progresso proprio: il loro stato
+    // è derivato dall'adempimento in Scadenze (singola fonte di verità).
+    if (item.tipo_workflow === "crea_adempimento") continue;
+    await sbUpsert("onboarding_progressi", {
+      id: uid(),
+      dipendente_id: dipId,
+      item_id: item.id,
+      fatto: false,
+      fatto_il: null,
+      fatto_da: null,
+      documento_path: null,
+      note: null,
+    });
+  }
+}
+
+function scadenzaOnboardingItem(dip, item) {
+  if (!dip?.data_assunzione || item.giorni_da_assunzione == null) return null;
+  return localISO(addDays(parseISO(dip.data_assunzione), item.giorni_da_assunzione));
+}
+
+function renderDipOnboarding(dipId) {
+  const dip = dipById(dipId);
+  const section = $("dip-onboard-section");
+  if (!dip) { section.hidden = true; return; }
+  const items = state.onboardItems.slice().sort((a, b) => (a.ordine ?? 100) - (b.ordine ?? 100));
+  if (!items.length) { section.hidden = true; return; }
+  const progressiByItem = Object.fromEntries(
+    state.onboardProgressi.filter((p) => p.dipendente_id === dipId).map((p) => [p.item_id, p])
+  );
+
+  // Calcolo lo stato di ogni voce: derivato dall'adempimento (per crea_adempimento)
+  // o dal progresso (per gli altri).
+  const rows = items.map((item) => {
+    if (item.tipo_workflow === "crea_adempimento") {
+      const tipoReqId = item.adempimento_tipo_id;
+      const adm = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId);
+      if (!adm) return { item, derived: true, applicabile: false, fatto: false };
+      return {
+        item, derived: true, applicabile: true,
+        fatto: !!adm.data_rilascio,
+        data: adm.data_rilascio,
+        doc: adm.documento_path,
+        admId: adm.id,
+      };
+    }
+    const p = progressiByItem[item.id];
+    return {
+      item, derived: false, applicabile: true,
+      fatto: !!p?.fatto,
+      data: p?.fatto_il,
+      doc: p?.documento_path,
+      progrId: p?.id,
+      da: p?.fatto_da,
+    };
+  });
+
+  const totale = rows.filter((r) => r.applicabile).length;
+  const fatti = rows.filter((r) => r.applicabile && r.fatto).length;
+  $("dip-onboard-count").textContent = `${fatti}/${totale}`;
+  section.hidden = false;
+
+  const host = $("dip-onboard-list");
+  host.innerHTML = rows.map((r) => {
+    const item = r.item;
+    if (!r.applicabile) {
+      return `<div class="hist-row onboard-row" style="opacity:.55" data-applicabile="0">
+        <div><input type="checkbox" disabled></div>
+        <div><strong>${esc(item.label)}</strong><div class="hist-note">Non richiesto dal ruolo del dipendente</div></div>
+        <div class="hist-meta"><span class="muted">—</span></div>
+        <span class="hist-doc disabled">—</span>
+      </div>`;
+    }
+    const scadenza = scadenzaOnboardingItem(dip, item);
+    const ggToScad = scadenza ? daysUntil(scadenza) : null;
+    let scadColor = "";
+    if (!r.fatto && ggToScad != null) {
+      scadColor = ggToScad < 0 ? "red" : (ggToScad <= 7 ? "orange" : (ggToScad <= 30 ? "yellow" : "green"));
+    }
+    const derivedTag = r.derived ? ` <span class="muted" style="font-size:11px">→ in Scadenze</span>` : "";
+    // Se è una voce accetta_click, mostra ✍️ se accettata via portale.
+    const acc = state.accettazioni.find((a) => a.dipendente_id === dipId && a.item_id === item.id);
+    const accTag = (item.tipo_workflow === "accetta_click" && acc)
+      ? ` <span class="hist-late ontime" title="Accettato via portale il ${esc(fmtDate(acc.accettato_at))}${acc.ip_address ? ' — IP ' + esc(acc.ip_address) : ''}" style="font-size:11px">✍️ portale</span>`
+      : "";
+    const fattoTxt = r.fatto
+      ? `<span class="hist-late ontime">✓ ${fmtDate(r.data)}${r.da ? " · " + esc(r.da) : ""}${accTag}</span>`
+      : (scadenza ? `<span class="days-cell ${scadColor}">entro ${fmtDate(scadenza)}</span>` : '<span class="muted">—</span>');
+    const ckDisabled = r.derived ? "disabled" : "";
+    return `<div class="hist-row onboard-row" data-progr-id="${esc(r.progrId || "")}" data-item-id="${esc(item.id)}" data-derived="${r.derived ? 1 : 0}" data-adm-id="${esc(r.admId || "")}">
+      <div><input type="checkbox" class="onboard-check" ${r.fatto ? "checked" : ""} ${ckDisabled}></div>
+      <div><strong>${esc(item.label)}</strong>${derivedTag}${item.descrizione ? `<div class="hist-note">${esc(item.descrizione)}</div>` : ""}</div>
+      <div class="hist-meta">${fattoTxt}</div>
+      ${r.doc ? `<button type="button" class="hist-doc onboard-doc-btn" data-path="${esc(r.doc)}" title="Apri">📎</button>` : '<span class="hist-doc disabled">—</span>'}
+    </div>`;
+  }).join("");
+  // Toggle veloce della checkbox SOLO per le voci con progresso proprio.
+  els(".onboard-check", host).forEach((cb) => cb.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    if (cb.disabled) return;
+    const row = cb.closest(".onboard-row");
+    const progrId = row.dataset.progrId;
+    if (!progrId) return;
+    const p = state.onboardProgressi.find((x) => x.id === progrId);
+    if (!p) return;
+    const newDone = cb.checked;
+    await sbUpsert("onboarding_progressi", { ...p, fatto: newDone, fatto_il: newDone ? localISO(new Date()) : null });
+    renderDipOnboarding(dipId);
+  }));
+  // Click sulla riga: per le voci "derived" apre l'adempimento in Scadenze; altrimenti modale dettaglio.
+  els(".onboard-row", host).forEach((row) => row.addEventListener("click", (ev) => {
+    if (ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON") return;
+    if (row.dataset.applicabile === "0") return;
+    if (row.dataset.derived === "1") {
+      const admId = row.dataset.admId;
+      if (admId) openAdmModal(dipId, admId);
+    } else {
+      openOnboardModal(dipId, row.dataset.itemId);
+    }
+  }));
+  els(".onboard-doc-btn", host).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await openSignedDoc(btn.dataset.path);
+  }));
+}
+
+function toggleDipOnboard() {
+  const list = $("dip-onboard-list");
+  const arrow = el(".history-arrow", $("dip-onboard-toggle"));
+  const willShow = list.hidden;
+  list.hidden = !willShow;
+  if (arrow) arrow.classList.toggle("expanded", willShow);
+  $("dip-onboard-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
+}
+
+let pendingOnboardFile = null;
+
+function openOnboardModal(dipId, itemId) {
+  const dip = dipById(dipId);
+  const item = state.onboardItems.find((i) => i.id === itemId);
+  if (!dip || !item) return;
+  const p = state.onboardProgressi.find((x) => x.dipendente_id === dipId && x.item_id === itemId);
+  $("onboard-title").textContent = item.label;
+  $("onboard-progr-id").value = p?.id || "";
+  $("onboard-dip-id").value = dipId;
+  $("onboard-item-id").value = itemId;
+  $("onboard-target").textContent = `${dip.cognome} ${dip.nome}`;
+  $("onboard-descrizione").textContent = item.descrizione || "";
+  // Workflow specifico per la voce.
+  const wfGenera = $("onboard-wf-genera");
+  const wfAdm = $("onboard-wf-adempimento");
+  if (item.tipo_workflow === "genera_pdf_template") {
+    wfGenera.hidden = false;
+    wfAdm.hidden = true;
+    fillSelect($("onboard-tpl-id"), state.modelli.slice().sort((a, b) => (a.nome || "").localeCompare(b.nome || "")),
+      { placeholder: "— seleziona —", label: "nome" });
+    $("onboard-tpl-id").value = item.template_id || "";
+  } else if (item.tipo_workflow === "crea_adempimento") {
+    wfGenera.hidden = true;
+    wfAdm.hidden = false;
+    const tipoReqId = item.adempimento_tipo_id || "";
+    const tipoReq = state.tipi.find((t) => t.id === tipoReqId);
+    const isVisita = isTipoSanitario(tipoReqId);
+    $("onboard-adm-legend").textContent = isVisita ? "🩺 Registra visita medica" : "📚 Registra corso di formazione";
+    $("onboard-adm-ente-label").textContent = isVisita ? "Medico competente" : "Ente formatore";
+    $("onboard-adm-ente").placeholder = isVisita ? "Es. Dr. Bianchi (Studio Med 81)" : "Es. CFP Bergamo";
+    $("onboard-adm-visita-wrap").hidden = !isVisita;
+    $("onboard-adm-formazione-wrap").hidden = isVisita;
+    // Pre-fill dai dati salvati nel progresso, o dall'adempimento esistente.
+    const existingAdm = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId);
+    const dati = p?.dati || {};
+    $("onboard-adm-data").value = dati.data_evento || existingAdm?.data_rilascio || "";
+    $("onboard-adm-ente").value = dati.ente || "";
+    $("onboard-adm-esito").value = dati.esito || "";
+    $("onboard-adm-prescrizioni").value = dati.prescrizioni || "";
+    $("onboard-adm-ore").value = dati.ore_effettive ?? "";
+    $("onboard-adm-hint").textContent =
+      tipoReq ? `Verrà creato/aggiornato l'adempimento "${tipoReq.nome}" con la data indicata. La scadenza si calcola dalla matrice ruoli del dipendente.`
+              : "Tipo di requisito non trovato.";
+    // Aggiorna le scadenze calcolate al cambio data.
+    const aggiornaScadenza = () => {
+      const d = $("onboard-adm-data").value;
+      const s = d ? calcScadenza(d, tipoReqId, dipId) : null;
+      $("onboard-adm-scadenza").value = s || "";
+      $("onboard-adm-scadenza-form").value = s || "";
+    };
+    aggiornaScadenza();
+    $("onboard-adm-data").onchange = aggiornaScadenza;
+  } else {
+    wfGenera.hidden = true;
+    wfAdm.hidden = true;
+  }
+  $("onboard-fatto").checked = !!p?.fatto;
+  $("onboard-fatto-il").value = p?.fatto_il || (p?.fatto ? localISO(new Date()) : "");
+  $("onboard-fatto-da").value = p?.fatto_da || localStorage.getItem("hr_last_operator") || "";
+  $("onboard-note").value = p?.note || "";
+  pendingOnboardFile = null;
+  $("onboard-doc-file").value = "";
+  $("onboard-doc-upload-label").textContent = "Carica un file";
+  $("onboard-doc-progress").hidden = true;
+  $("onboard-doc-current").hidden = !p?.documento_path;
+  if (p?.documento_path) {
+    $("onboard-doc-current-name").textContent = item.label + " — documento";
+  }
+  openModal("modal-onboard");
+}
+
+async function saveOnboardProgresso(e) {
+  e.preventDefault();
+  const progrId = $("onboard-progr-id").value;
+  const dipId = $("onboard-dip-id").value;
+  const itemId = $("onboard-item-id").value;
+  if (!progrId) { alert("Voce non sincronizzata. Chiudi e riapri la scheda."); return; }
+  const prev = state.onboardProgressi.find((x) => x.id === progrId);
+  let documento_path = prev?.documento_path || null;
+  if (pendingOnboardFile) {
+    $("onboard-doc-progress").hidden = false;
+    try {
+      if (documento_path) await deleteDoc(documento_path);
+      const ext = (pendingOnboardFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `onboard-${progrId}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingOnboardFile, {
+        upsert: false, contentType: pendingOnboardFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      documento_path = path;
+    } catch (err) {
+      $("onboard-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("onboard-doc-progress").hidden = true;
+  }
+  const fatto = $("onboard-fatto").checked;
+  const fattoDa = $("onboard-fatto-da").value.trim() || null;
+  if (fattoDa) localStorage.setItem("hr_last_operator", fattoDa);
+
+  // Se la voce è "crea_adempimento", raccolgo i dati extra e creo/aggiorno l'adempimento.
+  const item = state.onboardItems.find((i) => i.id === itemId);
+  let dati = prev?.dati || null;
+  if (item?.tipo_workflow === "crea_adempimento") {
+    const dataEvento = $("onboard-adm-data").value || null;
+    const tipoReqId = item.adempimento_tipo_id;
+    const isVisita = isTipoSanitario(tipoReqId);
+    dati = {
+      data_evento: dataEvento,
+      ente: $("onboard-adm-ente").value.trim() || null,
+      ...(isVisita
+        ? { esito: $("onboard-adm-esito").value || null, prescrizioni: $("onboard-adm-prescrizioni").value.trim() || null }
+        : { ore_effettive: $("onboard-adm-ore").value ? parseFloat($("onboard-adm-ore").value) : null }),
+    };
+    // Se ho data evento + tipo requisito → creo/aggiorno l'adempimento.
+    if (dataEvento && tipoReqId) {
+      const scadenza = calcScadenza(dataEvento, tipoReqId, dipId);
+      const existing = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId);
+      const admRow = {
+        id: existing?.id || uid(),
+        dipendente_id: dipId,
+        tipo_requisito_id: tipoReqId,
+        data_rilascio: dataEvento,
+        data_scadenza: scadenza,
+        documento_path: documento_path || existing?.documento_path || null,
+        documento_url: existing?.documento_url || null,
+        done: existing?.done || false,
+        done_at: existing?.done_at || null,
+        done_by: existing?.done_by || fattoDa,
+        last_done_at: dataEvento,
+        previous_date: existing?.data_scadenza || null,
+        history: existing?.history || [],
+        note: isVisita && dati.prescrizioni ? "Prescrizioni: " + dati.prescrizioni : (existing?.note || null),
+      };
+      await sbUpsert("adempimenti", admRow);
+    }
+  }
+
+  const row = {
+    id: progrId,
+    dipendente_id: dipId,
+    item_id: itemId,
+    fatto,
+    fatto_il: fatto ? ($("onboard-fatto-il").value || localISO(new Date())) : null,
+    fatto_da: fatto ? fattoDa : null,
+    documento_path,
+    dati,
+    note: $("onboard-note").value.trim() || null,
+  };
+  const ok = await sbUpsert("onboarding_progressi", row);
+  if (!ok) return;
+  pendingOnboardFile = null;
+  closeModal("modal-onboard");
+  renderDipOnboarding(dipId);
+  renderAll(); // aggiorna anche compliance/scadenze viste
+}
+
+// ============================================================
+// MODELLI DOCUMENTO — template aziendali con segnaposto {{campo}}
+// ============================================================
+// Lista campi dipendente disponibili come segnaposto.
+const SEGNAPOSTI_DISPONIBILI = [
+  { key: "nome", label: "Nome" },
+  { key: "cognome", label: "Cognome" },
+  { key: "codice_fiscale", label: "Codice fiscale" },
+  { key: "data_nascita", label: "Data di nascita" },
+  { key: "luogo_nascita", label: "Luogo di nascita" },
+  { key: "cittadinanza", label: "Cittadinanza" },
+  { key: "stato_civile", label: "Stato civile" },
+  { key: "titolo_studio", label: "Titolo di studio" },
+  { key: "email", label: "Email" },
+  { key: "telefono", label: "Telefono" },
+  { key: "data_assunzione", label: "Data assunzione" },
+  { key: "data_fine_prova", label: "Fine periodo prova" },
+  { key: "data_fine_contratto", label: "Fine contratto (se determinato)" },
+  { key: "tipo_contratto", label: "Tipo contratto" },
+  { key: "qualifica", label: "Qualifica" },
+  { key: "livello_ccnl", label: "Livello CCNL" },
+  { key: "orario_tipo", label: "Orario di lavoro" },
+  { key: "ore_settimanali", label: "Ore settimanali" },
+  { key: "sede_lavoro", label: "Sede di lavoro" },
+  { key: "iban", label: "IBAN" },
+  { key: "residenza_indirizzo", label: "Indirizzo residenza" },
+  { key: "residenza_cap", label: "CAP residenza" },
+  { key: "residenza_citta", label: "Città residenza" },
+  { key: "residenza_provincia", label: "Provincia residenza" },
+  { key: "emergenza_nome", label: "Emergenza — nome" },
+  { key: "emergenza_telefono", label: "Emergenza — telefono" },
+  { key: "emergenza_parentela", label: "Emergenza — parentela" },
+];
+
+// Formatta un valore per la sostituzione (date in formato leggibile, null = "—").
+// IMPORTANTE: il template viene scritto in document.write() come HTML, quindi il
+// valore sostituito DEVE essere escapato per impedire XSS via campi dipendente.
+function valoreSegnaposto(dip, key) {
+  const v = dip?.[key];
+  if (v == null || v === "") return "________";
+  // Date in formato ISO → italiano (già safe: solo cifre e /).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmtDate(v);
+  return esc(String(v));
+}
+
+// Sostituisce {{key}} con i valori del dipendente.
+function applicaTemplate(testo, dip) {
+  return String(testo || "").replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_m, key) => valoreSegnaposto(dip, key));
+}
+
+function renderModelliTable() {
+  const rows = state.modelli.slice().sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
+  $("modelli-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-tipi"><div>Nome</div><div>ID</div><div>Descrizione</div><div></div></div>` +
+    (rows.length === 0
+      ? '<div class="muted" style="padding:14px">Nessun modello configurato.</div>'
+      : rows.map((m) => `<div class="cfg-row cfg-cols-tipi" data-id="${esc(m.id)}">
+          <div><strong>${esc(m.nome)}</strong></div>
+          <div class="muted">${esc(m.id)}</div>
+          <div class="muted">${esc(m.descrizione || "—")}</div>
+          <div></div>
+        </div>`).join(""));
+  els("#modelli-table .cfg-row:not(.head)").forEach((el2) => el2.addEventListener("click", () => openModelloModal(el2.dataset.id)));
+}
+
+function openModelloModal(id) {
+  const m = id ? state.modelli.find((x) => x.id === id) : null;
+  $("modello-title").textContent = m ? m.nome : "Nuovo modello documento";
+  $("modello-id").value = m ? m.id : "";
+  $("modello-nome").value = m?.nome || "";
+  $("modello-desc").value = m?.descrizione || "";
+  $("modello-contenuto").value = m?.contenuto || "";
+  $("modello-delete").hidden = !m;
+  // Popola la lista segnaposto cliccabili.
+  $("modello-segnaposto-list").innerHTML = SEGNAPOSTI_DISPONIBILI.map((s) =>
+    `<button type="button" data-seg="{{${esc(s.key)}}}" title="${esc(s.label)}">{{${esc(s.key)}}}</button>`
+  ).join("");
+  els("#modello-segnaposto-list button").forEach((btn) => btn.addEventListener("click", () => {
+    const ta = $("modello-contenuto");
+    const start = ta.selectionStart || 0;
+    const end = ta.selectionEnd || 0;
+    const before = ta.value.slice(0, start);
+    const after = ta.value.slice(end);
+    const seg = btn.dataset.seg;
+    ta.value = before + seg + after;
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = start + seg.length;
+  }));
+  openModal("modal-modello");
+}
+
+async function saveModello(e) {
+  e.preventDefault();
+  const id = $("modello-id").value || ("tpl-" + (sanitizeName($("modello-nome").value.toLowerCase()) || Date.now()));
+  const row = {
+    id,
+    nome: $("modello-nome").value.trim(),
+    descrizione: $("modello-desc").value.trim() || null,
+    contenuto: $("modello-contenuto").value,
+  };
+  if (!row.nome || !row.contenuto) { alert("Nome e contenuto sono obbligatori."); return; }
+  if (await sbUpsert("documenti_template", row)) closeModal("modal-modello");
+}
+
+async function deleteModello() {
+  const id = $("modello-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questo modello? Le voci onboarding che lo usano resteranno orfane.")) return;
+  await sbDelete("documenti_template", id);
+  closeModal("modal-modello");
+}
+
+// Anteprima: apre in una nuova finestra il template renderizzato con dati FITTIZI.
+function previewModello() {
+  const contenuto = $("modello-contenuto").value;
+  const dipDemo = {
+    nome: "Mario", cognome: "Rossi", codice_fiscale: "RSSMRA75A01F205X",
+    data_nascita: "1975-01-01", data_assunzione: "2026-06-09",
+    tipo_contratto: "Indeterminato", qualifica: "Operaio specializzato",
+    livello_ccnl: "4", orario_tipo: "Full-time", ore_settimanali: 40,
+    sede_lavoro: "Stabilimento Bergamo", data_fine_prova: "2026-09-09",
+    residenza_indirizzo: "Via Roma 12", residenza_cap: "24100",
+    residenza_citta: "Bergamo", residenza_provincia: "BG",
+  };
+  const html = applicaTemplate(contenuto, dipDemo);
+  apriDocumentoStampabile("Anteprima: " + ($("modello-nome").value || "modello"), html);
+}
+
+// Apre una finestra dedicata stampabile (Ctrl+P → Salva PDF).
+function apriDocumentoStampabile(titolo, htmlContenuto) {
+  const w = window.open("", "_blank", "width=900,height=700");
+  if (!w) { alert("Il browser ha bloccato l'apertura. Consenti i popup per questa pagina."); return; }
+  w.document.write(`<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><title>${esc(titolo)}</title>
+<style>
+  body{font-family:Georgia,"Times New Roman",serif;max-width:780px;margin:32px auto;padding:24px;color:#1a1f2e;line-height:1.55}
+  h1{font-size:22px;border-bottom:2px solid #1a1f2e;padding-bottom:8px;margin-bottom:18px}
+  h2{font-size:16px;margin-top:22px;color:#1e3aa8}
+  ul{padding-left:22px}
+  li{margin:4px 0}
+  .toolbar{position:fixed;top:8px;right:8px;display:flex;gap:6px}
+  .toolbar button{padding:8px 14px;border:1px solid #d4d8e3;background:#fff;border-radius:6px;cursor:pointer;font-family:inherit}
+  .toolbar button.primary{background:#2f57d9;color:white;border-color:#2f57d9}
+  @media print{.toolbar{display:none}body{margin:0;padding:24px}}
+</style></head><body>
+<div class="toolbar">
+  <button class="primary" onclick="window.print()">🖨 Stampa / Salva PDF</button>
+  <button onclick="window.close()">Chiudi</button>
+</div>
+${htmlContenuto}
+</body></html>`);
+  w.document.close();
+}
+
+// --- Template onboarding (config tab) ---
+function renderOnboardingItemsTable() {
+  const rows = state.onboardItems.slice().sort((a, b) => (a.ordine ?? 100) - (b.ordine ?? 100));
+  $("onboard-items-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-tipi"><div>Etichetta</div><div>Giorni</div><div>Ordine</div><div>Descrizione</div></div>` +
+    rows.map((r) => `<div class="cfg-row cfg-cols-tipi" data-id="${esc(r.id)}">
+      <div><strong>${esc(r.label)}</strong></div>
+      <div>${r.giorni_da_assunzione ?? 0}gg</div>
+      <div class="muted">${r.ordine ?? 100}</div>
+      <div class="muted">${esc((r.descrizione || "").slice(0, 60))}${(r.descrizione || "").length > 60 ? "…" : ""}</div>
+    </div>`).join("");
+  els("#onboard-items-table .cfg-row:not(.head)").forEach((el2) => el2.addEventListener("click", () => openOnboardItemModal(el2.dataset.id)));
+}
+
+function openOnboardItemModal(id) {
+  const it = id ? state.onboardItems.find((x) => x.id === id) : null;
+  $("onbi-title").textContent = it ? it.label : "Nuova voce template onboarding";
+  $("onbi-id").value = it ? it.id : "";
+  $("onbi-label").value = it?.label || "";
+  $("onbi-descrizione").value = it?.descrizione || "";
+  $("onbi-giorni").value = it?.giorni_da_assunzione ?? 0;
+  $("onbi-ordine").value = it?.ordine ?? 100;
+  $("onbi-delete").hidden = !it;
+  openModal("modal-onboard-item");
+}
+
+async function saveOnboardItem(e) {
+  e.preventDefault();
+  const id = $("onbi-id").value || ("onb-" + (sanitizeName($("onbi-label").value.toLowerCase()) || Date.now()));
+  const row = {
+    id,
+    label: $("onbi-label").value.trim(),
+    descrizione: $("onbi-descrizione").value.trim() || null,
+    giorni_da_assunzione: parseInt($("onbi-giorni").value, 10) || 0,
+    ordine: parseInt($("onbi-ordine").value, 10) || 100,
+  };
+  if (await sbUpsert("onboarding_items", row)) closeModal("modal-onboard-item");
+}
+
+async function deleteOnboardItem() {
+  const id = $("onbi-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questa voce del template? Verranno rimossi anche i progressi dei dipendenti su questa voce.")) return;
+  await sbDelete("onboarding_items", id);
+  closeModal("modal-onboard-item");
+}
+
+// ============================================================
+// PROVVEDIMENTI DISCIPLINARI
+// ============================================================
+const PROVV_BY_KEY = Object.fromEntries((window.TIPI_PROVVEDIMENTO || []).map((p) => [p.key, p]));
+
+function renderDipProvvedimenti(dipId) {
+  const list = state.provvedimenti
+    .filter((p) => p.dipendente_id === dipId)
+    .sort((a, b) => (b.data || "").localeCompare(a.data || ""));
+  const section = $("dip-provv-section");
+  const host = $("dip-provv-list");
+  section.hidden = false;  // sempre visibile per gli HR (utile bottone +)
+  $("dip-provv-count").textContent = list.length;
+  host.innerHTML = list.length === 0
+    ? '<div class="muted" style="padding:8px 0">Nessun provvedimento registrato.</div>'
+    : list.map((p) => {
+        const tipo = PROVV_BY_KEY[p.tipo] || { label: p.tipo, icon: "" };
+        return `<div class="hist-row provv-row" data-id="${esc(p.id)}">
+          <div class="hist-date">${fmtDate(p.data)}</div>
+          <div><strong>${esc(tipo.icon || "")} ${esc(tipo.label)}</strong></div>
+          <div class="hist-meta">${p.motivazione ? `<span class="hist-note">${esc(p.motivazione).slice(0, 80)}${p.motivazione.length > 80 ? "…" : ""}</span>` : ""}</div>
+          ${p.documento_path ? `<button type="button" class="hist-doc provv-doc-btn" data-path="${esc(p.documento_path)}" title="Apri lettera">📎</button>` : '<span class="hist-doc disabled">—</span>'}
+        </div>`;
+      }).join("");
+  els(".provv-row", host).forEach((row) => row.addEventListener("click", () => openProvvModal(dipId, row.dataset.id)));
+  els(".provv-doc-btn", host).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await openSignedDoc(btn.dataset.path);
+  }));
+}
+
+function toggleDipProvv() {
+  const list = $("dip-provv-list");
+  const arrow = el(".history-arrow", $("dip-provv-toggle"));
+  const willShow = list.hidden;
+  list.hidden = !willShow;
+  if (arrow) arrow.classList.toggle("expanded", willShow);
+  $("dip-provv-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
+}
+
+let pendingProvvFile = null;
+
+function openProvvModal(dipId, provvId) {
+  const p = provvId ? state.provvedimenti.find((x) => x.id === provvId) : null;
+  const dip = dipById(dipId);
+  $("provv-title").textContent = p ? "Provvedimento disciplinare" : "Nuovo provvedimento disciplinare";
+  $("provv-id").value = p ? p.id : "";
+  $("provv-dip-id").value = dipId;
+  $("provv-target").textContent = dip ? `${dip.cognome} ${dip.nome}` : "—";
+  fillSelect($("provv-tipo"), (window.TIPI_PROVVEDIMENTO || []).map((t) => ({ id: t.key, nome: (t.icon ? t.icon + " " : "") + t.label })), { placeholder: "— seleziona —" });
+  $("provv-tipo").value = p?.tipo || "";
+  $("provv-data").value = p?.data || localISO(new Date());
+  $("provv-motivazione").value = p?.motivazione || "";
+  $("provv-note").value = p?.note || "";
+  $("provv-delete").hidden = !p;
+  pendingProvvFile = null;
+  $("provv-doc-file").value = "";
+  $("provv-doc-upload-label").textContent = "Carica un file";
+  $("provv-doc-progress").hidden = true;
+  $("provv-doc-current").hidden = !p?.documento_path;
+  if (p?.documento_path) {
+    $("provv-doc-current-name").textContent = `Lettera ${fmtDate(p.data)}`;
+  }
+  openModal("modal-provv");
+}
+
+async function saveProvvedimento(e) {
+  e.preventDefault();
+  const id = $("provv-id").value || uid();
+  const dipId = $("provv-dip-id").value;
+  const prev = state.provvedimenti.find((x) => x.id === id) || null;
+
+  let documento_path = prev?.documento_path || null;
+  if (pendingProvvFile) {
+    $("provv-doc-progress").hidden = false;
+    try {
+      if (documento_path) await deleteDoc(documento_path);
+      // Path: provv/{id}/{timestamp}.{ext} per non confonderli con quelli adempimenti.
+      const ext = (pendingProvvFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `provv-${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingProvvFile, {
+        upsert: false, contentType: pendingProvvFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      documento_path = path;
+    } catch (err) {
+      $("provv-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("provv-doc-progress").hidden = true;
+  }
+
+  const row = {
+    id,
+    dipendente_id: dipId,
+    tipo: $("provv-tipo").value,
+    data: $("provv-data").value,
+    motivazione: $("provv-motivazione").value.trim() || null,
+    documento_path,
+    note: $("provv-note").value.trim() || null,
+  };
+  if (!row.tipo || !row.data) { alert("Tipo e data sono obbligatori."); return; }
+
+  const ok = await sbUpsert("provvedimenti", row);
+  if (!ok) return;
+  pendingProvvFile = null;
+  closeModal("modal-provv");
+  renderDipProvvedimenti(dipId);
+}
+
+async function deleteProvvedimento() {
+  const id = $("provv-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questo provvedimento e il PDF allegato?")) return;
+  const dipId = $("provv-dip-id").value;
+  const prev = state.provvedimenti.find((x) => x.id === id);
+  if (prev?.documento_path) await deleteDoc(prev.documento_path);
+  await sbDelete("provvedimenti", id);
+  closeModal("modal-provv");
+  renderDipProvvedimenti(dipId);
+}
+
+function renderDipHistory(dipId) {
+  // Raccoglie tutti gli eventi (history + cicli correnti) di questo dipendente.
+  const events = collectStoricoEvents().filter((e) => e.dip.id === dipId);
+  const section = $("dip-history-section");
+  const list = $("dip-history-list");
+  $("dip-history-count").textContent = events.length;
+  section.hidden = events.length === 0;
+  // Default: collassato.
+  list.hidden = true;
+  el(".history-arrow", $("dip-history-toggle"))?.classList.remove("expanded");
+  $("dip-history-toggle").setAttribute("aria-expanded", "false");
+  // Ordine: più recenti in cima.
+  events.sort((a, b) => (b.data || "").localeCompare(a.data || ""));
+  list.innerHTML = events.map((e) => {
+    const docPath = e.docPath || "";
+    const docUrl = e.docUrl || "";
+    const fonte = e.source === "history" ? '<span class="hist-late early">archiviato</span>' : '<span class="hist-late ontime">corrente</span>';
+    return `<div class="hist-row">
+      <div class="hist-date">${fmtDate(e.data)}</div>
+      <div>${fonte}</div>
+      <div class="hist-meta">
+        <span class="hist-by">${esc(e.tipo.nome)}</span>
+        ${e.scadenza ? `<span class="hist-note">scade ${fmtDate(e.scadenza)}</span>` : ""}
+      </div>
+      ${docPath || docUrl ? `<button type="button" class="hist-doc" data-path="${esc(docPath)}" data-url="${esc(docUrl)}" data-ad="${esc(e.admId)}" title="Apri PDF">📎</button>` : '<span class="hist-doc disabled">—</span>'}
+    </div>`;
+  }).join("");
+  els(".hist-doc", list).forEach((btn) => btn.addEventListener("click", async () => {
+    const path = btn.dataset.path;
+    const url = btn.dataset.url;
+    if (path) {
+      const adm = state.adempimenti.find((a) => a.id === btn.dataset.ad);
+      await openAdempimentoDoc(adm, path);
+    } else if (url) {
+      window.open(url, "_blank", "noopener");
+    }
+  }));
+}
+
+function toggleDipHistory() {
+  const list = $("dip-history-list");
+  const arrow = el(".history-arrow", $("dip-history-toggle"));
+  const willShow = list.hidden;
+  list.hidden = !willShow;
+  if (arrow) arrow.classList.toggle("expanded", willShow);
+  $("dip-history-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
+}
+
+function renderDipAdempimenti(dipId) {
+  const dip = dipById(dipId);
+  if (!dip) return;
+  // Popola il dropdown "+ Aggiungi adempimento…" con i tipi NON ancora assegnati.
+  const giaAssegnati = new Set(state.adempimenti.filter((a) => a.dipendente_id === dipId).map((a) => a.tipo_requisito_id));
+  const aggiungibili = state.tipi.filter((t) => !giaAssegnati.has(t.id))
+    .sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
+  $("dip-add-adempimento").innerHTML = `<option value="">+ Aggiungi adempimento…</option>` +
+    aggiungibili.map((t) => `<option value="${esc(t.id)}">${esc(CAT_BY_KEY[t.categoria]?.icon || "")} ${esc(t.nome)}</option>`).join("");
+  $("dip-add-adempimento").disabled = aggiungibili.length === 0;
+  // Gli adempimenti dovuti dalla matrice (gap engine) +
+  // gli adempimenti "extra" (tipi non in matrice ma comunque registrati per questo dipendente).
+  const gaps = computeGaps(dip);
+  const matrixTipos = new Set(gaps.map((g) => g.tipo.id));
+  const extras = state.adempimenti
+    .filter((a) => a.dipendente_id === dipId && !matrixTipos.has(a.tipo_requisito_id))
+    .map((a) => {
+      const tipo = tipoById(a.tipo_requisito_id);
+      if (!tipo) return null;
+      // Stato semplice in base alle date.
+      let stato, scadenza = a.data_scadenza || null;
+      if (!a.data_rilascio) {
+        stato = scadenza && daysUntil(scadenza) < 0 ? "scaduto" : "in_scadenza";
+      } else if (!scadenza) {
+        stato = "ok";
+      } else {
+        const gg = daysUntil(scadenza);
+        stato = gg < 0 ? "scaduto" : (gg <= GG_SCAD ? "in_scadenza" : "ok");
+      }
+      return { dip, tipo, stato, scadenza, adempimento: a };
+    })
+    .filter(Boolean);
+  const allItems = [...gaps, ...extras];
+  allItems.sort((a, b) => STATO_INFO[a.stato].order - STATO_INFO[b.stato].order);
+
+  const host = $("dip-adempimenti-list");
+  if (!allItems.length) {
+    host.innerHTML = '<div class="muted" style="padding:8px 0">Nessun adempimento richiesto dai ruoli del dipendente.</div>';
+    return;
+  }
+  host.innerHTML = allItems.map((g) => {
+    const a = g.adempimento;
+    const t = g.tipo;
+    const col = g.stato === "scaduto" ? "red"
+      : g.stato === "in_scadenza" ? "orange"
+      : "green";
+    const hasDoc = a && (a.documento_path || a.documento_url);
+    const dataLabel = g.scadenza ? "scade " + fmtDate(g.scadenza) : "non scade";
+    return `<div class="adempimenti-row" data-ad="${a?.id || ""}" data-tipo="${t.id}">
+      <span class="status-dot ${col}" title="${esc(STATO_INFO[g.stato]?.label || "")}"></span>
+      <div><strong>${esc(t.nome)}</strong><div class="ad-date">${dataLabel}</div></div>
+      <div class="row-actions">
+        ${hasDoc ? `<button type="button" class="icon-btn doc-link-btn" data-ad="${a.id}" title="Apri documento">📎</button>` : ""}
+        ${a?.id ? `<button type="button" class="icon-btn del-adm-btn" data-ad="${a.id}" title="Elimina questo adempimento">🗑</button>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+  els(".adempimenti-row", host).forEach((el2) => el2.addEventListener("click", () => {
+    const admId = el2.dataset.ad;
+    const tipoId = el2.dataset.tipo;
+    if (admId) openAdmModal(dipId, admId);
+    else openAdmModal(dipId, null, tipoId);
+  }));
+  els(".doc-link-btn", host).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const adm = state.adempimenti.find((a) => a.id === btn.dataset.ad);
+    if (adm) await openDoc(adm);
+  }));
+  els(".del-adm-btn", host).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const admId = btn.dataset.ad;
+    const adm = state.adempimenti.find((a) => a.id === admId);
+    if (!adm) return;
+    const t = tipoById(adm.tipo_requisito_id);
+    if (!confirm(`Eliminare l'adempimento "${t?.nome || "?"}" e il PDF associato (e tutto lo storico)?`)) return;
+    // Rimuovi tutti i PDF (current + history) dal bucket.
+    const paths = [];
+    if (adm.documento_path) paths.push(adm.documento_path);
+    if (Array.isArray(adm.history)) adm.history.forEach((h) => { if (h.documentoPath) paths.push(h.documentoPath); });
+    if (paths.length) { try { await sb.storage.from(STORAGE_BUCKET).remove(paths); } catch (e) { console.warn(e); } }
+    await sbDelete("adempimenti", admId);
+    renderDipAdempimenti(dipId);
+    renderAll();
+  }));
+}
+
+async function saveDip(e) {
+  e.preventDefault();
+  const id = $("dip-id").value || uid();
+  const row = {
+    id,
+    nome: $("dip-nome").value.trim(),
+    cognome: $("dip-cognome").value.trim(),
+    codice_fiscale: $("dip-cf").value.trim() || null,
+    data_nascita: $("dip-nascita").value || null,
+    data_assunzione: $("dip-assunzione").value || null,
+    livello_ccnl: $("dip-livello").value || null,
+    email: $("dip-email").value.trim() || null,
+    telefono: $("dip-telefono").value.trim() || null,
+    attivo: $("dip-attivo").checked,
+    note: $("dip-note").value.trim() || null,
+    // Anagrafica estesa (Iterazione A)
+    luogo_nascita: $("dip-luogo-nascita").value.trim() || null,
+    sesso: $("dip-sesso").value || null,
+    cittadinanza: $("dip-cittadinanza").value.trim() || null,
+    stato_civile: $("dip-stato-civile").value || null,
+    titolo_studio: $("dip-titolo-studio").value.trim() || null,
+    residenza_indirizzo: $("dip-res-indirizzo").value.trim() || null,
+    residenza_cap: $("dip-res-cap").value.trim() || null,
+    residenza_citta: $("dip-res-citta").value.trim() || null,
+    residenza_provincia: ($("dip-res-prov").value.trim() || "").toUpperCase() || null,
+    domicilio_diverso: $("dip-dom-diverso").checked,
+    domicilio_indirizzo: $("dip-dom-diverso").checked ? ($("dip-dom-indirizzo").value.trim() || null) : null,
+    domicilio_cap: $("dip-dom-diverso").checked ? ($("dip-dom-cap").value.trim() || null) : null,
+    domicilio_citta: $("dip-dom-diverso").checked ? ($("dip-dom-citta").value.trim() || null) : null,
+    domicilio_provincia: $("dip-dom-diverso").checked ? (($("dip-dom-prov").value.trim() || "").toUpperCase() || null) : null,
+    tipo_contratto: $("dip-tipo-contratto").value || null,
+    data_fine_contratto: ($("dip-tipo-contratto").value === CONTRATTO_DETERMINATO) ? ($("dip-data-fine-contratto").value || null) : null,
+    data_fine_prova: $("dip-data-fine-prova").value || null,
+    qualifica: $("dip-qualifica").value || null,
+    orario_tipo: $("dip-orario").value || null,
+    ore_settimanali: $("dip-ore").value ? parseFloat($("dip-ore").value) : null,
+    sede_lavoro: $("dip-sede").value.trim() || null,
+    iban: $("dip-iban").value.trim().replace(/\s+/g, "") || null,
+    ral: $("dip-ral").value ? parseFloat($("dip-ral").value) : null,
+    emergenza_nome: $("dip-emerg-nome").value.trim() || null,
+    emergenza_telefono: $("dip-emerg-tel").value.trim() || null,
+    emergenza_parentela: $("dip-emerg-parentela").value || null,
+    data_cessazione: $("dip-attivo").checked ? null : ($("dip-data-cessazione").value || null),
+    motivo_cessazione: $("dip-attivo").checked ? null : ($("dip-motivo-cessazione").value || null),
+    taglie_dpi: (() => {
+      const t = {
+        scarpe:   $("dip-taglia-scarpe").value   || null,
+        tuta:     $("dip-taglia-tuta").value     || null,
+        guanti:   $("dip-taglia-guanti").value   || null,
+        maschera: $("dip-taglia-maschera").value || null,
+      };
+      return Object.values(t).some((v) => v) ? t : null;
+    })(),
+  };
+  const ok = await sbUpsert("dipendenti", row);
+  if (!ok) return;
+
+  // Sincronizza ruoli (mansione + incarichi).
+  const wantMan = $("dip-mansione").value;
+  const wantInc = els("#dip-incarichi input:checked").map((c) => c.value);
+  const want = new Set([...(wantMan ? [wantMan] : []), ...wantInc]);
+  const current = state.dipRuoli.filter((dr) => dr.dipendente_id === id);
+  // Rimuovi quelli non più voluti.
+  for (const dr of current) if (!want.has(dr.ruolo_id)) await sbDelete("dipendente_ruoli", dr.id);
+  // Aggiungi i nuovi.
+  const have = new Set(current.map((dr) => dr.ruolo_id));
+  for (const ruoloId of want) {
+    if (!have.has(ruoloId)) await sbUpsert("dipendente_ruoli", { id: uid(), dipendente_id: id, ruolo_id: ruoloId });
+  }
+
+  // Genera adempimenti MANCANTI per i requisiti obbligatori dei ruoli attuali
+  // (sia per nuovi dipendenti che per cambi ruolo su esistenti).
+  await syncAdempimentiObbligatori(id);
+
+  closeModal("modal-dip");
+  renderAll();
+}
+
+// Per ogni tipo requisito dovuto dai ruoli attuali del dipendente, se non esiste già
+// un adempimento crea una riga MANCANTE. Non elimina adempimenti per tipi non più dovuti
+// (lo storico è prezioso, e se il ruolo torna sono ancora utili). Il motore gap li ignora.
+async function syncAdempimentiObbligatori(dipId) {
+  const dip = dipById(dipId);
+  if (!dip) return;
+  const ruoli = ruoliOfDip(dipId);
+  const ruoloIds = new Set(ruoli.map((r) => r.id));
+  const seen = new Set();
+  // Per i neoassunti la deadline implicita è assunzione + 60gg.
+  const onboardDeadline = dip.data_assunzione
+    ? localISO(addDays(parseISO(dip.data_assunzione), GG_ONBOARD))
+    : null;
+  for (const req of state.requisiti) {
+    if (!ruoloIds.has(req.ruolo_id) || !req.obbligatorio) continue;
+    if (seen.has(req.tipo_requisito_id)) continue;
+    seen.add(req.tipo_requisito_id);
+    const exists = state.adempimenti.some((a) => a.dipendente_id === dipId && a.tipo_requisito_id === req.tipo_requisito_id);
+    if (exists) continue;
+    await sbUpsert("adempimenti", {
+      id: uid(),
+      dipendente_id: dipId,
+      tipo_requisito_id: req.tipo_requisito_id,
+      data_rilascio: null,
+      data_scadenza: onboardDeadline, // scadenza dei primi adempimenti = onboarding
+      documento_url: null,
+      documento_path: null,
+      done: false,
+      history: [],
+      note: null,
+    });
+  }
+}
+
+// Boot-time sync: garantisce che ogni dipendente attivo abbia in DB
+// gli adempimenti dovuti dai suoi ruoli (anche se inserito da SQL/migration).
+async function syncAllDipendenti() {
+  const dips = state.dipendenti.filter((d) => d.attivo !== false);
+  for (const dip of dips) {
+    await syncAdempimentiObbligatori(dip.id);
+  }
+}
+
+// Genera un link self-service per il dipendente. NIENTE email automatica:
+// crea un token via RPC, costruisce il link, lo mostra nella modale e l'HR
+// lo copia + lo manda dove vuole (WhatsApp/Outlook/SMS).
+async function inviaInvitoSelfService() {
+  const id = $("dip-id").value;
+  const d = id ? dipById(id) : null;
+  if (!d) return;
+  const btn = $("dip-invite");
+  btn.disabled = true;
+  const origLabel = btn.textContent;
+  btn.textContent = "Generazione…";
+  try {
+    const { data, error } = await sb.rpc("create_invite_token", { dip_id: id });
+    if (error) throw error;
+    const token = data;
+    const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, "");
+    const link = `${base}me.html?token=${token}`;
+    $("invite-target").textContent = `${d.cognome} ${d.nome}`;
+    $("invite-link").value = link;
+    $("invite-status").textContent = "Il link scade dopo 30 giorni. Si può rigenerare in qualsiasi momento.";
+    openModal("modal-invite");
+    setTimeout(() => $("invite-link").select(), 100);
+  } catch (err) {
+    alert("Errore generazione link: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origLabel;
+  }
+}
+
+async function copyInviteLink() {
+  const input = $("invite-link");
+  const status = $("invite-status");
+  try {
+    await navigator.clipboard.writeText(input.value);
+    status.textContent = "✓ Link copiato! Ora incollalo nella chat / mail / dove vuoi.";
+    status.style.color = "#166534";
+  } catch {
+    input.select();
+    document.execCommand("copy");
+    status.textContent = "✓ Link copiato!";
+  }
+}
+
+async function deleteDip() {
+  const id = $("dip-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare il dipendente e tutti i suoi adempimenti (anche i PDF associati)?")) return;
+  // Rimuovi prima i PDF su Storage (FK cascade non li tocca).
+  const paths = state.adempimenti.filter((a) => a.dipendente_id === id && a.documento_path).map((a) => a.documento_path);
+  if (paths.length) {
+    try { await sb.storage.from(STORAGE_BUCKET).remove(paths); } catch (e) { console.warn(e); }
+  }
+  // FK on delete cascade in DB; puliamo anche lo stato locale.
+  await sbDelete("dipendenti", id);
+  state.dipRuoli = state.dipRuoli.filter((dr) => dr.dipendente_id !== id);
+  state.adempimenti = state.adempimenti.filter((a) => a.dipendente_id !== id);
+  closeModal("modal-dip");
+  renderAll();
+}
+
+// ---------- Adempimento ----------
+function tipiForDip(_dipId) {
+  // Tutti i tipi del catalogo: l'utente puo' aggiungere anche adempimenti "extra"
+  // non previsti dalla matrice ruolo (es. corsi volontari, certificazioni aggiuntive).
+  return state.tipi.slice().sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
+}
+
+// Stato della modale documento: file in attesa di upload (settato dal change del file input).
+let pendingDocFile = null;
+// Flag che chiede di eliminare il documento esistente al salvataggio.
+let pendingDocDelete = false;
+
+function openAdmModal(dipId, admId, preTipoId) {
+  const a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
+  const dip = dipById(dipId);
+  $("adm-title").textContent = "Adempimento";
+  $("adm-id").value = a ? a.id : "";
+  $("adm-dip-id").value = dipId;
+  $("adm-dip-name").textContent = dip ? `${dip.cognome} ${dip.nome}` : "—";
+  // Tipo: sempre readonly. Se non c'è, mostriamo placeholder.
+  const fixedTipoId = a?.tipo_requisito_id || preTipoId || "";
+  $("adm-tipo").value = fixedTipoId; // hidden helper, usato dalla logica Fatto
+  if (fixedTipoId) {
+    // Tipo deciso (riga cliccata in Scadenze o adempimento esistente): readonly.
+    const t = tipoById(fixedTipoId);
+    $("adm-tipo-fixed").textContent = `${CAT_BY_KEY[t?.categoria]?.icon || ""} ${t?.nome || "—"}`;
+    $("adm-tipo-fixed").hidden = false;
+    $("adm-tipo-wrap").style.display = "none";
+  } else {
+    // "+ Registra adempimento": tendina visibile per scegliere il tipo (anche extra).
+    $("adm-tipo-fixed").hidden = true;
+    $("adm-tipo-wrap").style.display = "";
+  }
+  // Date readonly.
+  $("adm-rilascio-ro").textContent = a?.data_rilascio ? fmtDate(a.data_rilascio) : "—";
+  $("adm-scadenza-ro").textContent = a?.data_scadenza ? fmtDate(a.data_scadenza) : (a?.data_rilascio ? "non scade" : "—");
+  // Documento corrente: solo se presente, mostra il bottone "Apri".
+  if (a?.documento_path || a?.documento_url) {
+    $("adm-doc-ro-wrap").hidden = false;
+  } else {
+    $("adm-doc-ro-wrap").hidden = true;
+  }
+  // Hint sotto le date.
+  if (a?.data_rilascio || a?.data_scadenza) {
+    $("adm-auto-hint").textContent = "";
+  } else {
+    $("adm-auto-hint").textContent = "Mai registrato. Clicca '✓ Fatto' per inserire la data dell'evento e l'eventuale PDF.";
+  }
+  // Storico.
+  renderAdmHistory(a);
+  openModal("modal-adempimento");
+}
+
+function renderAdmHistory(a) {
+  const section = $("adm-history-section");
+  const list = $("adm-history-list");
+  // Eventi = ciclo corrente (se registrato) + tutte le voci dell'history.
+  const events = [];
+  if (a?.data_rilascio) {
+    events.push({
+      doneAt: a.data_rilascio,
+      dueDate: a.data_scadenza || null,
+      documentoPath: a.documento_path || null,
+      source: "current",
+    });
+  }
+  if (Array.isArray(a?.history)) {
+    a.history.forEach((h) => events.push({ ...h, source: "history" }));
+  }
+  $("adm-history-count").textContent = events.length;
+  section.hidden = events.length === 0;
+  // Default: collassato.
+  list.hidden = true;
+  el(".history-arrow", $("adm-history-toggle"))?.classList.remove("expanded");
+  $("adm-history-toggle").setAttribute("aria-expanded", "false");
+  events.sort((x, y) => (y.doneAt || "").localeCompare(x.doneAt || ""));
+  list.innerHTML = events.map((h) => {
+    const docPath = h.documentoPath || "";
+    const fonte = h.source === "current"
+      ? '<span class="hist-late ontime">corrente</span>'
+      : '<span class="hist-late early">archiviato</span>';
+    return `<div class="hist-row">
+      <div class="hist-date">${fmtDate(h.doneAt) || "—"}</div>
+      <div>${fonte}</div>
+      <div class="hist-meta">${h.dueDate ? `<span class="hist-by">scade ${fmtDate(h.dueDate)}</span>` : '<span class="hist-by">non scade</span>'}</div>
+      <button type="button" class="hist-doc ${!docPath ? "disabled" : ""}" data-path="${esc(docPath)}" title="${docPath ? "Apri PDF" : "Nessun PDF"}">📎</button>
+    </div>`;
+  }).join("");
+  els(".hist-doc", list).forEach((btn) => btn.addEventListener("click", async () => {
+    await openSignedDoc(btn.dataset.path);
+  }));
+}
+
+function toggleAdmHistory() {
+  const list = $("adm-history-list");
+  const arrow = el(".history-arrow", $("adm-history-toggle"));
+  const willShow = list.hidden;
+  list.hidden = !willShow;
+  if (arrow) arrow.classList.toggle("expanded", willShow);
+  $("adm-history-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
+}
+
+// Auto-calcolo scadenza da data rilascio + validita_mesi della regola del tipo selezionato.
+function validitaMesiForTipo(tipoId, dipId) {
+  const ruoloIds = new Set(ruoliOfDip(dipId).map((r) => r.id));
+  const reqs = state.requisiti.filter((req) => req.tipo_requisito_id === tipoId && ruoloIds.has(req.ruolo_id));
+  if (!reqs.length) return undefined;
+  // validità più stringente
+  return reqs.reduce((min, r) => {
+    const v = r.validita_mesi == null ? Infinity : r.validita_mesi;
+    return v < min ? v : min;
+  }, Infinity);
+}
+
+function updateAutoHint() {
+  const tipoId = $("adm-tipo").value;
+  const dipId = $("adm-dip-id").value;
+  const rilascio = $("adm-rilascio").value;
+  const hint = $("adm-auto-hint");
+  if (!tipoId) { hint.textContent = ""; return; }
+  const v = validitaMesiForTipo(tipoId, dipId);
+  if (v === undefined) { hint.textContent = "Nessuna regola di validità per questo tipo."; return; }
+  if (v === Infinity) { hint.textContent = "Questo requisito non scade."; return; }
+  if (!rilascio) { hint.textContent = `Validità ${v} mesi.`; return; }
+  hint.textContent = `Validità ${v} mesi → scadenza ${fmtDate(addMonths(rilascio, v))}.`;
+}
+
+// Calcolo automatico della data scadenza dal rilascio + regola in matrice.
+function calcScadenza(rilascio, tipoId, dipId) {
+  if (!rilascio) return null;
+  const v = validitaMesiForTipo(tipoId, dipId);
+  if (v === undefined || v === Infinity) return null;
+  return addMonths(rilascio, v);
+}
+
+async function saveAdm(e) {
+  e.preventDefault();
+  const id = $("adm-id").value || uid();
+  const dipId = $("adm-dip-id").value;
+  const prev = state.adempimenti.find((x) => x.id === id) || null;
+
+  // Gestione documento: upload nuovo file / elimina esistente / mantieni invariato.
+  let documento_path = prev?.documento_path || null;
+  if (pendingDocDelete && documento_path) {
+    await deleteDoc(documento_path);
+    documento_path = null;
+  }
+  if (pendingDocFile) {
+    $("adm-doc-progress").hidden = false;
+    try {
+      // Sostituzione semplice: elimina il vecchio file (non è uno storico).
+      if (documento_path) await deleteDoc(documento_path);
+      documento_path = await uploadDoc(id, pendingDocFile);
+    } catch (err) {
+      $("adm-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("adm-doc-progress").hidden = true;
+  }
+
+  const row = {
+    id,
+    dipendente_id: dipId,
+    tipo_requisito_id: $("adm-tipo").value,
+    data_rilascio: $("adm-rilascio").value || null,
+    data_scadenza: calcScadenza($("adm-rilascio").value, $("adm-tipo").value, dipId),
+    documento_url: prev?.documento_url || null,
+    documento_path,
+    done: prev ? prev.done : false,
+    done_at: prev?.done_at || null,
+    done_by: prev?.done_by || null,
+    last_done_at: prev?.last_done_at || null,
+    previous_date: prev?.previous_date || null,
+    history: prev?.history || [],
+    note: prev?.note || null,
+  };
+  const ok = await sbUpsert("adempimenti", row);
+  if (!ok) return;
+  pendingDocFile = null;
+  pendingDocDelete = false;
+  closeModal("modal-adempimento");
+  if (!$("modal-dip").hidden && $("dip-id").value === dipId) {
+    renderDipAdempimenti(dipId);
+    renderDipOnboarding(dipId);
+  }
+  renderAll();
+}
+
+async function deleteAdm() {
+  const id = $("adm-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questo adempimento (anche il PDF associato e lo storico)?")) return;
+  const dipId = $("adm-dip-id").value;
+  const prev = state.adempimenti.find((x) => x.id === id);
+  // Pulisci anche tutti i PDF dello storico.
+  const paths = [];
+  if (prev?.documento_path) paths.push(prev.documento_path);
+  if (Array.isArray(prev?.history)) prev.history.forEach((h) => { if (h.documentoPath) paths.push(h.documentoPath); });
+  if (paths.length) { try { await sb.storage.from(STORAGE_BUCKET).remove(paths); } catch (e) { console.warn(e); } }
+  await sbDelete("adempimenti", id);
+  closeModal("modal-adempimento");
+  if (!$("modal-dip").hidden && $("dip-id").value === dipId) {
+    renderDipAdempimenti(dipId);
+    renderDipOnboarding(dipId);
+  }
+  renderAll();
+}
+
+// ---------- Rinnovo con un click ("Fatto") ----------
+// Apre una mini-modale che chiede SOLO la data dell'evento.
+// Conferma → archivia il ciclo corrente in history + calcola la nuova scadenza
+// dalla regola in matrice + salva atomicamente sul DB. Niente PDF / nota qui:
+// l'utente li carica/scrive dalla modale principale dopo, se vuole.
+function openFattoModal(admId, dipIdFallback, tipoIdFallback) {
+  // Caso 1: rinnovo di adempimento esistente. Caso 2: prima registrazione (admId vuoto).
+  let a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
+  const dipId = a?.dipendente_id || dipIdFallback;
+  const tipoId = a?.tipo_requisito_id || tipoIdFallback;
+  if (!dipId || !tipoId) { alert("Manca dipendente o tipo requisito."); return; }
+  const dip = dipById(dipId);
+  const tipo = tipoById(tipoId);
+  $("fatto-adm-id").value = admId || "";
+  $("fatto-target").textContent = (dip ? `${dip.cognome} ${dip.nome} — ` : "") + (tipo?.nome || "—");
+  const today = localISO(new Date());
+  $("fatto-data").value = today;
+  $("fatto-file").value = "";
+  $("fatto-progress").hidden = true;
+  const v = validitaMesiForTipo(tipoId, dipId);
+  if (v === undefined) {
+    $("fatto-hint").textContent = "Questo tipo non è nei requisiti del dipendente: nuova scadenza non calcolabile in automatico.";
+  } else if (v === Infinity) {
+    $("fatto-hint").textContent = "Questo requisito non scade: verrà archiviato il ciclo precedente, nuova scadenza vuota.";
+  } else {
+    $("fatto-hint").textContent = `Validità ${v} mesi → nuova scadenza ${fmtDate(addMonths(today, v))}.`;
+  }
+  openModal("modal-fatto");
+}
+
+async function applyFatto(e) {
+  e.preventDefault();
+  const admId = $("fatto-adm-id").value;
+  // Caso 1: rinnovo (a esiste). Caso 2: prima registrazione (a non esiste, prendiamo
+  // dipId/tipoId dalla modale adempimento sottostante).
+  const a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
+  const dipId = a?.dipendente_id || $("adm-dip-id").value;
+  const tipoId = a?.tipo_requisito_id || $("adm-tipo").value;
+  if (!dipId || !tipoId) { alert("Manca dipendente o tipo requisito."); return; }
+  const dataEvento = $("fatto-data").value;
+  if (!dataEvento) { alert("Inserisci la data dell'evento."); return; }
+  const newFile = $("fatto-file").files?.[0] || null;
+
+  const targetId = admId || uid();
+
+  // Upload nuovo PDF (se fornito) PRIMA di toccare il DB.
+  let newDocumentoPath = null;
+  if (newFile) {
+    $("fatto-progress").hidden = false;
+    try {
+      newDocumentoPath = await uploadDoc(targetId, newFile);
+    } catch (err) {
+      $("fatto-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("fatto-progress").hidden = true;
+  }
+
+  // Snapshot del ciclo corrente per lo storico (campi dal DB). Solo se c'è un ciclo
+  // davvero registrato (data_rilascio impostata): una riga MANCANTE pre-creata dal sync
+  // non è un "ciclo" da archiviare.
+  const history = Array.isArray(a?.history) ? [...a.history] : [];
+  const hasCurrentCycle = a && a.data_rilascio;
+  if (hasCurrentCycle) {
+    history.push({
+      doneAt: dataEvento,
+      dueDate: a.data_scadenza || null,
+      rilascio: a.data_rilascio || null,
+      scadenza: a.data_scadenza || null,
+      documentoPath: a.documento_path || null,
+      note: a.note || null,
+    });
+  }
+
+  // Calcolo nuova scadenza dalla regola in matrice.
+  const v = validitaMesiForTipo(tipoId, dipId);
+  let newScadenza = null;
+  if (v !== undefined && v !== Infinity) newScadenza = addMonths(dataEvento, v);
+
+  const row = a
+    ? { ...a, data_rilascio: dataEvento, data_scadenza: newScadenza, documento_path: newDocumentoPath,
+        note: null, last_done_at: dataEvento, previous_date: a.data_scadenza || null, history }
+    : { id: targetId, dipendente_id: dipId, tipo_requisito_id: tipoId,
+        data_rilascio: dataEvento, data_scadenza: newScadenza, documento_path: newDocumentoPath,
+        documento_url: null, done: false, done_at: null, done_by: null,
+        last_done_at: dataEvento, previous_date: null, history: [], note: null };
+
+  const ok = await sbUpsert("adempimenti", row);
+  if (!ok) {
+    if (newDocumentoPath) await deleteDoc(newDocumentoPath);
+    return;
+  }
+
+  closeModal("modal-fatto");
+  closeModal("modal-adempimento");
+  if (!$("modal-dip").hidden && $("dip-id").value === dipId) {
+    renderDipAdempimenti(dipId);
+    renderDipOnboarding(dipId);
+  }
+  renderAll();
+}
+
+// ---------- Ruolo ----------
+function openRuoloModal(id) {
+  const r = id ? ruoloById(id) : null;
+  $("ruolo-title").textContent = r ? r.nome : "Nuovo ruolo";
+  $("ruolo-id").value = r ? r.id : "";
+  $("ruolo-nome").value = r?.nome || "";
+  $("ruolo-tipo").value = r?.tipo || "mansione";
+  $("ruolo-minimo").value = r?.minimo_richiesto ?? 0;
+  $("ruolo-note").value = r?.note || "";
+  const tipo = r?.tipo || "mansione";
+  $("ruolo-minimo-wrap").hidden = tipo !== "incarico";
+  $("ruolo-delete").hidden = !r;
+  openModal("modal-ruolo");
+}
+async function saveRuolo(e) {
+  e.preventDefault();
+  const id = $("ruolo-id").value || uid();
+  const tipo = $("ruolo-tipo").value;
+  const minimoRaw = $("ruolo-minimo").value;
+  const row = {
+    id,
+    nome: $("ruolo-nome").value.trim(),
+    tipo,
+    minimo_richiesto: tipo === "incarico" ? Math.max(0, parseInt(minimoRaw, 10) || 0) : 0,
+    note: $("ruolo-note").value.trim() || null,
+  };
+  if (await sbUpsert("ruoli", row)) closeModal("modal-ruolo");
+}
+async function deleteRuolo() {
+  const id = $("ruolo-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare il ruolo? Verranno rimosse anche le sue regole e assegnazioni.")) return;
+  await sbDelete("ruoli", id);
+  state.requisiti = state.requisiti.filter((r) => r.ruolo_id !== id);
+  state.dipRuoli = state.dipRuoli.filter((dr) => dr.ruolo_id !== id);
+  closeModal("modal-ruolo");
+  renderAll();
+}
+
+// ---------- Categoria ----------
+function openCategoriaModal(id) {
+  const c = id ? state.categorie.find((x) => x.id === id) : null;
+  $("cat-title").textContent = c ? c.label : "Nuova categoria";
+  $("cat-id").value = c ? c.id : "";
+  $("cat-nome").value = c?.label || "";
+  $("cat-icon").value = c?.icon || "";
+  $("cat-ordine").value = c?.ordine ?? 100;
+  $("cat-delete").hidden = !c;
+  openModal("modal-categoria");
+}
+async function saveCategoria(e) {
+  e.preventDefault();
+  const id = $("cat-id").value || sanitizeName($("cat-nome").value.toLowerCase()) || ("cat-" + Date.now());
+  const row = {
+    id,
+    label: $("cat-nome").value.trim(),
+    icon: $("cat-icon").value.trim() || null,
+    ordine: parseInt($("cat-ordine").value, 10) || 100,
+  };
+  if (await sbUpsert("categorie", row)) closeModal("modal-categoria");
+}
+async function deleteCategoria() {
+  const id = $("cat-id").value;
+  if (!id) return;
+  // Controllo: ci sono tipi di requisito che usano questa categoria?
+  const inUso = state.tipi.filter((t) => t.categoria === id).length;
+  if (inUso > 0) {
+    alert(`Impossibile eliminare: ${inUso} tipi di requisito usano ancora questa categoria. Riassegnali prima.`);
+    return;
+  }
+  if (!confirm("Eliminare questa categoria?")) return;
+  await sbDelete("categorie", id);
+  closeModal("modal-categoria");
+}
+
+// ---------- Tipo requisito ----------
+function openTipoModal(id) {
+  const t = id ? tipoById(id) : null;
+  $("tipo-title").textContent = t ? t.nome : "Nuovo tipo di requisito";
+  $("tipo-id").value = t ? t.id : "";
+  $("tipo-nome").value = t?.nome || "";
+  const cats = categorieList();
+  fillSelect($("tipo-categoria"), cats.map((c) => ({ id: c.id, nome: (c.icon ? c.icon + " " : "") + c.label })));
+  $("tipo-categoria").value = t?.categoria || (cats[0]?.id || "formazione");
+  $("tipo-durata").value = t?.durata_iniziale || "";
+  $("tipo-norma").value = t?.riferimento_normativo || "";
+  $("tipo-desc").value = t?.descrizione || "";
+  $("tipo-delete").hidden = !t;
+  openModal("modal-tipo");
+}
+async function saveTipo(e) {
+  e.preventDefault();
+  const id = $("tipo-id").value || uid();
+  const row = {
+    id,
+    nome: $("tipo-nome").value.trim(),
+    categoria: $("tipo-categoria").value,
+    durata_iniziale: $("tipo-durata").value.trim() || null,
+    riferimento_normativo: $("tipo-norma").value.trim() || null,
+    descrizione: $("tipo-desc").value.trim() || null,
+  };
+  if (await sbUpsert("tipi_requisito", row)) closeModal("modal-tipo");
+}
+async function deleteTipo() {
+  const id = $("tipo-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare il tipo di requisito? Verranno rimosse anche le regole collegate.")) return;
+  await sbDelete("tipi_requisito", id);
+  state.requisiti = state.requisiti.filter((r) => r.tipo_requisito_id !== id);
+  closeModal("modal-tipo");
+  renderAll();
+}
+
+// ---------- Regola (matrice) ----------
+function openReqModal(id) {
+  const req = id ? state.requisiti.find((r) => r.id === id) : null;
+  $("req-title").textContent = req ? "Modifica regola" : "Nuova regola";
+  $("req-id").value = req ? req.id : "";
+  fillSelect($("req-ruolo"), state.ruoli.slice().sort((a, b) => (a.tipo + a.nome).localeCompare(b.tipo + b.nome)),
+    { placeholder: "— seleziona —", label: (r) => (r.tipo === "mansione" ? "🏭 " : "📌 ") + r.nome });
+  $("req-ruolo").value = req?.ruolo_id || "";
+  fillSelect($("req-tipo"), state.tipi, { placeholder: "— seleziona —", label: (t) => `${CAT_BY_KEY[t.categoria]?.icon || ""} ${t.nome}` });
+  $("req-tipo").value = req?.tipo_requisito_id || "";
+  $("req-obblig").checked = req ? !!req.obbligatorio : true;
+  $("req-validita").value = req?.validita_mesi ?? "";
+  $("req-note").value = req?.note || "";
+  $("req-delete").hidden = !req;
+  openModal("modal-requisito");
+}
+async function saveReq(e) {
+  e.preventDefault();
+  const id = $("req-id").value || uid();
+  const vRaw = $("req-validita").value;
+  const row = {
+    id,
+    ruolo_id: $("req-ruolo").value,
+    tipo_requisito_id: $("req-tipo").value,
+    obbligatorio: $("req-obblig").checked,
+    validita_mesi: vRaw === "" ? null : Number(vRaw),
+    note: $("req-note").value.trim() || null,
+  };
+  if (!row.ruolo_id || !row.tipo_requisito_id) { alert("Seleziona ruolo e tipo di requisito."); return; }
+  if (await sbUpsert("requisiti_ruolo", row)) closeModal("modal-requisito");
+}
+async function deleteReq() {
+  const id = $("req-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questa regola?")) return;
+  await sbDelete("requisiti_ruolo", id);
+  closeModal("modal-requisito");
+}
+
+// ============================================================
+// EXPORT EXCEL (vista compliance corrente)
+// ============================================================
+function exportExcel() {
+  if (!window.XLSX) { alert("Libreria Excel non caricata."); return; }
+  const rows = allGapRows().map((g) => {
+    const ruoli = ruoliOfDip(g.dip.id);
+    const man = ruoli.find((r) => r.tipo === "mansione");
+    const inc = ruoli.filter((r) => r.tipo === "incarico").map((r) => r.nome).join(", ");
+    return {
+      Cognome: g.dip.cognome,
+      Nome: g.dip.nome,
+      Mansione: man?.nome || "",
+      Incarichi: inc,
+      Requisito: g.tipo.nome,
+      Categoria: CAT_BY_KEY[g.tipo.categoria]?.label || g.tipo.categoria,
+      Scadenza: g.scadenza ? fmtDate(g.scadenza) : "",
+      Stato: STATO_INFO[g.stato].label,
+    };
+  });
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Compliance");
+  XLSX.writeFile(wb, `HR-compliance-${localISO(new Date())}.xlsx`);
+}
+
+// ============================================================
+// EXPORT BACKUP ZIP — tutti i PDF di un dipendente in struttura per cartelle
+// ============================================================
+async function exportBackupZip(dipId) {
+  if (!window.JSZip) { alert("Libreria ZIP non caricata."); return; }
+  const dip = dipById(dipId);
+  if (!dip) return;
+  const docs = state.adempimenti.filter((a) => a.dipendente_id === dipId && a.documento_path);
+  if (!docs.length) { alert("Questo dipendente non ha PDF caricati nell'app."); return; }
+
+  const btn = $("dip-backup-zip");
+  const origLabel = btn?.textContent;
+  if (btn) { btn.textContent = "⏳ Preparazione ZIP…"; btn.disabled = true; }
+
+  try {
+    const zip = new JSZip();
+    const folderName = `${sanitizeName(dip.cognome) || "Cognome"}_${sanitizeName(dip.nome) || "Nome"}`;
+    const folder = zip.folder(folderName);
+    let ok = 0;
+    for (const a of docs) {
+      try {
+        const tipo = tipoById(a.tipo_requisito_id);
+        const url = await getSignedDocUrl(a.documento_path);
+        if (!url) continue;
+        const blob = await fetch(url).then((r) => { if (!r.ok) throw new Error(r.status); return r.blob(); });
+        folder.file(downloadName(dip, tipo, a), blob);
+        ok++;
+      } catch (err) {
+        console.warn("Skip doc", a.id, err);
+      }
+    }
+    if (!ok) { alert("Impossibile scaricare i documenti."); return; }
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${folderName}_backup_${localISO(new Date())}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } finally {
+    if (btn) { btn.textContent = origLabel; btn.disabled = false; }
+  }
+}
+
+// ============================================================
+// NAVIGAZIONE / FILTRI / EVENTI
+// ============================================================
+function setView(v) {
+  state.view = v;
+  els(".module-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
+  $("view-compliance").hidden = v !== "compliance";
+  $("view-cariche").hidden = v !== "cariche";
+  $("view-dipendenti").hidden = v !== "dipendenti";
+  $("view-storico").hidden = v !== "storico";
+  $("view-config").hidden = v !== "config";
+  // Topbar contestuale: toggle Lista/Calendario solo nel tab Scadenze (ex-Compliance).
+  $("comp-view-toggle").hidden = v !== "compliance";
+  const addBtn = $("btn-add");
+  if (v === "dipendenti") { addBtn.hidden = false; addBtn.textContent = "+ Nuovo dipendente"; }
+  else { addBtn.hidden = true; }
+  $("search-wrap").style.display = v === "config" ? "none" : "";
+  closeDrawer();
+  renderAll();
+}
+
+function populateFilters() {
+  const f = state.compFilter;
+  // Dipendenti (attivi prima, poi cessati, ordinati per cognome).
+  const dips = state.dipendenti.slice().sort((a, b) => {
+    if ((a.attivo === false) !== (b.attivo === false)) return a.attivo === false ? 1 : -1;
+    return (a.cognome || "").localeCompare(b.cognome || "");
+  });
+  fillSelect($("filter-dipendente"), dips, {
+    placeholder: "Tutti i dipendenti",
+    label: (d) => `${d.cognome} ${d.nome}${d.attivo === false ? " (cessato)" : ""}`,
+  });
+  fillSelect($("filter-mansione"), mansioniList(), { placeholder: "Tutte le mansioni" });
+  fillSelect($("filter-incarico"), incarichiList(), { placeholder: "Tutti gli incarichi" });
+  $("filter-dipendente").value = f.dipendente;
+  $("filter-mansione").value = f.mansione;
+  $("filter-incarico").value = f.incarico;
+}
+
+function clearFilters() {
+  state.search = "";
+  $("search").value = "";
+  state.compFilter = { dipendente: "", mansione: "", incarico: "", stato: "" };
+  state.compView = "list";
+  populateFilters();
+  $("btn-clear-filters").hidden = true;
+  renderAll();
+}
+
+function toggleDrawer() { $("sidebar").classList.toggle("open"); $("drawer-backdrop").classList.toggle("open"); }
+function closeDrawer() { $("sidebar").classList.remove("open"); $("drawer-backdrop").classList.remove("open"); }
+
+function wireEvents() {
+  $("login-form").addEventListener("submit", handleLoginSubmit);
+  $("btn-logout").addEventListener("click", handleLogout);
+  $("hamburger").addEventListener("click", toggleDrawer);
+  $("drawer-backdrop").addEventListener("click", closeDrawer);
+
+  els(".module-btn").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+
+  $("search").addEventListener("input", (e) => {
+    state.search = e.target.value.trim();
+    $("btn-clear-filters").hidden = !state.search && !hasActiveFilters();
+    renderAll();
+  });
+  $("btn-clear-filters").addEventListener("click", clearFilters);
+  $("btn-export").addEventListener("click", exportExcel);
+
+  $("btn-add").addEventListener("click", () => {
+    if (state.view === "dipendenti") openDipModal(null);
+  });
+
+  // Compliance filtri + KPI.
+  $("filter-dipendente").addEventListener("change", (e) => { state.compFilter.dipendente = e.target.value; updateClearBtn(); renderAll(); });
+  $("filter-mansione").addEventListener("change", (e) => { state.compFilter.mansione = e.target.value; updateClearBtn(); renderAll(); });
+  $("filter-incarico").addEventListener("change", (e) => { state.compFilter.incarico = e.target.value; updateClearBtn(); renderAll(); });
+  els('#view-compliance .kpi').forEach((k) => k.addEventListener("click", () => {
+    const s = k.dataset.cstatus;
+    state.compFilter.stato = (s === "all") ? "" : (state.compFilter.stato === s ? "" : s);
+    updateClearBtn(); renderCompliance();
+  }));
+
+  // Toggle Lista / Calendario dentro il tab Scadenze (ex-Compliance).
+  els("#comp-view-toggle .vt-btn").forEach((b) => b.addEventListener("click", () => {
+    state.compView = b.dataset.compview;
+    els("#comp-view-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x === b));
+    renderCompliance();
+  }));
+  $("cal-prev").addEventListener("click", () => { state.calRef = new Date(state.calRef.getFullYear(), state.calRef.getMonth() - 1, 1); renderCompliance(); });
+  $("cal-next").addEventListener("click", () => { state.calRef = new Date(state.calRef.getFullYear(), state.calRef.getMonth() + 1, 1); renderCompliance(); });
+  $("cal-today").addEventListener("click", () => { state.calRef = new Date(); renderCompliance(); });
+
+  // Storico filtri + export.
+  ["filter-st-dipendente", "filter-st-tipo", "filter-st-categoria", "filter-st-anno", "filter-st-mese"].forEach((id) => {
+    $(id).addEventListener("change", (e) => {
+      const key = id.replace("filter-st-", "");
+      state.storicoFilter[key] = e.target.value;
+      renderStorico();
+    });
+  });
+  $("storico-excel").addEventListener("click", exportStoricoExcel);
+
+  // Config tabs.
+  els(".ct-btn").forEach((b) => b.addEventListener("click", () => { state.configTab = b.dataset.ctab; renderConfig(); }));
+  $("add-ruolo").addEventListener("click", () => openRuoloModal(null));
+  $("add-categoria").addEventListener("click", () => openCategoriaModal(null));
+  $("add-tipo").addEventListener("click", () => openTipoModal(null));
+  $("add-requisito").addEventListener("click", () => openReqModal(null));
+
+  // Modale categoria.
+  $("cat-form").addEventListener("submit", saveCategoria);
+  $("cat-close").addEventListener("click", () => closeModal("modal-categoria"));
+  $("cat-cancel").addEventListener("click", () => closeModal("modal-categoria"));
+  $("cat-delete").addEventListener("click", deleteCategoria);
+
+  // Modale dipendente.
+  $("dip-form").addEventListener("submit", saveDip);
+  $("dip-close").addEventListener("click", () => closeModal("modal-dip"));
+  $("dip-cancel").addEventListener("click", () => closeModal("modal-dip"));
+  $("dip-delete").addEventListener("click", deleteDip);
+  $("dip-add-adempimento").addEventListener("change", async (e) => {
+    const tipoId = e.target.value;
+    const dipId = $("dip-id").value;
+    if (!tipoId || !dipId) return;
+    // Crea un adempimento MANCANTE per quel tipo (data_rilascio/scadenza null).
+    // Poi l'utente lo registrerà cliccandolo (apre la modale e ✓ Fatto).
+    await sbUpsert("adempimenti", {
+      id: uid(),
+      dipendente_id: dipId,
+      tipo_requisito_id: tipoId,
+      data_rilascio: null,
+      data_scadenza: null,
+      documento_url: null,
+      documento_path: null,
+      done: false,
+      history: [],
+      note: null,
+    });
+    e.target.value = "";
+    renderDipAdempimenti(dipId);
+  });
+  $("dip-backup-zip").addEventListener("click", () => { const id = $("dip-id").value; if (id) exportBackupZip(id); });
+  $("dip-invite").addEventListener("click", inviaInvitoSelfService);
+  $("invite-close").addEventListener("click", () => closeModal("modal-invite"));
+  $("invite-done").addEventListener("click", () => closeModal("modal-invite"));
+  $("invite-copy").addEventListener("click", copyInviteLink);
+  $("invite-link").addEventListener("focus", (e) => e.target.select());
+  $("dip-history-toggle").addEventListener("click", toggleDipHistory);
+  // Onboarding (scheda dipendente)
+  $("dip-onboard-toggle").addEventListener("click", toggleDipOnboard);
+  $("onboard-form").addEventListener("submit", saveOnboardProgresso);
+  $("onboard-close").addEventListener("click", () => closeModal("modal-onboard"));
+  $("onboard-cancel").addEventListener("click", () => closeModal("modal-onboard"));
+  $("onboard-doc-file").addEventListener("change", (e) => {
+    const file = e.target.files?.[0] || null;
+    pendingOnboardFile = file;
+    $("onboard-doc-upload-label").textContent = file ? `📄 ${file.name} (salva per caricare)` : "Carica un file";
+  });
+  $("onboard-fatto").addEventListener("change", (e) => {
+    if (e.target.checked && !$("onboard-fatto-il").value) $("onboard-fatto-il").value = localISO(new Date());
+  });
+  $("onboard-genera-btn").addEventListener("click", () => {
+    const dipId = $("onboard-dip-id").value;
+    const tplId = $("onboard-tpl-id").value;
+    if (!tplId) { alert("Scegli prima un modello dalla tendina."); return; }
+    const dip = dipById(dipId);
+    const tpl = state.modelli.find((m) => m.id === tplId);
+    if (!dip || !tpl) return;
+    const html = applicaTemplate(tpl.contenuto, dip);
+    apriDocumentoStampabile(`${tpl.nome} — ${dip.cognome} ${dip.nome}`, html);
+  });
+  $("onboard-doc-open").addEventListener("click", async () => {
+    const progrId = $("onboard-progr-id").value;
+    const p = state.onboardProgressi.find((x) => x.id === progrId);
+    await openSignedDoc(p?.documento_path);
+  });
+
+  // Modelli documento (Configurazione)
+  $("add-modello").addEventListener("click", () => openModelloModal(null));
+  $("modello-form").addEventListener("submit", saveModello);
+  $("modello-close").addEventListener("click", () => closeModal("modal-modello"));
+  $("modello-cancel").addEventListener("click", () => closeModal("modal-modello"));
+  $("modello-delete").addEventListener("click", deleteModello);
+  $("modello-preview").addEventListener("click", previewModello);
+
+  // Onboarding template (Configurazione)
+  $("add-onboard-item").addEventListener("click", () => openOnboardItemModal(null));
+  $("onbi-form").addEventListener("submit", saveOnboardItem);
+  $("onbi-close").addEventListener("click", () => closeModal("modal-onboard-item"));
+  $("onbi-cancel").addEventListener("click", () => closeModal("modal-onboard-item"));
+  $("onbi-delete").addEventListener("click", deleteOnboardItem);
+
+  // DPI (scheda dipendente)
+  $("dip-dpi-toggle").addEventListener("click", toggleDipDpi);
+  $("dip-dpi-add").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const id = $("dip-id").value;
+    if (id) openDpiModal(id, null);
+  });
+  $("dpi-form").addEventListener("submit", saveDpiConsegna);
+  $("dpi-close").addEventListener("click", () => closeModal("modal-dpi"));
+  $("dpi-cancel").addEventListener("click", () => closeModal("modal-dpi"));
+  $("dpi-delete").addEventListener("click", deleteDpiConsegna);
+  $("dpi-tipo").addEventListener("change", () => {
+    aggiornaTaglieDpi();
+    // Suggerisci la taglia preferita del dipendente per quel tipo.
+    const dipId = $("dpi-dip-id").value;
+    const dip = dipById(dipId);
+    const suggerita = tagliaSuggeritaDip(dip, $("dpi-tipo").value);
+    if (suggerita) $("dpi-taglia").value = suggerita;
+  });
+  $("dpi-doc-file").addEventListener("change", (e) => {
+    const file = e.target.files?.[0] || null;
+    pendingDpiFile = file;
+    $("dpi-doc-upload-label").textContent = file ? `📄 ${file.name} (salva per caricare)` : "Carica un file";
+  });
+  $("dpi-doc-open").addEventListener("click", async () => {
+    const id = $("dpi-id").value;
+    const c = state.dpiConsegne.find((x) => x.id === id);
+    await openSignedDoc(c?.modulo_path);
+  });
+
+  // Provvedimenti
+  $("dip-provv-toggle").addEventListener("click", toggleDipProvv);
+  $("dip-provv-add").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const id = $("dip-id").value;
+    if (id) openProvvModal(id, null);
+  });
+  $("provv-form").addEventListener("submit", saveProvvedimento);
+  $("provv-close").addEventListener("click", () => closeModal("modal-provv"));
+  $("provv-cancel").addEventListener("click", () => closeModal("modal-provv"));
+  $("provv-delete").addEventListener("click", deleteProvvedimento);
+  $("provv-doc-file").addEventListener("change", (e) => {
+    const file = e.target.files?.[0] || null;
+    pendingProvvFile = file;
+    $("provv-doc-upload-label").textContent = file ? `📄 ${file.name} (salva per caricare)` : "Carica un file";
+  });
+  $("provv-doc-open").addEventListener("click", async () => {
+    const id = $("provv-id").value;
+    const p = state.provvedimenti.find((x) => x.id === id);
+    await openSignedDoc(p?.documento_path);
+  });
+  // Toggle delle sezioni collassabili anagrafica estesa.
+  els(".dip-section-toggle").forEach((btn) => btn.addEventListener("click", () => {
+    const body = btn.nextElementSibling;
+    const arrow = el(".history-arrow", btn);
+    const willShow = body.hidden;
+    body.hidden = !willShow;
+    if (arrow) arrow.classList.toggle("expanded", willShow);
+  }));
+  // Visibilita' condizionale.
+  $("dip-dom-diverso").addEventListener("change", (e) => { $("dip-dom-block").hidden = !e.target.checked; });
+  $("dip-tipo-contratto").addEventListener("change", (e) => { $("dip-fine-contr-wrap").hidden = e.target.value !== CONTRATTO_DETERMINATO; });
+  $("dip-attivo").addEventListener("change", (e) => { $("dip-cessazione-section").hidden = e.target.checked; });
+
+  // Modale adempimento (sola lettura: Fatto + Chiudi + apertura PDF).
+  $("adm-form").addEventListener("submit", (e) => e.preventDefault()); // no save da qua
+  $("adm-close").addEventListener("click", () => closeModal("modal-adempimento"));
+  $("adm-cancel").addEventListener("click", () => closeModal("modal-adempimento"));
+  $("adm-doc-open").addEventListener("click", async () => {
+    const id = $("adm-id").value;
+    const adm = state.adempimenti.find((a) => a.id === id);
+    if (adm) await openDoc(adm);
+  });
+  $("adm-rinnova").addEventListener("click", () => {
+    const id = $("adm-id").value;
+    const dipId = $("adm-dip-id").value;
+    const tipoId = $("adm-tipo").value;
+    openFattoModal(id, dipId, tipoId);
+  });
+  $("adm-history-toggle").addEventListener("click", toggleAdmHistory);
+
+  // Mini-modale "Fatto" (rinnovo con 1 click).
+  $("fatto-form").addEventListener("submit", applyFatto);
+  $("fatto-close").addEventListener("click", () => closeModal("modal-fatto"));
+  $("fatto-cancel").addEventListener("click", () => closeModal("modal-fatto"));
+  $("fatto-data").addEventListener("change", () => {
+    // Ricalcola hint con la nuova scadenza al cambio data.
+    const admId = $("fatto-adm-id").value;
+    const a = state.adempimenti.find((x) => x.id === admId);
+    if (!a) return;
+    const v = validitaMesiForTipo(a.tipo_requisito_id, a.dipendente_id);
+    const d = $("fatto-data").value;
+    if (v !== undefined && v !== Infinity && d) {
+      $("fatto-hint").textContent = `Validità ${v} mesi → nuova scadenza ${fmtDate(addMonths(d, v))}.`;
+    }
+  });
+
+  // Modale ruolo.
+  $("ruolo-form").addEventListener("submit", saveRuolo);
+  $("ruolo-close").addEventListener("click", () => closeModal("modal-ruolo"));
+  $("ruolo-cancel").addEventListener("click", () => closeModal("modal-ruolo"));
+  $("ruolo-delete").addEventListener("click", deleteRuolo);
+  $("ruolo-tipo").addEventListener("change", (e) => {
+    $("ruolo-minimo-wrap").hidden = e.target.value !== "incarico";
+  });
+
+  // Modale tipo.
+  $("tipo-form").addEventListener("submit", saveTipo);
+  $("tipo-close").addEventListener("click", () => closeModal("modal-tipo"));
+  $("tipo-cancel").addEventListener("click", () => closeModal("modal-tipo"));
+  $("tipo-delete").addEventListener("click", deleteTipo);
+
+  // Modale regola.
+  $("req-form").addEventListener("submit", saveReq);
+  $("req-close").addEventListener("click", () => closeModal("modal-requisito"));
+  $("req-cancel").addEventListener("click", () => closeModal("modal-requisito"));
+  $("req-delete").addEventListener("click", deleteReq);
+
+  // Chiusura modale cliccando sul backdrop.
+  els(".modal").forEach((m) => m.addEventListener("click", (e) => { if (e.target === m) m.hidden = true; }));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") els(".modal").forEach((m) => (m.hidden = true)); });
+}
+
+function hasActiveFilters() {
+  const f = state.compFilter;
+  return !!(f.dipendente || f.mansione || f.incarico || f.stato);
+}
+function updateClearBtn() { $("btn-clear-filters").hidden = !state.search && !hasActiveFilters(); }
+
+// ============================================================
+// BOOT
+// ============================================================
+async function startApp() {
+  $("user-email").textContent = state.user?.email || "—";
+  await sbLoadAll();
+  await syncAllDipendenti();
+  subscribeRealtime();
+  populateFilters();
+  setView("compliance");
+}
+
+async function init() {
+  wireEvents();
+  const { data } = await sb.auth.getSession();
+  if (data?.session) {
+    state.user = data.session.user;
+    hideLogin();
+    await startApp();
+  } else {
+    showLogin();
+  }
+  sb.auth.onAuthStateChange((event, session) => {
+    if (event === "SIGNED_OUT") showLogin();
+  });
+}
+
+document.addEventListener("DOMContentLoaded", init);

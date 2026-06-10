@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>I miei dati — HR Overland</title>
+<link rel="stylesheet" href="style.css?v=b5">
+</head>
+<body class="self-service">
+
+<!-- ============ ERRORE / LINK NON VALIDO ============ -->
+<div id="me-error" class="login-overlay" hidden>
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-mark">HR</div>
+      <div>
+        <div class="brand-title">Link non valido</div>
+        <div class="login-subtitle">Chiedi all'HR di Overland un nuovo link.</div>
+      </div>
+    </div>
+    <div class="login-error" id="me-error-msg">Il link non è valido o è scaduto.</div>
+  </div>
+</div>
+
+<!-- ============ CARICAMENTO ============ -->
+<div id="me-loading" class="login-overlay" hidden>
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-mark">HR</div>
+      <div>
+        <div class="brand-title">Carico i tuoi dati…</div>
+        <div class="login-subtitle">Un attimo solo.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div class="me-wrap" id="me-app" hidden>
+  <header class="me-header">
+    <div class="me-brand">
+      <div class="brand-mark">HR</div>
+      <div>
+        <div class="me-hello" id="me-hello">Benvenuto</div>
+        <div class="me-sub">I miei dati personali — HR Overland</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="me-main">
+    <p class="cfg-hint">
+      Puoi aggiornare i tuoi <strong>dati personali</strong>, l'<strong>indirizzo</strong>,
+      il <strong>contatto di emergenza</strong> e caricare i <strong>documenti identificativi</strong>
+      (carta d'identità, patente, permesso di soggiorno). I dati arrivano direttamente all'HR.
+      Dati di contratto e stipendio sono gestiti dall'HR, non da te.
+    </p>
+
+    <form id="me-form" class="me-form">
+      <fieldset class="me-fieldset">
+        <legend>Dati personali</legend>
+        <div class="row">
+          <label><span>Telefono</span><input type="text" id="me-telefono"></label>
+          <label><span>Luogo di nascita</span><input type="text" id="me-luogo-nascita"></label>
+        </div>
+        <div class="row">
+          <label><span>Cittadinanza</span><input type="text" id="me-cittadinanza"></label>
+          <label><span>Stato civile</span><select id="me-stato-civile"><option value="">—</option></select></label>
+        </div>
+        <label><span>Titolo di studio</span><input type="text" id="me-titolo-studio"></label>
+      </fieldset>
+
+      <fieldset class="me-fieldset">
+        <legend>Residenza</legend>
+        <label><span>Indirizzo</span><input type="text" id="me-res-indirizzo"></label>
+        <div class="me-addr-row">
+          <label><span>CAP</span><input type="text" id="me-res-cap" maxlength="5"></label>
+          <label><span>Città</span><input type="text" id="me-res-citta"></label>
+          <label><span>Prov.</span><input type="text" id="me-res-prov" maxlength="2" style="text-transform:uppercase"></label>
+        </div>
+        <label class="inline-check"><input type="checkbox" id="me-dom-diverso"> <span>Domicilio diverso dalla residenza</span></label>
+        <div id="me-dom-block" class="me-dom-block" hidden>
+          <label><span>Indirizzo (domicilio)</span><input type="text" id="me-dom-indirizzo"></label>
+          <div class="me-addr-row">
+            <label><span>CAP</span><input type="text" id="me-dom-cap" maxlength="5"></label>
+            <label><span>Città</span><input type="text" id="me-dom-citta"></label>
+            <label><span>Prov.</span><input type="text" id="me-dom-prov" maxlength="2" style="text-transform:uppercase"></label>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="me-fieldset">
+        <legend>Contatto di emergenza</legend>
+        <div class="row">
+          <label><span>Nome e cognome</span><input type="text" id="me-emerg-nome"></label>
+          <label><span>Telefono</span><input type="text" id="me-emerg-tel"></label>
+        </div>
+        <label><span>Parentela</span><select id="me-emerg-parentela"><option value="">—</option></select></label>
+      </fieldset>
+
+      <div class="me-actions">
+        <button type="submit" class="primary-btn" id="me-save">💾 Salva i miei dati</button>
+        <span id="me-save-status" class="me-status"></span>
+      </div>
+    </form>
+
+    <section class="me-fieldset">
+      <legend>I miei documenti</legend>
+      <p class="cfg-hint">
+        Carica qui i tuoi documenti identificativi. Per ognuno indica la data di scadenza,
+        così l'HR ti avvisa prima che scada.
+      </p>
+      <div id="me-docs-list"></div>
+    </section>
+
+    <section class="me-fieldset" id="me-accetta-section" hidden>
+      <legend>📝 Documenti da leggere e accettare</legend>
+      <p class="cfg-hint">
+        Clicca su "Leggi" per visualizzare il documento e poi su "Ho letto e accetto"
+        quando hai finito. La tua accettazione viene registrata con data, ora e indirizzo IP.
+      </p>
+      <div id="me-accetta-list"></div>
+    </section>
+
+    <section class="me-fieldset" id="me-firma-section" hidden>
+      <legend>✍️ Documenti da firmare e ricaricare</legend>
+      <p class="cfg-hint">
+        Scarica il documento, stampalo, firmalo e carica una scansione (o una foto leggibile).
+        Se non puoi stamparlo a casa, contatta l'HR per la copia cartacea.
+      </p>
+      <div id="me-firma-list"></div>
+    </section>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="data.js?v=b3"></script>
+<script src="me.js?v=b3"></script>
+</body>
+</html>

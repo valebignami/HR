@@ -1,0 +1,19 @@
+# --- Non pubblicare su GitHub Pages (cartella pubblica) ---
+
+# SQL: schema DB, policy RLS, definizioni RPC — non vanno esposti pubblicamente
+sql/
+
+# Documentazione interna (contesto aziendale, architettura)
+*.md
+
+# Eventuali segreti / ambiente (per sicurezza, non dovrebbero mai esistere qui)
+.env
+.env.*
+*credentials*.json
+*secret*
+token.json
+
+# File di sistema
+desktop.ini
+Thumbs.db
+.DS_Store

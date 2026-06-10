@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HR Overland — Compliance personale</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" defer></script>
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="login-overlay" class="login-overlay">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-mark">HR</div>
+      <div>
+        <div class="brand-title">HR Overland</div>
+        <div class="login-subtitle">Accesso riservato</div>
+      </div>
+    </div>
+    <form id="login-form" class="login-form">
+      <label><span>Email</span>
+        <input type="email" id="login-email" autocomplete="username" required></label>
+      <label><span>Password</span>
+        <input type="password" id="login-password" autocomplete="current-password" required></label>
+      <div id="login-error" class="login-error" hidden></div>
+      <button type="submit" class="primary-btn" id="login-submit">Accedi</button>
+    </form>
+  </div>
+</div>
+
+<div class="app" id="app-root" hidden>
+
+  <div id="drawer-backdrop" class="drawer-backdrop"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">HR</div>
+      <div>
+        <div class="brand-title">HR Overland</div>
+        <div class="brand-sub">Compliance D.Lgs 81/08</div>
+      </div>
+    </div>
+
+    <nav class="modules" id="modules">
+      <button class="module-btn active" data-view="compliance">
+        <span class="mod-ico">📅</span><span>Scadenze</span>
+        <span class="mod-count" id="count-gap">0</span>
+      </button>
+      <button class="module-btn" data-view="cariche">
+        <span class="mod-ico">🏛</span><span>Cariche aziendali</span>
+        <span class="mod-count" id="count-cariche">0</span>
+      </button>
+      <button class="module-btn" data-view="dipendenti">
+        <span class="mod-ico">👥</span><span>Dipendenti</span>
+        <span class="mod-count" id="count-dip">0</span>
+      </button>
+      <button class="module-btn" data-view="storico">
+        <span class="mod-ico">📜</span><span>Storico</span>
+        <span class="mod-count" id="count-storico">0</span>
+      </button>
+      <button class="module-btn" data-view="config">
+        <span class="mod-ico">⚙️</span><span>Configurazione</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <button class="ghost-btn" id="btn-export">⬇ Export Excel</button>
+      <div class="sidebar-user">
+        <span class="sidebar-user-email" id="user-email">—</span>
+        <button class="ghost-btn logout-btn" id="btn-logout" title="Esci">🚪 Esci</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <header class="topbar">
+      <button id="hamburger" class="icon-btn hamburger-btn" aria-label="Menu">☰</button>
+      <div class="view-toggle" id="comp-view-toggle" hidden>
+        <button class="vt-btn active" data-compview="list">📋 Lista</button>
+        <button class="vt-btn" data-compview="calendar">📅 Calendario</button>
+      </div>
+      <div class="search" id="search-wrap">
+        <input type="text" id="search" placeholder="🔎 Cerca…">
+      </div>
+      <div class="topbar-actions">
+        <button class="btn-clear-filters" id="btn-clear-filters" hidden>✕ Pulisci filtri</button>
+        <button class="primary-btn" id="btn-add">+ Nuovo</button>
+      </div>
+    </header>
+
+    <!-- ============ VISTA COMPLIANCE ============ -->
+    <section class="view" id="view-compliance">
+      <section class="dashboard">
+        <button type="button" class="kpi red" data-cstatus="scaduto">
+          <div class="kpi-label">Scaduti</div>
+          <div class="kpi-value" id="kpi-scaduto">0</div>
+        </button>
+        <button type="button" class="kpi orange" data-cstatus="in_scadenza">
+          <div class="kpi-label">In scadenza (60gg)</div>
+          <div class="kpi-value" id="kpi-inscadenza">0</div>
+        </button>
+        <button type="button" class="kpi blue" data-cstatus="ok">
+          <div class="kpi-label">In regola</div>
+          <div class="kpi-value" id="kpi-ok">0</div>
+        </button>
+      </section>
+
+      <div class="filters-bar">
+        <select id="filter-dipendente"><option value="">Tutti i dipendenti</option></select>
+        <select id="filter-mansione"><option value="">Tutte le mansioni</option></select>
+        <select id="filter-incarico"><option value="">Tutti gli incarichi</option></select>
+      </div>
+
+      <div class="comp-wrap" id="comp-wrap">
+        <div class="list">
+          <div class="comp-head">
+            <div>Dipendente</div>
+            <div>Mansione / Incarichi</div>
+            <div>Requisito</div>
+            <div>Categoria</div>
+            <div>Scadenza</div>
+            <div>Stato</div>
+          </div>
+          <div id="comp-rows"></div>
+          <div id="comp-empty" class="empty" hidden>
+            <div class="empty-ico">✅</div>
+            <div>Nessun risultato per i filtri scelti.</div>
+          </div>
+        </div>
+      </div>
+
+      <section class="calendar-wrap" id="comp-cal-wrap" hidden>
+        <div class="cal-toolbar">
+          <button class="icon-btn cal-nav" id="cal-prev">‹</button>
+          <h2 id="cal-title">—</h2>
+          <button class="icon-btn cal-nav" id="cal-next">›</button>
+          <button class="ghost-btn" id="cal-today">Oggi</button>
+          <div class="cal-legend">
+            <span class="leg"><i class="leg-chip sanitario"></i>Sanitario</span>
+            <span class="leg"><i class="leg-chip formazione"></i>Formazione</span>
+            <span class="leg"><i class="leg-chip abilitazione"></i>Abilitazione</span>
+            <span class="leg"><i class="leg-chip dpi"></i>DPI</span>
+          </div>
+        </div>
+        <div class="cal-weekdays">
+          <div>Lun</div><div>Mar</div><div>Mer</div><div>Gio</div><div>Ven</div><div>Sab</div><div>Dom</div>
+        </div>
+        <div class="cal-grid" id="cal-grid"></div>
+      </section>
+    </section>
+
+    <!-- ============ VISTA CARICHE AZIENDALI ============ -->
+    <section class="view" id="view-cariche" hidden>
+      <div class="cariche-wrap" id="cariche-wrap">
+        <p class="cfg-hint">Per ogni incarico configurato con un "minimo richiesto", l'app verifica che in azienda ci siano abbastanza dipendenti attivi nominati. Imposta o modifica i minimi dalla Configurazione → Ruoli.</p>
+        <div class="cariche-list" id="cariche-list"></div>
+        <div id="cariche-empty" class="empty" hidden>
+          <div class="empty-ico">🏛</div>
+          <div>Nessun incarico ha un "minimo richiesto" impostato. Vai in Configurazione → Ruoli per definirlo.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ VISTA DIPENDENTI ============ -->
+    <section class="view" id="view-dipendenti" hidden>
+      <div class="cards-grid" id="dip-cards"></div>
+      <div id="dip-empty" class="empty" hidden>
+        <div class="empty-ico">👥</div>
+        <div>Nessun dipendente in anagrafica. Clicca "+ Nuovo dipendente".</div>
+      </div>
+    </section>
+
+    <!-- ============ VISTA STORICO ============ -->
+    <section class="view" id="view-storico" hidden>
+      <div class="filters-bar">
+        <select id="filter-st-dipendente"><option value="">Tutti i dipendenti</option></select>
+        <select id="filter-st-tipo"><option value="">Tutti i tipi</option></select>
+        <select id="filter-st-categoria"><option value="">Tutte le categorie</option></select>
+        <select id="filter-st-anno"><option value="">Tutti gli anni</option></select>
+        <select id="filter-st-mese">
+          <option value="">Tutti i mesi</option>
+          <option value="01">Gennaio</option><option value="02">Febbraio</option>
+          <option value="03">Marzo</option><option value="04">Aprile</option>
+          <option value="05">Maggio</option><option value="06">Giugno</option>
+          <option value="07">Luglio</option><option value="08">Agosto</option>
+          <option value="09">Settembre</option><option value="10">Ottobre</option>
+          <option value="11">Novembre</option><option value="12">Dicembre</option>
+        </select>
+      </div>
+
+      <div class="storico-toolbar">
+        <div class="storico-summary" id="storico-summary">—</div>
+        <button class="ghost-btn" id="storico-excel">📥 Registro Excel</button>
+      </div>
+
+      <section class="list-wrap" id="storico-list-wrap">
+        <div class="list">
+          <div class="list-head storico-head">
+            <div></div><div>Data evento</div><div>Dipendente</div><div>Requisito</div><div>Scadenza</div><div>Tipo</div><div>Doc</div>
+          </div>
+          <div id="storico-rows"></div>
+          <div id="storico-empty" class="empty" hidden>
+            <div class="empty-ico">📜</div><div>Nessun evento per i filtri scelti.</div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ VISTA CONFIGURAZIONE ============ -->
+    <section class="view" id="view-config" hidden>
+      <div class="config-tabs">
+        <button class="ct-btn active" data-ctab="ruoli">🏭 Ruoli</button>
+        <button class="ct-btn" data-ctab="categorie">🏷 Categorie</button>
+        <button class="ct-btn" data-ctab="tipi">📋 Tipi di requisito</button>
+        <button class="ct-btn" data-ctab="matrice">🔗 Matrice ruolo → requisiti</button>
+        <button class="ct-btn" data-ctab="onboarding">✅ Onboarding</button>
+        <button class="ct-btn" data-ctab="modelli">📄 Modelli documento</button>
+      </div>
+
+      <div class="config-panel" id="cfg-ruoli">
+        <div class="config-toolbar">
+          <h3>Ruoli (mansioni e incarichi)</h3>
+          <button class="primary-btn" id="add-ruolo">+ Nuovo ruolo</button>
+        </div>
+        <div class="cfg-table" id="ruoli-table"></div>
+      </div>
+
+      <div class="config-panel" id="cfg-categorie" hidden>
+        <div class="config-toolbar">
+          <h3>Categorie di requisito</h3>
+          <button class="primary-btn" id="add-categoria">+ Nuova categoria</button>
+        </div>
+        <p class="cfg-hint">Le categorie raggruppano i tipi di requisito (es. Sanitario, Formazione, DPI). Modificarle o aggiungerne non richiede toccare codice.</p>
+        <div class="cfg-table" id="categorie-table"></div>
+      </div>
+
+      <div class="config-panel" id="cfg-tipi" hidden>
+        <div class="config-toolbar">
+          <h3>Tipi di requisito (catalogo obblighi)</h3>
+          <button class="primary-btn" id="add-tipo">+ Nuovo tipo</button>
+        </div>
+        <div class="cfg-table" id="tipi-table"></div>
+      </div>
+
+      <div class="config-panel" id="cfg-modelli" hidden>
+        <div class="config-toolbar">
+          <h3>Modelli documento aziendali</h3>
+          <button class="primary-btn" id="add-modello">+ Nuovo modello</button>
+        </div>
+        <p class="cfg-hint">Questi modelli vengono usati dalle voci onboarding di tipo "Genera PDF". Nel contenuto puoi usare i segnaposto <code>{{nome}}</code>, <code>{{cognome}}</code>, ecc. che verranno sostituiti coi dati del dipendente al momento della generazione.</p>
+        <div class="cfg-table" id="modelli-table"></div>
+      </div>
+
+      <div class="config-panel" id="cfg-onboarding" hidden>
+        <div class="config-toolbar">
+          <h3>Template checklist onboarding</h3>
+          <button class="primary-btn" id="add-onboard-item">+ Nuova voce</button>
+        </div>
+        <p class="cfg-hint">Queste voci vengono assegnate automaticamente a ogni nuovo dipendente. La data di scadenza si calcola sommando i giorni indicati alla sua data di assunzione.</p>
+        <div class="cfg-table" id="onboard-items-table"></div>
+      </div>
+
+      <div class="config-panel" id="cfg-matrice" hidden>
+        <div class="config-toolbar">
+          <h3>Matrice: quali obblighi ha ogni ruolo</h3>
+          <button class="primary-btn" id="add-requisito">+ Nuova regola</button>
+        </div>
+        <p class="cfg-hint">Le regole sono dati editabili: cambiare una periodicità o aggiungere un obbligo NON richiede modifiche al codice.</p>
+        <div class="cfg-table" id="matrice-table"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ MODALE DIPENDENTE ============ -->
+<div id="modal-dip" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="dip-title">Nuovo dipendente</h2>
+      <button class="icon-btn" id="dip-close">✕</button>
+    </div>
+    <form id="dip-form" class="modal-body">
+      <input type="hidden" id="dip-id">
+      <div class="row">
+        <label><span>Nome *</span><input type="text" id="dip-nome" required></label>
+        <label><span>Cognome *</span><input type="text" id="dip-cognome" required></label>
+      </div>
+      <div class="row">
+        <label><span>Codice fiscale</span><input type="text" id="dip-cf"></label>
+        <label><span>Data di nascita</span><input type="date" id="dip-nascita"></label>
+      </div>
+      <div class="row">
+        <label><span>Data assunzione</span><input type="date" id="dip-assunzione"></label>
+        <label><span>Livello CCNL</span><select id="dip-livello"></select></label>
+      </div>
+      <div class="row">
+        <label><span>Email</span><input type="email" id="dip-email"></label>
+        <label><span>Telefono</span><input type="text" id="dip-telefono"></label>
+      </div>
+      <div class="dip-section">
+        <button type="button" class="history-toggle dip-section-toggle">
+          <span class="history-arrow">▸</span>
+          <span>Dati personali estesi</span>
+        </button>
+        <div class="dip-section-body" hidden>
+          <div class="row">
+            <label><span>Luogo di nascita</span><input type="text" id="dip-luogo-nascita"></label>
+            <label><span>Sesso</span><select id="dip-sesso"><option value="">—</option></select></label>
+          </div>
+          <div class="row">
+            <label><span>Cittadinanza</span><input type="text" id="dip-cittadinanza" placeholder="Es. Italiana"></label>
+            <label><span>Stato civile</span><select id="dip-stato-civile"><option value="">—</option></select></label>
+          </div>
+          <label><span>Titolo di studio</span><input type="text" id="dip-titolo-studio" placeholder="Es. Diploma perito"></label>
+        </div>
+      </div>
+
+      <div class="dip-section">
+        <button type="button" class="history-toggle dip-section-toggle">
+          <span class="history-arrow">▸</span>
+          <span>Residenza</span>
+        </button>
+        <div class="dip-section-body" hidden>
+          <label><span>Indirizzo</span><input type="text" id="dip-res-indirizzo"></label>
+          <div class="row">
+            <label><span>CAP</span><input type="text" id="dip-res-cap" maxlength="5"></label>
+            <label><span>Città</span><input type="text" id="dip-res-citta"></label>
+          </div>
+          <label><span>Provincia (sigla)</span><input type="text" id="dip-res-prov" maxlength="2" style="text-transform:uppercase"></label>
+          <label class="inline-check"><input type="checkbox" id="dip-dom-diverso"> <span>Domicilio diverso dalla residenza</span></label>
+          <div id="dip-dom-block" hidden>
+            <label><span>Indirizzo (domicilio)</span><input type="text" id="dip-dom-indirizzo"></label>
+            <div class="row">
+              <label><span>CAP</span><input type="text" id="dip-dom-cap" maxlength="5"></label>
+              <label><span>Città</span><input type="text" id="dip-dom-citta"></label>
+            </div>
+            <label><span>Provincia (sigla)</span><input type="text" id="dip-dom-prov" maxlength="2" style="text-transform:uppercase"></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="dip-section">
+        <button type="button" class="history-toggle dip-section-toggle">
+          <span class="history-arrow">▸</span>
+          <span>Contratto</span>
+        </button>
+        <div class="dip-section-body" hidden>
+          <div class="row">
+            <label><span>Tipo contratto</span><select id="dip-tipo-contratto"><option value="">—</option></select></label>
+            <label id="dip-fine-contr-wrap" hidden><span>Data fine contratto</span><input type="date" id="dip-data-fine-contratto"></label>
+          </div>
+          <div class="row">
+            <label><span>Data fine periodo di prova</span><input type="date" id="dip-data-fine-prova"></label>
+            <label><span>Qualifica</span><select id="dip-qualifica"><option value="">—</option></select></label>
+          </div>
+          <div class="row">
+            <label><span>Orario di lavoro</span><select id="dip-orario"><option value="">—</option></select></label>
+            <label><span>Ore settimanali</span><input type="number" id="dip-ore" min="0" max="60" step="0.5" placeholder="40"></label>
+          </div>
+          <label><span>Sede di lavoro</span><input type="text" id="dip-sede" placeholder="Es. Stabilimento Bergamo"></label>
+          <label><span>IBAN</span><input type="text" id="dip-iban" placeholder="IT00 X000 0000 0000 0000 0000 000" maxlength="34"></label>
+          <label><span>RAL (Reddito Annuo Lordo, opzionale)</span><input type="number" id="dip-ral" min="0" step="100" placeholder="€"></label>
+        </div>
+      </div>
+
+      <div class="dip-section">
+        <button type="button" class="history-toggle dip-section-toggle">
+          <span class="history-arrow">▸</span>
+          <span>🦺 Taglie DPI</span>
+        </button>
+        <div class="dip-section-body" hidden>
+          <p class="cfg-hint">Quando registri una nuova consegna DPI, la taglia viene pre-popolata da qui (puoi modificarla in consegna se serve).</p>
+          <div class="row">
+            <label><span>Scarpe</span><select id="dip-taglia-scarpe"><option value="">—</option></select></label>
+            <label><span>Tuta</span><select id="dip-taglia-tuta"><option value="">—</option></select></label>
+          </div>
+          <div class="row">
+            <label><span>Guanti chimici</span><select id="dip-taglia-guanti"><option value="">—</option></select></label>
+            <label><span>Maschera respiratoria</span><select id="dip-taglia-maschera"><option value="">—</option></select></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="dip-section">
+        <button type="button" class="history-toggle dip-section-toggle">
+          <span class="history-arrow">▸</span>
+          <span>Contatto di emergenza</span>
+        </button>
+        <div class="dip-section-body" hidden>
+          <div class="row">
+            <label><span>Nome e cognome</span><input type="text" id="dip-emerg-nome"></label>
+            <label><span>Telefono</span><input type="text" id="dip-emerg-tel"></label>
+          </div>
+          <label><span>Parentela</span><select id="dip-emerg-parentela"><option value="">—</option></select></label>
+        </div>
+      </div>
+
+      <fieldset class="responsabili-fieldset">
+        <legend>Mansione (obbligatoria, una sola)</legend>
+        <select id="dip-mansione" required></select>
+      </fieldset>
+
+      <fieldset class="responsabili-fieldset">
+        <legend>Incarichi / nomine</legend>
+        <div id="dip-incarichi" class="responsabili-checkboxes"></div>
+      </fieldset>
+
+      <label class="inline-check"><input type="checkbox" id="dip-attivo" checked> <span>In forza (attivo)</span></label>
+
+      <div class="dip-section" id="dip-cessazione-section" hidden>
+        <button type="button" class="history-toggle dip-section-toggle">
+          <span class="history-arrow">▸</span>
+          <span>Cessazione</span>
+        </button>
+        <div class="dip-section-body" hidden>
+          <div class="row">
+            <label><span>Data cessazione</span><input type="date" id="dip-data-cessazione"></label>
+            <label><span>Motivo</span><select id="dip-motivo-cessazione"><option value="">—</option></select></label>
+          </div>
+        </div>
+      </div>
+
+      <label><span>Note</span><textarea id="dip-note" rows="2"></textarea></label>
+
+      <div id="dip-adempimenti-section" class="adempimenti-section" hidden>
+        <div class="adempimenti-head">
+          <span>Adempimenti del dipendente</span>
+          <div class="adempimenti-actions">
+            <button type="button" class="ghost-btn" id="dip-backup-zip" title="Scarica tutti i PDF di questo dipendente come ZIP">📦 Esporta backup</button>
+            <select id="dip-add-adempimento" class="ghost-btn" title="Aggiungi un adempimento extra non previsto dai ruoli">
+              <option value="">+ Aggiungi adempimento…</option>
+            </select>
+          </div>
+        </div>
+        <div id="dip-adempimenti-list"></div>
+      </div>
+
+      <div id="dip-dpi-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-dpi-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>🦺 DPI consegnati</span>
+          <span class="history-count" id="dip-dpi-count">0</span>
+          <button type="button" class="ghost-btn" id="dip-dpi-add" style="margin-left:8px">+ Consegna DPI</button>
+        </button>
+        <div id="dip-dpi-list" hidden></div>
+      </div>
+
+      <div id="dip-onboard-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-onboard-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>Checklist onboarding</span>
+          <span class="history-count" id="dip-onboard-count">0/0</span>
+        </button>
+        <div id="dip-onboard-list" hidden></div>
+      </div>
+
+      <div id="dip-provv-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-provv-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>Provvedimenti disciplinari</span>
+          <span class="history-count" id="dip-provv-count">0</span>
+          <button type="button" class="ghost-btn" id="dip-provv-add" style="margin-left:8px">+ Nuovo</button>
+        </button>
+        <div id="dip-provv-list" hidden></div>
+      </div>
+
+      <div id="dip-history-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-history-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>Storico esecuzioni</span>
+          <span class="history-count" id="dip-history-count">0</span>
+        </button>
+        <div id="dip-history-list" hidden></div>
+      </div>
+
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="dip-delete" hidden>🗑 Elimina</button>
+        <button type="button" class="ghost-btn" id="dip-invite" hidden title="Genera un link da inviare al dipendente (via WhatsApp, Outlook, qualsiasi cosa) per compilare i suoi dati">🔗 Genera link self-service</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="dip-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE ADEMPIMENTO ============ -->
+<div id="modal-adempimento" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="adm-title">Registra adempimento</h2>
+      <button class="icon-btn" id="adm-close">✕</button>
+    </div>
+    <form id="adm-form" class="modal-body">
+      <input type="hidden" id="adm-id">
+      <input type="hidden" id="adm-dip-id">
+      <div class="done-target" id="adm-dip-name">—</div>
+      <label id="adm-tipo-wrap"><span>Tipo di requisito *</span><select id="adm-tipo" required></select></label>
+      <div id="adm-tipo-fixed" class="done-target" hidden>—</div>
+      <div class="row">
+        <div class="ro-field"><span class="ro-label">Data rilascio</span><span class="ro-value" id="adm-rilascio-ro">—</span></div>
+        <div class="ro-field"><span class="ro-label">Scadenza</span><span class="ro-value" id="adm-scadenza-ro">—</span></div>
+      </div>
+      <p class="cfg-hint" id="adm-auto-hint"></p>
+      <div class="ro-field" id="adm-doc-ro-wrap" hidden>
+        <span class="ro-label">Documento</span>
+        <button type="button" class="ghost-btn" id="adm-doc-open" style="align-self:flex-start">📎 Apri PDF allegato</button>
+      </div>
+
+      <div id="adm-history-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="adm-history-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>Storico esecuzioni</span>
+          <span class="history-count" id="adm-history-count">0</span>
+        </button>
+        <div id="adm-history-list" hidden></div>
+      </div>
+
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn success" id="adm-rinnova" title="Registra la data dell'evento e l'eventuale nuovo PDF">✓ Fatto</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="adm-cancel">Chiudi</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE "FATTO" (rinnovo con 1 click) ============ -->
+<div id="modal-fatto" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2>✓ Segna come fatto</h2>
+      <button class="icon-btn" id="fatto-close">✕</button>
+    </div>
+    <form id="fatto-form" class="modal-body">
+      <input type="hidden" id="fatto-adm-id">
+      <div class="done-target" id="fatto-target">—</div>
+      <label><span>Data dell'evento (visita, corso, ecc.)</span>
+        <input type="date" id="fatto-data" required></label>
+      <label><span>Nuovo PDF (opzionale, sostituisce quello attuale che resta nello storico)</span>
+        <input type="file" id="fatto-file" accept=".pdf,image/*"></label>
+      <div id="fatto-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      <p class="cfg-hint" id="fatto-hint"></p>
+      <div class="modal-foot">
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="fatto-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">✓ Conferma</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE RUOLO ============ -->
+<div id="modal-ruolo" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><h2 id="ruolo-title">Nuovo ruolo</h2><button class="icon-btn" id="ruolo-close">✕</button></div>
+    <form id="ruolo-form" class="modal-body">
+      <input type="hidden" id="ruolo-id">
+      <label><span>Nome *</span><input type="text" id="ruolo-nome" required></label>
+      <label><span>Tipo *</span>
+        <select id="ruolo-tipo" required>
+          <option value="mansione">Mansione</option>
+          <option value="incarico">Incarico/Nomina</option>
+        </select></label>
+      <label id="ruolo-minimo-wrap" hidden>
+        <span>Minimo richiesto in azienda (es. RLS = 1, antincendio = 2)</span>
+        <input type="number" id="ruolo-minimo" min="0" value="0">
+      </label>
+      <label><span>Note</span><textarea id="ruolo-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="ruolo-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="ruolo-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE MODELLO DOCUMENTO ============ -->
+<div id="modal-modello" class="modal" hidden>
+  <div class="modal-card" style="max-width:900px">
+    <div class="modal-head">
+      <h2 id="modello-title">Modello documento</h2>
+      <button class="icon-btn" id="modello-close">✕</button>
+    </div>
+    <form id="modello-form" class="modal-body">
+      <input type="hidden" id="modello-id">
+      <div class="row">
+        <label><span>Nome *</span><input type="text" id="modello-nome" required placeholder="Es. Lettera di assunzione"></label>
+        <label><span>Descrizione</span><input type="text" id="modello-desc" placeholder="A che serve questo modello"></label>
+      </div>
+      <div class="modello-editor">
+        <div class="modello-segnaposto">
+          <div class="modello-segnaposto-title">Segnaposto disponibili</div>
+          <div class="modello-segnaposto-list" id="modello-segnaposto-list"></div>
+          <p class="cfg-hint">Click su un segnaposto per copiarlo. Incollalo nel testo dove vuoi che compaia il dato.</p>
+        </div>
+        <label class="modello-textarea-wrap">
+          <span>Contenuto del documento (HTML semplice)</span>
+          <textarea id="modello-contenuto" rows="20" placeholder="Scrivi qui il testo. Puoi usare <h1>, <h2>, <p>, <strong>, <ul>, <li>, <br>…"></textarea>
+        </label>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="modello-delete" hidden>🗑 Elimina</button>
+        <button type="button" class="ghost-btn" id="modello-preview">👁 Anteprima</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="modello-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE VOCE TEMPLATE ONBOARDING (gestione catalogo) ============ -->
+<div id="modal-onboard-item" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="onbi-title">Voce template onboarding</h2>
+      <button class="icon-btn" id="onbi-close">✕</button>
+    </div>
+    <form id="onbi-form" class="modal-body">
+      <input type="hidden" id="onbi-id">
+      <label><span>Etichetta *</span><input type="text" id="onbi-label" required placeholder="Es. Consegna DPI iniziale"></label>
+      <label><span>Descrizione</span><textarea id="onbi-descrizione" rows="2"></textarea></label>
+      <div class="row">
+        <label><span>Giorni dall'assunzione *</span><input type="number" id="onbi-giorni" min="0" value="0"></label>
+        <label><span>Ordine</span><input type="number" id="onbi-ordine" min="0" value="100"></label>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="onbi-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="onbi-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE VOCE ONBOARDING (dettaglio di una voce) ============ -->
+<div id="modal-onboard" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="onboard-title">Voce onboarding</h2>
+      <button class="icon-btn" id="onboard-close">✕</button>
+    </div>
+    <form id="onboard-form" class="modal-body">
+      <input type="hidden" id="onboard-progr-id">
+      <input type="hidden" id="onboard-dip-id">
+      <input type="hidden" id="onboard-item-id">
+      <div class="done-target" id="onboard-target">—</div>
+      <p class="cfg-hint" id="onboard-descrizione"></p>
+
+      <fieldset class="recur doc-block" id="onboard-wf-adempimento" hidden>
+        <legend id="onboard-adm-legend">📋 Registra l'evento</legend>
+        <p class="cfg-hint" id="onboard-adm-hint">Al salvataggio, l'app crea/aggiorna automaticamente l'adempimento di compliance corrispondente.</p>
+        <div class="row">
+          <label><span>Data evento *</span><input type="date" id="onboard-adm-data"></label>
+          <label><span id="onboard-adm-ente-label">Ente/Medico</span><input type="text" id="onboard-adm-ente" placeholder=""></label>
+        </div>
+        <div id="onboard-adm-visita-wrap" hidden>
+          <div class="row">
+            <label><span>Esito visita</span>
+              <select id="onboard-adm-esito">
+                <option value="">—</option>
+                <option value="idoneo">✅ Idoneo</option>
+                <option value="idoneo_con_prescrizioni">⚠️ Idoneo con prescrizioni</option>
+                <option value="non_idoneo">❌ Non idoneo</option>
+              </select>
+            </label>
+            <label><span>Prossima scadenza calcolata</span><input type="date" id="onboard-adm-scadenza" disabled></label>
+          </div>
+          <label><span>Prescrizioni / limitazioni (opzionale)</span><textarea id="onboard-adm-prescrizioni" rows="2"></textarea></label>
+        </div>
+        <div id="onboard-adm-formazione-wrap" hidden>
+          <div class="row">
+            <label><span>Ore effettive</span><input type="number" id="onboard-adm-ore" min="0" step="0.5" placeholder="Es. 4 / 12"></label>
+            <label><span>Prossima scadenza calcolata</span><input type="date" id="onboard-adm-scadenza-form" disabled></label>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="recur doc-block" id="onboard-wf-genera" hidden>
+        <legend>📄 Genera documento aziendale</legend>
+        <label><span>Modello da usare</span><select id="onboard-tpl-id"><option value="">— seleziona —</option></select></label>
+        <p class="cfg-hint">L'app prende il modello scelto, sostituisce i segnaposto coi dati del dipendente, e apre il documento in una finestra pronta da stampare o salvare come PDF.</p>
+        <button type="button" class="primary-btn" id="onboard-genera-btn" style="align-self:flex-start">📄 Genera per il dipendente</button>
+      </fieldset>
+
+      <label class="inline-check"><input type="checkbox" id="onboard-fatto"> <span>Voce completata</span></label>
+      <div class="row">
+        <label><span>Data completamento</span><input type="date" id="onboard-fatto-il"></label>
+        <label><span>Eseguito da</span><input type="text" id="onboard-fatto-da" placeholder="Es. Valentina"></label>
+      </div>
+      <fieldset class="recur doc-block">
+        <legend>Documento (opzionale)</legend>
+        <div id="onboard-doc-current" class="doc-current" hidden>
+          <span id="onboard-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="onboard-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="onboard-doc-upload-label">Carica un file</span>
+          <input type="file" id="onboard-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="onboard-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <label><span>Note</span><textarea id="onboard-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="onboard-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE CONSEGNA DPI ============ -->
+<div id="modal-dpi" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="dpi-title">Consegna DPI</h2>
+      <button class="icon-btn" id="dpi-close">✕</button>
+    </div>
+    <form id="dpi-form" class="modal-body">
+      <input type="hidden" id="dpi-id">
+      <input type="hidden" id="dpi-dip-id">
+      <div class="done-target" id="dpi-target">—</div>
+      <label><span>Tipo di DPI *</span><select id="dpi-tipo" required></select></label>
+      <div class="row">
+        <label><span>Taglia</span><select id="dpi-taglia"><option value="">—</option></select></label>
+        <label><span>Quantità</span><input type="number" id="dpi-quantita" min="1" step="1" value="1"></label>
+      </div>
+      <label><span>Data consegna *</span><input type="date" id="dpi-data" required></label>
+      <label><span>Consegnato da</span><input type="text" id="dpi-consegnato-da" placeholder="Es. Valentina"></label>
+      <fieldset class="recur doc-block">
+        <legend>Modulo firmato dal lavoratore (PDF / foto)</legend>
+        <div id="dpi-doc-current" class="doc-current" hidden>
+          <span id="dpi-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="dpi-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="dpi-doc-upload-label">Carica un file</span>
+          <input type="file" id="dpi-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="dpi-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <label><span>Note</span><textarea id="dpi-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="dpi-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="dpi-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE PROVVEDIMENTO DISCIPLINARE ============ -->
+<div id="modal-provv" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="provv-title">Nuovo provvedimento</h2>
+      <button class="icon-btn" id="provv-close">✕</button>
+    </div>
+    <form id="provv-form" class="modal-body">
+      <input type="hidden" id="provv-id">
+      <input type="hidden" id="provv-dip-id">
+      <div class="done-target" id="provv-target">—</div>
+      <div class="row">
+        <label><span>Tipo *</span><select id="provv-tipo" required></select></label>
+        <label><span>Data *</span><input type="date" id="provv-data" required></label>
+      </div>
+      <label><span>Motivazione</span><textarea id="provv-motivazione" rows="3" placeholder="Es. ritardi reiterati, mancato rispetto delle norme di sicurezza…"></textarea></label>
+      <fieldset class="recur doc-block">
+        <legend>Lettera firmata (PDF / immagine)</legend>
+        <div id="provv-doc-current" class="doc-current" hidden>
+          <span id="provv-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="provv-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="provv-doc-upload-label">Carica un file</span>
+          <input type="file" id="provv-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="provv-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <label><span>Note</span><textarea id="provv-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="provv-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="provv-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE INVITO SELF-SERVICE ============ -->
+<div id="modal-invite" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2>🔗 Link self-service generato</h2>
+      <button class="icon-btn" id="invite-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p>Questo è il link da inviare a <strong id="invite-target">—</strong>. Lo puoi mandare come vuoi: WhatsApp, Outlook, SMS, copia su un foglietto…</p>
+      <label><span>Link (clicca per selezionare tutto)</span>
+        <input type="text" id="invite-link" readonly>
+      </label>
+      <p class="cfg-hint" id="invite-status"></p>
+      <div class="modal-foot">
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="invite-copy">📋 Copia link</button>
+        <button type="button" class="primary-btn" id="invite-done">Chiudi</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODALE CATEGORIA ============ -->
+<div id="modal-categoria" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><h2 id="cat-title">Nuova categoria</h2><button class="icon-btn" id="cat-close">✕</button></div>
+    <form id="cat-form" class="modal-body">
+      <input type="hidden" id="cat-id">
+      <label><span>Nome *</span><input type="text" id="cat-nome" required placeholder="Es. Sicurezza alimentare"></label>
+      <label><span>Icona (un emoji, opzionale)</span><input type="text" id="cat-icon" maxlength="4" placeholder="Es. 🍴"></label>
+      <label><span>Ordine (numero, più basso = mostrato prima)</span><input type="number" id="cat-ordine" min="0" value="100"></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="cat-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="cat-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE TIPO REQUISITO ============ -->
+<div id="modal-tipo" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><h2 id="tipo-title">Nuovo tipo di requisito</h2><button class="icon-btn" id="tipo-close">✕</button></div>
+    <form id="tipo-form" class="modal-body">
+      <input type="hidden" id="tipo-id">
+      <label><span>Nome *</span><input type="text" id="tipo-nome" required></label>
+      <label><span>Categoria *</span><select id="tipo-categoria" required></select></label>
+      <label><span>Durata iniziale (es. "12h + pratica")</span><input type="text" id="tipo-durata"></label>
+      <label><span>Riferimento normativo</span><input type="text" id="tipo-norma"></label>
+      <label><span>Descrizione</span><textarea id="tipo-desc" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="tipo-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="tipo-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE REGOLA (matrice) ============ -->
+<div id="modal-requisito" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><h2 id="req-title">Nuova regola</h2><button class="icon-btn" id="req-close">✕</button></div>
+    <form id="req-form" class="modal-body">
+      <input type="hidden" id="req-id">
+      <label><span>Ruolo *</span><select id="req-ruolo" required></select></label>
+      <label><span>Tipo di requisito *</span><select id="req-tipo" required></select></label>
+      <div class="row">
+        <label class="inline-check"><input type="checkbox" id="req-obblig" checked> <span>Obbligatorio</span></label>
+        <label><span>Validità (mesi, vuoto = non scade)</span><input type="number" id="req-validita" min="1"></label>
+      </div>
+      <label><span>Note</span><textarea id="req-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="req-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="req-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
