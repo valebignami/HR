@@ -466,7 +466,7 @@ function renderCompliance() {
     $("comp-cal-wrap").hidden = false;
     // Eventi calendario = righe con una data di scadenza utile.
     const events = rows.filter((r) => r.scadenza).map((r) => ({
-      a: r.adempimento, tipo: r.tipo, dip: r.dip, scadenza: r.scadenza, gg: daysUntil(r.scadenza),
+      a: r.adempimento, tipo: r.tipo, dip: r.dip, scadenza: r.scadenza,
     }));
     renderCalendar(events);
     return;
@@ -554,26 +554,6 @@ function renderDipendenti() {
 }
 
 // ---------- Scadenze ----------
-function scadEnriched() {
-  // Tutti gli adempimenti con data_scadenza, neoassunti compresi (per loro il sync ha
-  // settato data_scadenza = assunzione + 60gg sui mancanti). Trattati come scadenze normali.
-  return state.adempimenti
-    .filter((a) => a.data_scadenza)
-    .map((a) => {
-      const tipo = tipoById(a.tipo_requisito_id);
-      const dip = dipById(a.dipendente_id);
-      return { a, tipo, dip, gg: daysUntil(a.data_scadenza) };
-    })
-    .filter((x) => x.tipo && x.dip && (x.dip.attivo !== false));
-}
-
-function urgencyColor(gg) {
-  if (gg < 0) return "red";
-  if (gg <= 7) return "orange";
-  if (gg <= 30) return "yellow";
-  return "green";
-}
-
 function renderCalendar(all) {
   const ref = state.calRef;
   const y = ref.getFullYear(), m = ref.getMonth();
@@ -1015,13 +995,15 @@ function renderDipDPI(dipId) {
   }));
 }
 
-function toggleDipDpi() {
-  const list = $("dip-dpi-list");
-  const arrow = el(".history-arrow", $("dip-dpi-toggle"));
+// Toggle generico delle sezioni richiudibili nella scheda dipendente/adempimento.
+function toggleSection(toggleId, listId) {
+  const list = $(listId);
+  const btn = $(toggleId);
+  const arrow = el(".history-arrow", btn);
   const willShow = list.hidden;
   list.hidden = !willShow;
   if (arrow) arrow.classList.toggle("expanded", willShow);
-  $("dip-dpi-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
+  btn.setAttribute("aria-expanded", willShow ? "true" : "false");
 }
 
 let pendingDpiFile = null;
@@ -1288,15 +1270,6 @@ function renderDipOnboarding(dipId) {
     ev.stopPropagation();
     await openSignedDoc(btn.dataset.path);
   }));
-}
-
-function toggleDipOnboard() {
-  const list = $("dip-onboard-list");
-  const arrow = el(".history-arrow", $("dip-onboard-toggle"));
-  const willShow = list.hidden;
-  list.hidden = !willShow;
-  if (arrow) arrow.classList.toggle("expanded", willShow);
-  $("dip-onboard-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
 }
 
 let pendingOnboardFile = null;
@@ -1701,15 +1674,6 @@ function renderDipProvvedimenti(dipId) {
   }));
 }
 
-function toggleDipProvv() {
-  const list = $("dip-provv-list");
-  const arrow = el(".history-arrow", $("dip-provv-toggle"));
-  const willShow = list.hidden;
-  list.hidden = !willShow;
-  if (arrow) arrow.classList.toggle("expanded", willShow);
-  $("dip-provv-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
-}
-
 let pendingProvvFile = null;
 
 function openProvvModal(dipId, provvId) {
@@ -1833,15 +1797,6 @@ function renderDipHistory(dipId) {
       window.open(url, "_blank", "noopener");
     }
   }));
-}
-
-function toggleDipHistory() {
-  const list = $("dip-history-list");
-  const arrow = el(".history-arrow", $("dip-history-toggle"));
-  const willShow = list.hidden;
-  list.hidden = !willShow;
-  if (arrow) arrow.classList.toggle("expanded", willShow);
-  $("dip-history-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
 }
 
 function renderDipAdempimenti(dipId) {
@@ -2105,17 +2060,6 @@ async function deleteDip() {
 }
 
 // ---------- Adempimento ----------
-function tipiForDip(_dipId) {
-  // Tutti i tipi del catalogo: l'utente puo' aggiungere anche adempimenti "extra"
-  // non previsti dalla matrice ruolo (es. corsi volontari, certificazioni aggiuntive).
-  return state.tipi.slice().sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
-}
-
-// Stato della modale documento: file in attesa di upload (settato dal change del file input).
-let pendingDocFile = null;
-// Flag che chiede di eliminare il documento esistente al salvataggio.
-let pendingDocDelete = false;
-
 function openAdmModal(dipId, admId, preTipoId) {
   const a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
   const dip = dipById(dipId);
@@ -2197,15 +2141,6 @@ function renderAdmHistory(a) {
   }));
 }
 
-function toggleAdmHistory() {
-  const list = $("adm-history-list");
-  const arrow = el(".history-arrow", $("adm-history-toggle"));
-  const willShow = list.hidden;
-  list.hidden = !willShow;
-  if (arrow) arrow.classList.toggle("expanded", willShow);
-  $("adm-history-toggle").setAttribute("aria-expanded", willShow ? "true" : "false");
-}
-
 // Auto-calcolo scadenza da data rilascio + validita_mesi della regola del tipo selezionato.
 function validitaMesiForTipo(tipoId, dipId) {
   const ruoloIds = new Set(ruoliOfDip(dipId).map((r) => r.id));
@@ -2218,99 +2153,12 @@ function validitaMesiForTipo(tipoId, dipId) {
   }, Infinity);
 }
 
-function updateAutoHint() {
-  const tipoId = $("adm-tipo").value;
-  const dipId = $("adm-dip-id").value;
-  const rilascio = $("adm-rilascio").value;
-  const hint = $("adm-auto-hint");
-  if (!tipoId) { hint.textContent = ""; return; }
-  const v = validitaMesiForTipo(tipoId, dipId);
-  if (v === undefined) { hint.textContent = "Nessuna regola di validità per questo tipo."; return; }
-  if (v === Infinity) { hint.textContent = "Questo requisito non scade."; return; }
-  if (!rilascio) { hint.textContent = `Validità ${v} mesi.`; return; }
-  hint.textContent = `Validità ${v} mesi → scadenza ${fmtDate(addMonths(rilascio, v))}.`;
-}
-
 // Calcolo automatico della data scadenza dal rilascio + regola in matrice.
 function calcScadenza(rilascio, tipoId, dipId) {
   if (!rilascio) return null;
   const v = validitaMesiForTipo(tipoId, dipId);
   if (v === undefined || v === Infinity) return null;
   return addMonths(rilascio, v);
-}
-
-async function saveAdm(e) {
-  e.preventDefault();
-  const id = $("adm-id").value || uid();
-  const dipId = $("adm-dip-id").value;
-  const prev = state.adempimenti.find((x) => x.id === id) || null;
-
-  // Gestione documento: upload nuovo file / elimina esistente / mantieni invariato.
-  let documento_path = prev?.documento_path || null;
-  if (pendingDocDelete && documento_path) {
-    await deleteDoc(documento_path);
-    documento_path = null;
-  }
-  if (pendingDocFile) {
-    $("adm-doc-progress").hidden = false;
-    try {
-      // Sostituzione semplice: elimina il vecchio file (non è uno storico).
-      if (documento_path) await deleteDoc(documento_path);
-      documento_path = await uploadDoc(id, pendingDocFile);
-    } catch (err) {
-      $("adm-doc-progress").hidden = true;
-      alert("Errore upload: " + err.message);
-      return;
-    }
-    $("adm-doc-progress").hidden = true;
-  }
-
-  const row = {
-    id,
-    dipendente_id: dipId,
-    tipo_requisito_id: $("adm-tipo").value,
-    data_rilascio: $("adm-rilascio").value || null,
-    data_scadenza: calcScadenza($("adm-rilascio").value, $("adm-tipo").value, dipId),
-    documento_url: prev?.documento_url || null,
-    documento_path,
-    done: prev ? prev.done : false,
-    done_at: prev?.done_at || null,
-    done_by: prev?.done_by || null,
-    last_done_at: prev?.last_done_at || null,
-    previous_date: prev?.previous_date || null,
-    history: prev?.history || [],
-    note: prev?.note || null,
-  };
-  const ok = await sbUpsert("adempimenti", row);
-  if (!ok) return;
-  pendingDocFile = null;
-  pendingDocDelete = false;
-  closeModal("modal-adempimento");
-  if (!$("modal-dip").hidden && $("dip-id").value === dipId) {
-    renderDipAdempimenti(dipId);
-    renderDipOnboarding(dipId);
-  }
-  renderAll();
-}
-
-async function deleteAdm() {
-  const id = $("adm-id").value;
-  if (!id) return;
-  if (!confirm("Eliminare questo adempimento (anche il PDF associato e lo storico)?")) return;
-  const dipId = $("adm-dip-id").value;
-  const prev = state.adempimenti.find((x) => x.id === id);
-  // Pulisci anche tutti i PDF dello storico.
-  const paths = [];
-  if (prev?.documento_path) paths.push(prev.documento_path);
-  if (Array.isArray(prev?.history)) prev.history.forEach((h) => { if (h.documentoPath) paths.push(h.documentoPath); });
-  if (paths.length) { try { await sb.storage.from(STORAGE_BUCKET).remove(paths); } catch (e) { console.warn(e); } }
-  await sbDelete("adempimenti", id);
-  closeModal("modal-adempimento");
-  if (!$("modal-dip").hidden && $("dip-id").value === dipId) {
-    renderDipAdempimenti(dipId);
-    renderDipOnboarding(dipId);
-  }
-  renderAll();
 }
 
 // ---------- Rinnovo con un click ("Fatto") ----------
@@ -2787,9 +2635,9 @@ function wireEvents() {
   $("invite-done").addEventListener("click", () => closeModal("modal-invite"));
   $("invite-copy").addEventListener("click", copyInviteLink);
   $("invite-link").addEventListener("focus", (e) => e.target.select());
-  $("dip-history-toggle").addEventListener("click", toggleDipHistory);
+  $("dip-history-toggle").addEventListener("click", () => toggleSection("dip-history-toggle", "dip-history-list"));
   // Onboarding (scheda dipendente)
-  $("dip-onboard-toggle").addEventListener("click", toggleDipOnboard);
+  $("dip-onboard-toggle").addEventListener("click", () => toggleSection("dip-onboard-toggle", "dip-onboard-list"));
   $("onboard-form").addEventListener("submit", saveOnboardProgresso);
   $("onboard-close").addEventListener("click", () => closeModal("modal-onboard"));
   $("onboard-cancel").addEventListener("click", () => closeModal("modal-onboard"));
@@ -2833,7 +2681,7 @@ function wireEvents() {
   $("onbi-delete").addEventListener("click", deleteOnboardItem);
 
   // DPI (scheda dipendente)
-  $("dip-dpi-toggle").addEventListener("click", toggleDipDpi);
+  $("dip-dpi-toggle").addEventListener("click", () => toggleSection("dip-dpi-toggle", "dip-dpi-list"));
   $("dip-dpi-add").addEventListener("click", (e) => {
     e.stopPropagation();
     const id = $("dip-id").value;
@@ -2863,7 +2711,7 @@ function wireEvents() {
   });
 
   // Provvedimenti
-  $("dip-provv-toggle").addEventListener("click", toggleDipProvv);
+  $("dip-provv-toggle").addEventListener("click", () => toggleSection("dip-provv-toggle", "dip-provv-list"));
   $("dip-provv-add").addEventListener("click", (e) => {
     e.stopPropagation();
     const id = $("dip-id").value;
@@ -2911,7 +2759,7 @@ function wireEvents() {
     const tipoId = $("adm-tipo").value;
     openFattoModal(id, dipId, tipoId);
   });
-  $("adm-history-toggle").addEventListener("click", toggleAdmHistory);
+  $("adm-history-toggle").addEventListener("click", () => toggleSection("adm-history-toggle", "adm-history-list"));
 
   // Mini-modale "Fatto" (rinnovo con 1 click).
   $("fatto-form").addEventListener("submit", applyFatto);

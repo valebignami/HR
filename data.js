@@ -12,34 +12,12 @@ window.CATEGORIE_REQUISITO = [
   { key: "dpi",         label: "DPI",         icon: "🦺" }
 ];
 
-// Stati di compliance: come vengono mostrati (label + classe colore).
-// L'ordine definisce anche la priorita' (peggiore prima) nelle viste.
-// Tre stati: scaduto / in_scadenza (entro 60gg) / ok (in regola).
-window.STATI_COMPLIANCE = [
-  { key: "scaduto",     label: "Scaduto",      color: "red"    },
-  { key: "in_scadenza", label: "In scadenza",  color: "orange" },
-  { key: "ok",          label: "In regola",    color: "green"  }
-];
-
-// Tipi di ruolo.
-window.TIPI_RUOLO = [
-  { key: "mansione", label: "Mansione", icon: "🏭" },
-  { key: "incarico", label: "Incarico/Nomina", icon: "📌" }
-];
-
 // Soglie di calcolo.
 window.GIORNI_SCADENZA_IMMINENTE = 60;  // entro N giorni = "in scadenza" (copre anche i 60gg di onboarding)
 window.GIORNI_ONBOARDING = 60;          // neoassunto: obbligo da assolvere entro N giorni
 
 // Livelli CCNL Metalmeccanici Confapi (comodita' per il form anagrafica).
 window.LIVELLI_CCNL = ["1", "2", "3", "4", "5", "6", "7"];
-
-// Opzioni di ricorrenza per gli adempimenti (riusate dallo Scadenziario).
-window.RICORRENZE = [
-  { value: "none",  label: "Nessuna (una tantum)" },
-  { value: "month", label: "Ogni N mesi" },
-  { value: "year",  label: "Ogni N anni" }
-];
 
 // ============================================================
 // Lookup per i campi anagrafica estesa (Iterazione A).
