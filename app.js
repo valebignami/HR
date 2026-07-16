@@ -373,8 +373,16 @@ function allGapRows() {
 // ============================================================
 // RENDER
 // ============================================================
+let _gapCache = null;
+// Calcola i gap una sola volta per ciclo di render (invalidata a inizio renderAll).
+function gapRows() {
+  if (!_gapCache) _gapCache = allGapRows();
+  return _gapCache;
+}
+
 function renderAll() {
   if (!state.user) return;
+  _gapCache = null;
   renderCounts();
   if (state.view === "compliance") renderCompliance();
   else if (state.view === "cariche") renderCariche();
@@ -384,7 +392,7 @@ function renderAll() {
 }
 
 function renderCounts() {
-  const gaps = allGapRows();
+  const gaps = gapRows();
   const openGaps = gaps.filter((g) => g.stato !== "ok").length;
   $("count-gap").textContent = openGaps;
   $("count-dip").textContent = state.dipendenti.filter((d) => d.attivo !== false).length;
@@ -437,7 +445,7 @@ function matchSearch(text) {
 }
 
 function renderCompliance() {
-  let rows = allGapRows();
+  let rows = gapRows();
 
   // KPI globali (prima dei filtri tabella, ma il filtro stato applica alla tabella).
   const counts = { scaduto: 0, in_scadenza: 0, ok: 0 };
@@ -1955,12 +1963,13 @@ async function saveDip(e) {
   renderAll();
 }
 
+// Righe MANCANTI da creare per i requisiti obbligatori non ancora a DB.
 // Per ogni tipo requisito dovuto dai ruoli attuali del dipendente, se non esiste già
-// un adempimento crea una riga MANCANTE. Non elimina adempimenti per tipi non più dovuti
+// un adempimento genera una riga MANCANTE. Non elimina adempimenti per tipi non più dovuti
 // (lo storico è prezioso, e se il ruolo torna sono ancora utili). Il motore gap li ignora.
-async function syncAdempimentiObbligatori(dipId) {
+function missingAdempimentiRows(dipId) {
   const dip = dipById(dipId);
-  if (!dip) return;
+  if (!dip) return [];
   const ruoli = ruoliOfDip(dipId);
   const ruoloIds = new Set(ruoli.map((r) => r.id));
   const seen = new Set();
@@ -1968,13 +1977,14 @@ async function syncAdempimentiObbligatori(dipId) {
   const onboardDeadline = dip.data_assunzione
     ? localISO(addDays(parseISO(dip.data_assunzione), GG_ONBOARD))
     : null;
+  const rows = [];
   for (const req of state.requisiti) {
     if (!ruoloIds.has(req.ruolo_id) || !req.obbligatorio) continue;
     if (seen.has(req.tipo_requisito_id)) continue;
     seen.add(req.tipo_requisito_id);
     const exists = state.adempimenti.some((a) => a.dipendente_id === dipId && a.tipo_requisito_id === req.tipo_requisito_id);
     if (exists) continue;
-    await sbUpsert("adempimenti", {
+    rows.push({
       id: uid(),
       dipendente_id: dipId,
       tipo_requisito_id: req.tipo_requisito_id,
@@ -1987,15 +1997,26 @@ async function syncAdempimentiObbligatori(dipId) {
       note: null,
     });
   }
+  return rows;
+}
+
+async function syncAdempimentiObbligatori(dipId) {
+  const rows = missingAdempimentiRows(dipId);
+  for (const row of rows) await sbUpsert("adempimenti", row);
 }
 
 // Boot-time sync: garantisce che ogni dipendente attivo abbia in DB
 // gli adempimenti dovuti dai suoi ruoli (anche se inserito da SQL/migration).
+// Un solo upsert batch e un solo render per tutti i dipendenti.
 async function syncAllDipendenti() {
-  const dips = state.dipendenti.filter((d) => d.attivo !== false);
-  for (const dip of dips) {
-    await syncAdempimentiObbligatori(dip.id);
-  }
+  const rows = state.dipendenti
+    .filter((d) => d.attivo !== false)
+    .flatMap((d) => missingAdempimentiRows(d.id));
+  if (!rows.length) return;
+  const { error } = await sb.from("adempimenti").upsert(rows);
+  if (error) { console.warn("syncAllDipendenti:", error.message); return; }
+  state.adempimenti.push(...rows);
+  renderAll();
 }
 
 // Genera un link self-service per il dipendente. NIENTE email automatica:
@@ -2548,10 +2569,14 @@ function wireEvents() {
 
   els(".module-btn").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
 
+  let searchTimer = null;
   $("search").addEventListener("input", (e) => {
-    state.search = e.target.value.trim();
-    $("btn-clear-filters").hidden = !state.search && !hasActiveFilters();
-    renderAll();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.search = e.target.value.trim();
+      $("btn-clear-filters").hidden = !state.search && !hasActiveFilters();
+      renderAll();
+    }, 200);
   });
   $("btn-clear-filters").addEventListener("click", clearFilters);
   $("btn-export").addEventListener("click", exportExcel);
