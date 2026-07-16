@@ -327,7 +327,6 @@ body {
 .stato.ok          { background: var(--green-soft);  color: #166534; }
 .stato.in_scadenza { background: var(--orange-soft); color: #9a3412; }
 .stato.scaduto     { background: var(--red-soft);    color: #991b1b; }
-.stato.mancante    { background: var(--gray-soft);   color: #4b5563; }
 
 /* ---------- Chips ---------- */
 .chip {
@@ -406,7 +405,6 @@ body {
   border-radius: 999px;
 }
 .gap-pill.scaduto     { background: var(--red-soft);    color: #991b1b; }
-.gap-pill.mancante    { background: var(--gray-soft);   color: #4b5563; }
 .gap-pill.in_scadenza { background: var(--orange-soft); color: #9a3412; }
 .gap-pill.ok          { background: var(--green-soft);  color: #166534; }
 .onboard-flag {

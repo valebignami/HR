@@ -360,7 +360,7 @@ function allGapRows() {
     if (dip.attivo === false) continue;
     out.push(...computeGaps(dip));
   }
-  // Ordine globale: prima i problemi (scaduto/mancante/in_scadenza), in regola in fondo.
+  // Ordine globale: prima i problemi (scaduto/in_scadenza), in regola in fondo.
   // A parità di stato, ordina per scadenza (più imminenti prima).
   out.sort((a, b) => {
     const so = STATO_INFO[a.stato].order - STATO_INFO[b.stato].order;
@@ -520,18 +520,20 @@ function renderDipendenti() {
       (man ? `<span class="chip mansione">${esc(man.nome)}</span>` : "") +
       inc.map((i) => `<span class="chip incarico">${esc(i.nome)}</span>`).join("");
     const gaps = computeGaps(d);
-    const c = { scaduto: 0, mancante: 0, in_scadenza: 0, ok: 0 };
+    const c = { scaduto: 0, in_scadenza: 0, ok: 0 };
     gaps.forEach((g) => c[g.stato]++);
+    // Requisiti dovuti ma mai registrati (indipendente dal semaforo: per i
+    // neoassunti risultano "in_scadenza" fino a scadenza onboarding).
+    const daRegistrare = gaps.filter((g) => !(g.adempimento && g.adempimento.data_rilascio)).length;
     const pills = [];
     if (c.scaduto) pills.push(`<span class="gap-pill scaduto">${c.scaduto} scaduti</span>`);
-    if (c.mancante) pills.push(`<span class="gap-pill mancante">${c.mancante} mancanti</span>`);
     if (c.in_scadenza) pills.push(`<span class="gap-pill in_scadenza">${c.in_scadenza} in scad.</span>`);
-    if (!c.scaduto && !c.mancante && !c.in_scadenza) pills.push(`<span class="gap-pill ok">In regola</span>`);
-    // Flag onboarding: assunto da meno di 60gg con gap aperti.
+    if (!c.scaduto && !c.in_scadenza) pills.push(`<span class="gap-pill ok">In regola</span>`);
+    // Flag onboarding: assunto da meno di 60gg con requisiti ancora da registrare.
     let onboard = "";
     if (d.data_assunzione && d.attivo !== false) {
       const gg = daysUntil(localISO(addDays(parseISO(d.data_assunzione), GG_ONBOARD)));
-      if (gg != null && gg >= 0 && (c.mancante || c.scaduto)) onboard = `<span class="onboard-flag">⏳ ${gg}gg onboarding</span>`;
+      if (gg != null && gg >= 0 && daRegistrare > 0) onboard = `<span class="onboard-flag">⏳ ${gg}gg onboarding</span>`;
     }
     return `<div class="dip-card ${d.attivo === false ? "cessato" : ""}" data-dip="${d.id}">
       <div class="dip-card-head">
