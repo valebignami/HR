@@ -6,18 +6,6 @@
 // ============================================================
 console.log("[me.js] versione b1 caricata");
 
-const SUPABASE_URL = "https://cqdmfhdcdvaezmexzxrq.supabase.co";
-const SUPABASE_KEY = "sb_publishable_1ECriACxKWx6_4GPxyMXVQ_MPVc2GYy";
-const STORAGE_BUCKET = "hr-documenti";
-
-if (!window.supabase || !window.supabase.createClient) {
-  document.body.innerHTML =
-    '<div style="padding:40px;font-family:sans-serif;color:#991b1b">' +
-    "Impossibile caricare la libreria Supabase. Ricarica la pagina.</div>";
-  throw new Error("supabase-js non disponibile");
-}
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
 const state = {
   token: null,
   dipendente: null,
@@ -27,11 +15,7 @@ const state = {
   clientIp: null,     // recuperato lato client per audit accettazioni
 };
 
-const $ = (id) => document.getElementById(id);
-const els = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now() + "-" + Math.random().toString(16).slice(2));
-function fmtDate(s) { if (!s) return "—"; const [y,m,d] = s.slice(0,10).split("-"); return `${d}/${m}/${y}`; }
+// $, els, esc, uid, fmtDate, STORAGE_BUCKET, sb: vedi common.js (condivisi con app.js).
 
 // ============================================================
 // SCHERMATE

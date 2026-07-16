@@ -5,22 +5,6 @@
 // Il "motore gap" calcola lato client lo stato di compliance.
 // ============================================================
 
-// ---------- Config Supabase (progetto condiviso, anon key pubblica) ----------
-const SUPABASE_URL = "https://cqdmfhdcdvaezmexzxrq.supabase.co";
-const SUPABASE_KEY = "sb_publishable_1ECriACxKWx6_4GPxyMXVQ_MPVc2GYy";
-
-// Guardia CDN: se la libreria non si carica, avvisa invece di crashare muto.
-if (!window.supabase || !window.supabase.createClient) {
-  document.addEventListener("DOMContentLoaded", () => {
-    document.body.innerHTML =
-      '<div style="padding:40px;font-family:sans-serif;color:#991b1b">' +
-      "Impossibile caricare la libreria Supabase (CDN bloccato?). Ricarica la pagina.</div>";
-  });
-  throw new Error("supabase-js non disponibile");
-}
-
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
 // ---------- Stato in memoria ----------
 const state = {
   ruoli: [],
@@ -66,64 +50,14 @@ const STORE_BY_TABLE = {
 };
 
 // ---------- Helpers ----------
-const $ = (id) => document.getElementById(id);
-const el = (sel, root = document) => root.querySelector(sel);
-const els = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now() + "-" + Math.random().toString(16).slice(2));
-const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// $, el, els, uid, esc, localISO, parseISO, fmtDate, addMonths, addDays, daysUntil,
+// GG_SCAD, GG_ONBOARD, STORAGE_BUCKET: vedi common.js (condivisi con me.js).
 const sanitizeName = (s) => String(s || "").trim().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
 
-const STORAGE_BUCKET = "hr-documenti";
-
-function localISO(d) {
-  if (!d) return "";
-  const x = d instanceof Date ? d : new Date(d);
-  if (isNaN(x)) return "";
-  const off = x.getTimezoneOffset();
-  const local = new Date(x.getTime() - off * 60000);
-  return local.toISOString().slice(0, 10);
-}
-function parseISO(s) {
-  if (!s) return null;
-  const [y, m, d] = String(s).slice(0, 10).split("-").map(Number);
-  if (!y || !m || !d) return null;
-  return new Date(y, m - 1, d);
-}
-function fmtDate(s) {
-  const d = parseISO(s);
-  if (!d) return "—";
-  return String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0") + "/" + d.getFullYear();
-}
-function addMonths(s, months) {
-  const d = parseISO(s);
-  if (!d || months == null) return null;
-  // Clamp al fine mese: 31/01 + 1 mese → 28/02 (o 29/02 in bisestile), NON 03/03.
-  // Evita overflow JS che farebbe scadere una visita medica in un mese sbagliato.
-  const targetY = d.getFullYear();
-  const targetM = d.getMonth() + Number(months);
-  const lastDayOfTarget = new Date(targetY, targetM + 1, 0).getDate();
-  const day = Math.min(d.getDate(), lastDayOfTarget);
-  return localISO(new Date(targetY, targetM, day));
-}
-function addDays(date, days) {
-  const r = new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
-  return r;
-}
-function todayMid() {
-  const n = new Date();
-  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
-}
-function daysUntil(s) {
-  const d = parseISO(s);
-  if (!d) return null;
-  return Math.round((d - todayMid()) / 86400000);
-}
 function initials(nome, cognome) {
   return ((nome || "?")[0] + (cognome || "")[0]).toUpperCase();
 }
 
-const GG_SCAD = window.GIORNI_SCADENZA_IMMINENTE || 30;
-const GG_ONBOARD = window.GIORNI_ONBOARDING || 60;
 // Etichetta del tipo contratto a tempo determinato (deve coincidere con TIPI_CONTRATTO[1] in data.js).
 const CONTRATTO_DETERMINATO = "Determinato";
 // Helper: il tipo requisito è di categoria sanitaria? (era hardcoded come prefisso "tr-san-")
@@ -403,32 +337,11 @@ function computeGaps(dip) {
       .sort((a, b) => (b.data_scadenza || b.data_rilascio || "").localeCompare(a.data_scadenza || a.data_rilascio || ""));
     const inst = insts[0];
 
-    let stato, scadenza;
     const hasRilascio = !!(inst && inst.data_rilascio);
-    if (!hasRilascio) {
-      // Mai registrato (neoassunto + non ha ancora fatto, oppure adempimento mai creato).
-      // La scadenza è quella del DB (onboarding+60gg per neoassunti) o calcolata.
-      scadenza = (inst?.data_scadenza) || onboardDeadline || null;
-      if (!scadenza) {
-        // Nessuna scadenza nota: classifica come "scaduto" per visibilità.
-        stato = "scaduto";
-      } else {
-        const gg = daysUntil(scadenza);
-        // I non-registrati appaiono sempre in "scaduto" o "in_scadenza", mai "ok".
-        stato = gg < 0 ? "scaduto" : "in_scadenza";
-      }
-    } else {
-      // Registrato: classifica per scadenza.
-      scadenza = inst.data_scadenza || null;
-      if (!scadenza) {
-        stato = "ok";               // rilasciato e non scade (es. formazione generale)
-      } else {
-        const gg = daysUntil(scadenza);
-        if (gg < 0) stato = "scaduto";
-        else if (gg <= GG_SCAD) stato = "in_scadenza";
-        else stato = "ok";
-      }
-    }
+    const scadenza = hasRilascio
+      ? (inst.data_scadenza || null)
+      : ((inst?.data_scadenza) || onboardDeadline || null);
+    const stato = classificaStato(hasRilascio, scadenza);
     rows.push({ dip, tipo, req, stato, scadenza, adempimento: inst || null });
   }
   rows.sort((a, b) => STATO_INFO[a.stato].order - STATO_INFO[b.stato].order);
@@ -1927,16 +1840,8 @@ function renderDipAdempimenti(dipId) {
     .map((a) => {
       const tipo = tipoById(a.tipo_requisito_id);
       if (!tipo) return null;
-      // Stato semplice in base alle date.
-      let stato, scadenza = a.data_scadenza || null;
-      if (!a.data_rilascio) {
-        stato = scadenza && daysUntil(scadenza) < 0 ? "scaduto" : "in_scadenza";
-      } else if (!scadenza) {
-        stato = "ok";
-      } else {
-        const gg = daysUntil(scadenza);
-        stato = gg < 0 ? "scaduto" : (gg <= GG_SCAD ? "in_scadenza" : "ok");
-      }
+      const scadenza = a.data_scadenza || null;
+      const stato = classificaStato(!!a.data_rilascio, scadenza);
       return { dip, tipo, stato, scadenza, adempimento: a };
     })
     .filter(Boolean);
