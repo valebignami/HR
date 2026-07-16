@@ -214,9 +214,10 @@ function renderDocs() {
   }
   host.innerHTML = state.tipiDoc.map((t) => {
     const mio = state.adempimenti.find((a) => a.tipo_requisito_id === t.id);
-    const stato = mio?.data_scadenza
-      ? `Scade il ${fmtDate(mio.data_scadenza)}`
-      : (mio?.data_rilascio ? "Registrato (senza scadenza)" : "Non registrato");
+    let stato;
+    if (mio?.data_rilascio) stato = mio.data_scadenza ? `✅ Verificato — scade il ${fmtDate(mio.data_scadenza)}` : "✅ Verificato";
+    else if (mio?.documento_path) stato = "📤 Inviato — in attesa di verifica";
+    else stato = "Da caricare";
     const hasFile = !!mio?.documento_path;
     return `<div class="me-doc-row" data-tipo="${esc(t.id)}" data-ad="${esc(mio?.id || "")}">
       <div class="me-doc-head">
@@ -224,24 +225,19 @@ function renderDocs() {
           <div class="me-doc-nome">${esc(t.icon || "📄")} ${esc(t.nome)}</div>
           <div class="me-doc-stato">${esc(stato)}</div>
         </div>
-        <button type="button" class="ghost-btn me-doc-toggle">${hasFile ? "Modifica" : "Carica"}</button>
+        <button type="button" class="ghost-btn me-doc-toggle">${hasFile ? "Sostituisci" : "Carica"}</button>
       </div>
       <div class="me-doc-form" hidden>
-        <div class="row">
-          <label><span>Data rilascio</span><input type="date" class="me-doc-rilascio" value="${esc(mio?.data_rilascio || "")}"></label>
-          <label><span>Data scadenza</span><input type="date" class="me-doc-scadenza" value="${esc(mio?.data_scadenza || "")}"></label>
-        </div>
         <label><span>Allega PDF / foto</span><input type="file" class="me-doc-file" accept=".pdf,image/*"></label>
         <div class="me-doc-progress" hidden>⏳ Caricamento…</div>
         <div class="me-actions">
-          <button type="button" class="primary-btn me-doc-save">Salva documento</button>
-          ${hasFile ? `<button type="button" class="ghost-btn me-doc-open" data-path="${esc(mio.documento_path)}">📎 Apri PDF attuale</button>` : ""}
+          <button type="button" class="primary-btn me-doc-save">Invia documento</button>
+          ${hasFile ? `<button type="button" class="ghost-btn me-doc-open" data-path="${esc(mio.documento_path)}">📎 Apri file attuale</button>` : ""}
         </div>
         <span class="me-status me-doc-status"></span>
       </div>
     </div>`;
   }).join("");
-
   els(".me-doc-toggle", host).forEach((btn) => btn.addEventListener("click", () => {
     const form = btn.closest(".me-doc-row").querySelector(".me-doc-form");
     form.hidden = !form.hidden;
@@ -260,72 +256,55 @@ async function openSignedUrl(path) {
 async function saveDoc(e, row) {
   e.preventDefault();
   const tipoId = row.dataset.tipo;
-  let admId = row.dataset.ad || "";
-  const rilascio = row.querySelector(".me-doc-rilascio").value || null;
-  const scadenza = row.querySelector(".me-doc-scadenza").value || null;
+  const admId = row.dataset.ad || "";
   const fileInput = row.querySelector(".me-doc-file");
   const file = fileInput.files?.[0] || null;
   const progress = row.querySelector(".me-doc-progress");
   const status = row.querySelector(".me-doc-status");
   const saveBtn = row.querySelector(".me-doc-save");
+  if (!file) {
+    status.textContent = "Seleziona prima un file.";
+    status.className = "me-status err";
+    return;
+  }
   saveBtn.disabled = true;
   status.textContent = "";
   status.className = "me-status";
 
-  let documento_path = state.adempimenti.find((a) => a.id === admId)?.documento_path || null;
-
-  if (file) {
-    progress.hidden = false;
-    try {
-      const targetAdmId = admId || uid();
-      const ext = (file.name.split(".").pop() || "bin").toLowerCase();
-      const path = `${targetAdmId}/${Date.now()}.${ext}`;
-      const up = await sb.storage.from(STORAGE_BUCKET).upload(path, file, {
-        upsert: false, contentType: file.type || "application/octet-stream",
-      });
-      if (up.error) throw up.error;
-      documento_path = path;
-      // targetAdmId serve solo al path dello storage: NON va passato come
-      // p_adempimento_id. Per un documento nuovo admId resta vuoto così la
-      // RPC INSERISCE, invece di tentare un UPDATE su un id inesistente.
-    } catch (err) {
-      progress.hidden = true;
-      saveBtn.disabled = false;
-      status.textContent = "✕ Errore caricamento file: " + err.message;
-      status.className = "me-status err";
-      return;
-    }
+  let documento_path;
+  progress.hidden = false;
+  try {
+    const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+    documento_path = `${admId || uid()}/${Date.now()}.${ext}`;
+    const up = await sb.storage.from(STORAGE_BUCKET).upload(documento_path, file, {
+      upsert: false, contentType: file.type || "application/octet-stream",
+    });
+    if (up.error) throw up.error;
+  } catch (err) {
     progress.hidden = true;
+    saveBtn.disabled = false;
+    status.textContent = "✕ Errore caricamento file: " + err.message;
+    status.className = "me-status err";
+    return;
   }
+  progress.hidden = true;
 
   const { data: savedId, error } = await sb.rpc("self_save_documento", {
-    t: state.token,
-    p_adempimento_id: admId || null,
-    p_tipo_id: tipoId,
-    p_rilascio: rilascio,
-    p_scadenza: scadenza,
-    p_doc_path: documento_path,
+    t: state.token, p_adempimento_id: admId || null, p_tipo_id: tipoId, p_doc_path: documento_path,
   });
-  saveBtn.disabled = false;
   if (error) {
+    saveBtn.disabled = false;   // il bottone si riabilita solo in errore
     status.textContent = "✕ Errore salvataggio: " + error.message;
     status.className = "me-status err";
     return;
   }
-  // Aggiorna lo stato locale e rirenderizza.
   const existing = state.adempimenti.find((a) => a.id === savedId);
-  if (existing) {
-    Object.assign(existing, { data_rilascio: rilascio, data_scadenza: scadenza, documento_path });
-  } else {
-    state.adempimenti.push({
-      id: savedId, dipendente_id: state.dipendente.id, tipo_requisito_id: tipoId,
-      data_rilascio: rilascio, data_scadenza: scadenza, documento_path,
-      documento_url: null, done: false, history: [], note: null,
-    });
-  }
-  status.textContent = "✓ Documento salvato";
-  status.className = "me-status ok";
-  setTimeout(() => renderDocs(), 1200);
+  if (existing) existing.documento_path = documento_path;
+  else state.adempimenti.push({
+    id: savedId, dipendente_id: state.dipendente.id, tipo_requisito_id: tipoId,
+    data_rilascio: null, data_scadenza: null, documento_path, done: false, history: [], note: null,
+  });
+  renderDocs();   // subito: niente finestra da 1200ms per il doppio click
 }
 
 // ============================================================
@@ -432,7 +411,7 @@ async function confermaAccettazione(itemId, row) {
   status.className = "me-status ok";
   // Aggiorna stato locale e rirenderizza.
   const it = state.onboardItems.find((i) => i.item_id === itemId);
-  if (it) { it.fatto = true; it.fatto_il = new Date().toISOString().slice(0, 10); }
+  if (it) { it.fatto = true; it.fatto_il = localISO(new Date()); }
   setTimeout(renderAccetta, 800);
 }
 
