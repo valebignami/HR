@@ -264,7 +264,12 @@ async function sbDelete(table, id) {
   renderAll();
   const { error } = await sb.from(table).delete().eq("id", id);
   if (error) {
-    if (prev) { arr.splice(idx, 0, prev); renderAll(); }
+    if (prev) {
+      // Rollback safe contro realtime concorrente: ricontrolla ORA se la riga esiste.
+      const now = arr.findIndex((r) => r.id === id);
+      if (now < 0) arr.push(prev);
+      renderAll();
+    }
     if (isAuthError(error)) showLogin("Sessione scaduta. Rientra.");
     else alert("Errore eliminazione: " + error.message);
     return false;
@@ -460,11 +465,8 @@ function renderCompliance() {
     $("comp-wrap").hidden = true;
     $("comp-cal-wrap").hidden = false;
     // Eventi calendario = righe con una data di scadenza utile.
-    const events = rows.filter((r) => r.scadenza && r.adempimento).map((r) => ({
-      a: r.adempimento,
-      tipo: r.tipo,
-      dip: r.dip,
-      gg: daysUntil(r.scadenza),
+    const events = rows.filter((r) => r.scadenza).map((r) => ({
+      a: r.adempimento, tipo: r.tipo, dip: r.dip, scadenza: r.scadenza, gg: daysUntil(r.scadenza),
     }));
     renderCalendar(events);
     return;
@@ -578,7 +580,7 @@ function renderCalendar(all) {
   let startDow = (first.getDay() + 6) % 7; // lun=0
   const start = new Date(y, m, 1 - startDow);
   const byDay = {};
-  all.forEach((x) => { (byDay[x.a.data_scadenza] = byDay[x.a.data_scadenza] || []).push(x); });
+  all.forEach((x) => { (byDay[x.scadenza] = byDay[x.scadenza] || []).push(x); });
 
   const grid = $("cal-grid");
   let html = "";
@@ -590,7 +592,7 @@ function renderCalendar(all) {
     const evs = byDay[iso] || [];
     const shown = evs.slice(0, 3);
     const evHtml = shown.map((x) =>
-      `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`
+      `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a?.id || ""}" data-tipo="${x.tipo.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`
     ).join("");
     const more = evs.length > 3 ? `<div class="cal-more">+${evs.length - 3} altri</div>` : "";
     html += `<div class="cal-day ${other ? "other-month" : ""} ${iso === todayISO ? "today" : ""}">
@@ -599,7 +601,8 @@ function renderCalendar(all) {
   grid.innerHTML = html;
   els(".cal-event", grid).forEach((ev) => ev.addEventListener("click", (e) => {
     e.stopPropagation();
-    openAdmModal(ev.dataset.dip, ev.dataset.ad);
+    if (ev.dataset.ad) openAdmModal(ev.dataset.dip, ev.dataset.ad);
+    else openAdmModal(ev.dataset.dip, null, ev.dataset.tipo);
   }));
 }
 
@@ -1239,7 +1242,7 @@ function renderDipOnboarding(dipId) {
     // Se è una voce accetta_click, mostra ✍️ se accettata via portale.
     const acc = state.accettazioni.find((a) => a.dipendente_id === dipId && a.item_id === item.id);
     const accTag = (item.tipo_workflow === "accetta_click" && acc)
-      ? ` <span class="hist-late ontime" title="Accettato via portale il ${esc(fmtDate(acc.accettato_at))}${acc.ip_address ? ' — IP ' + esc(acc.ip_address) : ''}" style="font-size:11px">✍️ portale</span>`
+      ? ` <span class="hist-late ontime" title="Accettato via portale il ${esc(fmtDateTime(acc.accettato_at))}${acc.ip_address ? ' — IP ' + esc(acc.ip_address) : ''}" style="font-size:11px">✍️ portale</span>`
       : "";
     const fattoTxt = r.fatto
       ? `<span class="hist-late ontime">✓ ${fmtDate(r.data)}${r.da ? " · " + esc(r.da) : ""}${accTag}</span>`
@@ -2356,7 +2359,7 @@ async function applyFatto(e) {
   const hasCurrentCycle = a && a.data_rilascio;
   if (hasCurrentCycle) {
     history.push({
-      doneAt: dataEvento,
+      doneAt: a.data_rilascio,
       dueDate: a.data_scadenza || null,
       rilascio: a.data_rilascio || null,
       scadenza: a.data_scadenza || null,

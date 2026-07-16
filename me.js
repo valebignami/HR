@@ -495,7 +495,7 @@ async function uploadFirmato(row) {
     status.className = "me-status ok";
     // Aggiorna stato locale
     const it = state.onboardItems.find((i) => i.item_id === itemId);
-    if (it) { it.documento_path = path; it.fatto = true; it.fatto_il = new Date().toISOString().slice(0, 10); }
+    if (it) { it.documento_path = path; it.fatto = true; it.fatto_il = localISO(new Date()); }
     setTimeout(renderFirma, 1200);
   } catch (err) {
     progress.hidden = true;
