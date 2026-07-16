@@ -374,6 +374,9 @@ function allGapRows() {
 // RENDER
 // ============================================================
 let _gapCache = null;
+// La cache vive per un giro di renderAll: chi muta dati che influenzano i gap DEVE
+// passare da renderAll() (che la invalida). I call diretti di renderCompliance() sono
+// legittimi solo per cambi filtro/vista/calendario, mai dopo una mutazione dati.
 // Calcola i gap una sola volta per ciclo di render (invalidata a inizio renderAll).
 function gapRows() {
   if (!_gapCache) _gapCache = allGapRows();
@@ -1088,6 +1091,11 @@ async function saveDpiConsegna(e) {
   const consegnatoDa = $("dpi-consegnato-da").value.trim() || null;
   if (consegnatoDa) localStorage.setItem("hr_last_operator", consegnatoDa);
 
+  // Valida i campi obbligatori PRIMA di caricare il file: niente upload orfano se manca tipo/data.
+  const dpiTipoId = $("dpi-tipo").value;
+  const dpiDataConsegna = $("dpi-data").value;
+  if (!dpiTipoId || !dpiDataConsegna) { alert("Tipo DPI e data consegna sono obbligatori."); return; }
+
   // Upload modulo se selezionato.
   const oldModuloPath = prev?.modulo_path || null;
   let modulo_path = oldModuloPath;
@@ -1114,8 +1122,8 @@ async function saveDpiConsegna(e) {
   const row = {
     id,
     dipendente_id: dipId,
-    dpi_tipo_id: $("dpi-tipo").value,
-    data_consegna: $("dpi-data").value,
+    dpi_tipo_id: dpiTipoId,
+    data_consegna: dpiDataConsegna,
     prossima_sostituzione: null,
     taglia: $("dpi-taglia").value || null,
     quantita: parseInt($("dpi-quantita").value, 10) || 1,
@@ -1123,7 +1131,6 @@ async function saveDpiConsegna(e) {
     consegnato_da: consegnatoDa,
     note: $("dpi-note").value.trim() || null,
   };
-  if (!row.dpi_tipo_id || !row.data_consegna) { alert("Tipo DPI e data consegna sono obbligatori."); return; }
   const ok = await sbUpsert("dpi_consegne", row);
   if (!ok) { if (uploadedModuloPath) await deleteDoc(uploadedModuloPath); return; }
   if (uploadedModuloPath && oldModuloPath) await deleteDoc(oldModuloPath);   // il vecchio file solo a salvataggio riuscito
@@ -1714,6 +1721,11 @@ async function saveProvvedimento(e) {
   const dipId = $("provv-dip-id").value;
   const prev = state.provvedimenti.find((x) => x.id === id) || null;
 
+  // Valida i campi obbligatori PRIMA di caricare il file: niente upload orfano se manca tipo/data.
+  const provvTipo = $("provv-tipo").value;
+  const provvData = $("provv-data").value;
+  if (!provvTipo || !provvData) { alert("Tipo e data sono obbligatori."); return; }
+
   const oldPath = prev?.documento_path || null;
   let documento_path = oldPath;
   let uploadedPath = null;
@@ -1740,13 +1752,12 @@ async function saveProvvedimento(e) {
   const row = {
     id,
     dipendente_id: dipId,
-    tipo: $("provv-tipo").value,
-    data: $("provv-data").value,
+    tipo: provvTipo,
+    data: provvData,
     motivazione: $("provv-motivazione").value.trim() || null,
     documento_path,
     note: $("provv-note").value.trim() || null,
   };
-  if (!row.tipo || !row.data) { alert("Tipo e data sono obbligatori."); return; }
 
   const ok = await sbUpsert("provvedimenti", row);
   if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
@@ -2014,7 +2025,11 @@ async function syncAllDipendenti() {
     .flatMap((d) => missingAdempimentiRows(d.id));
   if (!rows.length) return;
   const { error } = await sb.from("adempimenti").upsert(rows);
-  if (error) { console.warn("syncAllDipendenti:", error.message); return; }
+  if (error) {
+    if (isAuthError(error)) { showLogin("Sessione scaduta. Rientra."); return; }
+    console.warn("syncAllDipendenti:", error.message);
+    return;
+  }
   state.adempimenti.push(...rows);
   renderAll();
 }
@@ -2263,7 +2278,11 @@ async function applyFatto(e) {
   if (v !== undefined && v !== Infinity) newScadenza = addMonths(dataEvento, v);
 
   const row = a
-    ? { ...a, data_rilascio: dataEvento, data_scadenza: newScadenza, documento_path: newDocumentoPath,
+    ? { ...a, data_rilascio: dataEvento, data_scadenza: newScadenza,
+        // Se l'HR valida senza allegare un nuovo file, il file caricato dal dipendente resta
+        // agganciato; quando invece si archivia un ciclo precedente (hasCurrentCycle) il vecchio
+        // path vive nello storico e il campo si azzera come prima.
+        documento_path: newDocumentoPath || (hasCurrentCycle ? null : (a?.documento_path || null)),
         note: null, last_done_at: dataEvento, previous_date: a.data_scadenza || null, history }
     : { id: targetId, dipendente_id: dipId, tipo_requisito_id: tipoId,
         data_rilascio: dataEvento, data_scadenza: newScadenza, documento_path: newDocumentoPath,

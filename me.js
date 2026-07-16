@@ -1,10 +1,10 @@
 // ============================================================
-// HR Overland — Portale self-service (me.html) — versione b1
+// HR Overland — Portale self-service (me.html) — versione c1
 // Auth basata su TOKEN passato nell'URL (?token=xxx). Niente login email.
 // L'HR genera il token, manda il link come vuole (WhatsApp/Outlook/SMS).
 // Tutte le operazioni passano da RPC SECURITY DEFINER che validano il token.
 // ============================================================
-console.log("[me.js] versione b1 caricata");
+console.log("[me.js] versione c1 caricata");
 
 const state = {
   token: null,
@@ -299,7 +299,9 @@ async function saveDoc(e, row) {
     return;
   }
   const existing = state.adempimenti.find((a) => a.id === savedId);
-  if (existing) existing.documento_path = documento_path;
+  // La RPC azzera data_rilascio/data_scadenza lato DB quando si sostituisce il file
+  // (nuovo upload = da rivalidare): rispecchiamo l'azzeramento anche nello stato locale.
+  if (existing) Object.assign(existing, { documento_path, data_rilascio: null, data_scadenza: null });
   else state.adempimenti.push({
     id: savedId, dipendente_id: state.dipendente.id, tipo_requisito_id: tipoId,
     data_rilascio: null, data_scadenza: null, documento_path, done: false, history: [], note: null,

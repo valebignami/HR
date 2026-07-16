@@ -1,12 +1,33 @@
 import assert from "node:assert/strict";
-import { classificaStato, parseISO, fmtDate, localISO, fmtDateTime, daysUntil, addDays } from "../common.js";
+
+// common.js legge GIORNI_SCADENZA_IMMINENTE/GIORNI_ONBOARDING da `window` (impostati da
+// data.js nel browser) con fallback 30/60 se `window` non esiste (Node "nudo"). Per testare
+// il comportamento REALE del sito dobbiamo simulare `window` con gli stessi valori di data.js
+// PRIMA di importare common.js, altrimenti il test verifica soglie che il browser non usa mai.
+//
+// Attenzione: se `window` esiste ma `window.supabase.createClient` no, common.js imbocca il
+// ramo "CDN bloccato" (document.addEventListener + throw). Va quindi fornito anche un
+// `window.supabase.createClient` fittizio e un `document.addEventListener` no-op.
+globalThis.window = {
+  GIORNI_SCADENZA_IMMINENTE: 60, // vedi data.js
+  GIORNI_ONBOARDING: 60,         // vedi data.js
+  supabase: { createClient: () => null },
+};
+globalThis.document = { addEventListener: () => {} };
+
+const { classificaStato, parseISO, fmtDate, localISO, fmtDateTime, daysUntil, addDays, GG_SCAD } =
+  await import("../common.js");
+
+// GG_SCAD deve corrispondere al valore reale iniettato sopra (data.js), non al fallback Node.
+assert.equal(GG_SCAD, 60);
 
 const iso = (giorniDaOggi) => localISO(addDays(new Date(), giorniDaOggi));
 
 // classificaStato — registrato
-assert.equal(classificaStato(true, null), "ok");                 // rilasciato, non scade
-assert.equal(classificaStato(true, iso(60)), "ok");
-assert.equal(classificaStato(true, iso(10)), "in_scadenza");     // entro 30gg
+assert.equal(classificaStato(true, null), "ok");                    // rilasciato, non scade
+assert.equal(classificaStato(true, iso(GG_SCAD)), "in_scadenza");   // esattamente alla soglia: dentro
+assert.equal(classificaStato(true, iso(GG_SCAD + 1)), "ok");        // appena sopra la soglia: fuori
+assert.equal(classificaStato(true, iso(10)), "in_scadenza");        // ben dentro la soglia
 assert.equal(classificaStato(true, iso(-1)), "scaduto");
 // classificaStato — mai registrato: mai "ok"
 assert.equal(classificaStato(false, null), "scaduto");
