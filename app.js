@@ -1099,17 +1099,19 @@ async function saveDpiConsegna(e) {
   if (consegnatoDa) localStorage.setItem("hr_last_operator", consegnatoDa);
 
   // Upload modulo se selezionato.
-  let modulo_path = prev?.modulo_path || null;
+  const oldModuloPath = prev?.modulo_path || null;
+  let modulo_path = oldModuloPath;
+  let uploadedModuloPath = null;
   if (pendingDpiFile) {
     $("dpi-doc-progress").hidden = false;
     try {
-      if (modulo_path) await deleteDoc(modulo_path);
       const ext = (pendingDpiFile.name.split(".").pop() || "bin").toLowerCase();
       const path = `dpi-${id}/${Date.now()}.${ext}`;
       const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingDpiFile, {
         upsert: false, contentType: pendingDpiFile.type || "application/octet-stream",
       });
       if (error) throw error;
+      uploadedModuloPath = path;
       modulo_path = path;
     } catch (err) {
       $("dpi-doc-progress").hidden = true;
@@ -1133,7 +1135,8 @@ async function saveDpiConsegna(e) {
   };
   if (!row.dpi_tipo_id || !row.data_consegna) { alert("Tipo DPI e data consegna sono obbligatori."); return; }
   const ok = await sbUpsert("dpi_consegne", row);
-  if (!ok) return;
+  if (!ok) { if (uploadedModuloPath) await deleteDoc(uploadedModuloPath); return; }
+  if (uploadedModuloPath && oldModuloPath) await deleteDoc(oldModuloPath);   // il vecchio file solo a salvataggio riuscito
   pendingDpiFile = null;
   closeModal("modal-dpi");
   renderDipDPI(dipId);
@@ -1375,17 +1378,19 @@ async function saveOnboardProgresso(e) {
   const itemId = $("onboard-item-id").value;
   if (!progrId) { alert("Voce non sincronizzata. Chiudi e riapri la scheda."); return; }
   const prev = state.onboardProgressi.find((x) => x.id === progrId);
-  let documento_path = prev?.documento_path || null;
+  const oldPath = prev?.documento_path || null;
+  let documento_path = oldPath;
+  let uploadedPath = null;
   if (pendingOnboardFile) {
     $("onboard-doc-progress").hidden = false;
     try {
-      if (documento_path) await deleteDoc(documento_path);
       const ext = (pendingOnboardFile.name.split(".").pop() || "bin").toLowerCase();
       const path = `onboard-${progrId}/${Date.now()}.${ext}`;
       const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingOnboardFile, {
         upsert: false, contentType: pendingOnboardFile.type || "application/octet-stream",
       });
       if (error) throw error;
+      uploadedPath = path;
       documento_path = path;
     } catch (err) {
       $("onboard-doc-progress").hidden = true;
@@ -1448,7 +1453,8 @@ async function saveOnboardProgresso(e) {
     note: $("onboard-note").value.trim() || null,
   };
   const ok = await sbUpsert("onboarding_progressi", row);
-  if (!ok) return;
+  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  if (uploadedPath && oldPath) await deleteDoc(oldPath);   // il vecchio file solo a salvataggio riuscito
   pendingOnboardFile = null;
   closeModal("modal-onboard");
   renderDipOnboarding(dipId);
@@ -1727,11 +1733,12 @@ async function saveProvvedimento(e) {
   const dipId = $("provv-dip-id").value;
   const prev = state.provvedimenti.find((x) => x.id === id) || null;
 
-  let documento_path = prev?.documento_path || null;
+  const oldPath = prev?.documento_path || null;
+  let documento_path = oldPath;
+  let uploadedPath = null;
   if (pendingProvvFile) {
     $("provv-doc-progress").hidden = false;
     try {
-      if (documento_path) await deleteDoc(documento_path);
       // Path: provv/{id}/{timestamp}.{ext} per non confonderli con quelli adempimenti.
       const ext = (pendingProvvFile.name.split(".").pop() || "bin").toLowerCase();
       const path = `provv-${id}/${Date.now()}.${ext}`;
@@ -1739,6 +1746,7 @@ async function saveProvvedimento(e) {
         upsert: false, contentType: pendingProvvFile.type || "application/octet-stream",
       });
       if (error) throw error;
+      uploadedPath = path;
       documento_path = path;
     } catch (err) {
       $("provv-doc-progress").hidden = true;
@@ -1760,7 +1768,8 @@ async function saveProvvedimento(e) {
   if (!row.tipo || !row.data) { alert("Tipo e data sono obbligatori."); return; }
 
   const ok = await sbUpsert("provvedimenti", row);
-  if (!ok) return;
+  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  if (uploadedPath && oldPath) await deleteDoc(oldPath);   // il vecchio file solo a salvataggio riuscito
   pendingProvvFile = null;
   closeModal("modal-provv");
   renderDipProvvedimenti(dipId);
