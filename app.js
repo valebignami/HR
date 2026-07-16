@@ -1406,6 +1406,9 @@ async function saveOnboardProgresso(e) {
   // Se la voce è "crea_adempimento", raccolgo i dati extra e creo/aggiorno l'adempimento.
   const item = state.onboardItems.find((i) => i.id === itemId);
   let dati = prev?.dati || null;
+  // true se il nuovo file è già stato referenziato da un adempimento salvato con successo:
+  // in tal caso NON va cancellato neanche se il salvataggio finale del progresso fallisce.
+  let fileCommitted = false;
   if (item?.tipo_workflow === "crea_adempimento") {
     const dataEvento = $("onboard-adm-data").value || null;
     const tipoReqId = item.adempimento_tipo_id;
@@ -1437,7 +1440,11 @@ async function saveOnboardProgresso(e) {
         history: existing?.history || [],
         note: isVisita && dati.prescrizioni ? "Prescrizioni: " + dati.prescrizioni : (existing?.note || null),
       };
-      await sbUpsert("adempimenti", admRow);
+      const admOk = await sbUpsert("adempimenti", admRow);
+      if (!admOk) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+      // Se l'adempimento ora referenzia il nuovo file, il file è "committed": non va più
+      // cancellato per un eventuale fallimento del salvataggio finale del progresso.
+      if (uploadedPath && admRow.documento_path === uploadedPath) fileCommitted = true;
     }
   }
 
@@ -1453,7 +1460,9 @@ async function saveOnboardProgresso(e) {
     note: $("onboard-note").value.trim() || null,
   };
   const ok = await sbUpsert("onboarding_progressi", row);
-  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  // Se il file è già referenziato da adempimenti (fileCommitted), non cancellarlo qui: il
+  // vecchio file resta comunque referenziato dal progresso non aggiornato, e va bene così.
+  if (!ok) { if (uploadedPath && !fileCommitted) await deleteDoc(uploadedPath); return; }
   if (uploadedPath && oldPath) await deleteDoc(oldPath);   // il vecchio file solo a salvataggio riuscito
   pendingOnboardFile = null;
   closeModal("modal-onboard");
