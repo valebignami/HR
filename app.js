@@ -2397,6 +2397,15 @@ async function applyFatto(e) {
     return;
   }
 
+  // Se l'HR valida allegando un file NUOVO a un adempimento mai registrato
+  // (tipico: il dipendente aveva caricato il suo dal portale), il vecchio file
+  // non finisce in history — quel ramo vale solo per i cicli registrati — e
+  // resterebbe nel bucket senza piu' nessun riferimento. Va cancellato qui,
+  // come gia' fanno DPI, provvedimenti e onboarding.
+  if (newDocumentoPath && !hasCurrentCycle && a?.documento_path && a.documento_path !== newDocumentoPath) {
+    await deleteDoc(a.documento_path);
+  }
+
   closeModal("modal-fatto");
   closeModal("modal-adempimento");
   if (!$("modal-dip").hidden && $("dip-id").value === dipId) {
