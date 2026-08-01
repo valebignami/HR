@@ -631,6 +631,21 @@
         <label><span>Giorni dall'assunzione *</span><input type="number" id="onbi-giorni" min="0" value="0"></label>
         <label><span>Ordine</span><input type="number" id="onbi-ordine" min="0" value="100"></label>
       </div>
+      <label><span>Tipo di workflow</span>
+        <select id="onbi-workflow">
+          <option value="semplice">Semplice — spunta manuale dell'HR</option>
+          <option value="accetta_click">Da accettare nel portale — il dipendente legge e conferma</option>
+          <option value="genera_pdf_template">Da firmare e ricaricare — il dipendente stampa, firma, ricarica</option>
+          <option value="crea_adempimento">Registra un adempimento — visita medica / corso</option>
+        </select>
+      </label>
+      <label id="onbi-tpl-wrap" hidden><span>Modello documento</span>
+        <select id="onbi-template"></select>
+      </label>
+      <label id="onbi-adm-wrap" hidden><span>Tipo di requisito da creare</span>
+        <select id="onbi-adempimento-tipo"></select>
+      </label>
+      <p class="cfg-hint" id="onbi-workflow-hint"></p>
       <div class="modal-foot">
         <button type="button" class="ghost-btn danger" id="onbi-delete" hidden>🗑 Elimina</button>
         <div class="modal-foot-spacer"></div>
@@ -890,8 +905,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
-<script src="data.js?v=c1"></script>
-<script src="common.js?v=c1"></script>
-<script src="app.js?v=c1"></script>
+<script src="data.js?v=c2"></script>
+<script src="common.js?v=c2"></script>
+<script src="app.js?v=c2"></script>
 </body>
 </html>

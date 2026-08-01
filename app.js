@@ -169,8 +169,11 @@ function isAuthError(e) {
   if (code === "PGRST301" || code === "PGRST302") return true;
   const name = String(e.name || "");
   if (/AuthError|AuthApiError/i.test(name)) return true;
+  // NON trattare "rls"/"row-level" come sessione scaduta: una violazione di
+  // policy con sessione validissima manderebbe l'utente al login a caccia
+  // della causa sbagliata. Quelli sono errori di autorizzazione, non di auth.
   const msg = String(e.message || "").toLowerCase();
-  return /jwt|unauthorized|rls|not authenticated|row-level/.test(msg);
+  return /jwt|unauthorized|not authenticated/.test(msg);
 }
 
 function showLogin(msg) {
@@ -1159,12 +1162,11 @@ async function syncOnboardingProgressi(dipId) {
   const dip = dipById(dipId);
   if (!dip) return;
   const have = new Set(state.onboardProgressi.filter((p) => p.dipendente_id === dipId).map((p) => p.item_id));
-  for (const item of state.onboardItems) {
-    if (have.has(item.id)) continue;
+  const rows = state.onboardItems
     // Le voci "crea_adempimento" non hanno un progresso proprio: il loro stato
     // è derivato dall'adempimento in Scadenze (singola fonte di verità).
-    if (item.tipo_workflow === "crea_adempimento") continue;
-    await sbUpsert("onboarding_progressi", {
+    .filter((item) => !have.has(item.id) && item.tipo_workflow !== "crea_adempimento")
+    .map((item) => ({
       id: uid(),
       dipendente_id: dipId,
       item_id: item.id,
@@ -1173,8 +1175,17 @@ async function syncOnboardingProgressi(dipId) {
       fatto_da: null,
       documento_path: null,
       note: null,
-    });
+    }));
+  if (!rows.length) return;
+  // Un solo round-trip e un solo render, non uno per voce.
+  const { error } = await sb.from("onboarding_progressi").upsert(rows);
+  if (error) {
+    if (isAuthError(error)) showLogin("Sessione scaduta. Rientra.");
+    else console.warn("syncOnboardingProgressi:", error.message);
+    return;
   }
+  state.onboardProgressi.push(...rows);
+  renderAll();
 }
 
 function scadenzaOnboardingItem(dip, item) {
@@ -1612,17 +1623,35 @@ ${htmlContenuto}
 }
 
 // --- Template onboarding (config tab) ---
+// Workflow possibili di una voce di checklist. Erano configurabili solo via SQL:
+// dalla UI ogni voce nasceva 'semplice', quindi i due flussi del portale
+// (accettazione e firma) restavano irraggiungibili senza toccare il database.
+const WORKFLOW_ONBOARDING = {
+  semplice:            { label: "Semplice", hint: "L'HR spunta la voce a mano quando è fatta." },
+  accetta_click:       { label: "Da accettare nel portale", hint: "Il dipendente legge il modello nel portale e conferma con un click. Serve un modello documento." },
+  genera_pdf_template: { label: "Da firmare e ricaricare", hint: "Il dipendente scarica il modello, lo firma a mano e lo ricarica dal portale. Serve un modello documento." },
+  crea_adempimento:    { label: "Registra un adempimento", hint: "Alla compilazione crea/aggiorna l'adempimento di compliance scelto (visita medica, corso…)." },
+};
+
 function renderOnboardingItemsTable() {
   const rows = state.onboardItems.slice().sort((a, b) => (a.ordine ?? 100) - (b.ordine ?? 100));
   $("onboard-items-table").innerHTML =
-    `<div class="cfg-row head cfg-cols-tipi"><div>Etichetta</div><div>Giorni</div><div>Ordine</div><div>Descrizione</div></div>` +
+    `<div class="cfg-row head cfg-cols-tipi"><div>Etichetta</div><div>Giorni</div><div>Workflow</div><div>Descrizione</div></div>` +
     rows.map((r) => `<div class="cfg-row cfg-cols-tipi" data-id="${esc(r.id)}">
       <div><strong>${esc(r.label)}</strong></div>
       <div>${r.giorni_da_assunzione ?? 0}gg</div>
-      <div class="muted">${r.ordine ?? 100}</div>
+      <div class="muted">${esc(WORKFLOW_ONBOARDING[r.tipo_workflow]?.label || r.tipo_workflow || "Semplice")}</div>
       <div class="muted">${esc((r.descrizione || "").slice(0, 60))}${(r.descrizione || "").length > 60 ? "…" : ""}</div>
     </div>`).join("");
   els("#onboard-items-table .cfg-row:not(.head)").forEach((el2) => el2.addEventListener("click", () => openOnboardItemModal(el2.dataset.id)));
+}
+
+// Mostra i campi pertinenti al workflow scelto e la relativa spiegazione.
+function aggiornaCampiWorkflowOnboarding() {
+  const wf = $("onbi-workflow").value;
+  $("onbi-tpl-wrap").hidden = !(wf === "accetta_click" || wf === "genera_pdf_template");
+  $("onbi-adm-wrap").hidden = wf !== "crea_adempimento";
+  $("onbi-workflow-hint").textContent = WORKFLOW_ONBOARDING[wf]?.hint || "";
 }
 
 function openOnboardItemModal(id) {
@@ -1633,6 +1662,14 @@ function openOnboardItemModal(id) {
   $("onbi-descrizione").value = it?.descrizione || "";
   $("onbi-giorni").value = it?.giorni_da_assunzione ?? 0;
   $("onbi-ordine").value = it?.ordine ?? 100;
+  $("onbi-workflow").value = it?.tipo_workflow || "semplice";
+  fillSelect($("onbi-template"), state.modelli.slice().sort((a, b) => (a.nome || "").localeCompare(b.nome || "")),
+    { placeholder: "— nessuno —", label: "nome" });
+  $("onbi-template").value = it?.template_id || "";
+  fillSelect($("onbi-adempimento-tipo"), state.tipi.slice().sort((a, b) => (a.nome || "").localeCompare(b.nome || "")),
+    { placeholder: "— nessuno —", label: (t) => `${CAT_BY_KEY[t.categoria]?.icon || ""} ${t.nome}` });
+  $("onbi-adempimento-tipo").value = it?.adempimento_tipo_id || "";
+  aggiornaCampiWorkflowOnboarding();
   $("onbi-delete").hidden = !it;
   openModal("modal-onboard-item");
 }
@@ -1640,12 +1677,26 @@ function openOnboardItemModal(id) {
 async function saveOnboardItem(e) {
   e.preventDefault();
   const id = $("onbi-id").value || ("onb-" + (sanitizeName($("onbi-label").value.toLowerCase()) || Date.now()));
+  const wf = $("onbi-workflow").value;
+  const templateId = (wf === "accetta_click" || wf === "genera_pdf_template") ? ($("onbi-template").value || null) : null;
+  const admTipoId = wf === "crea_adempimento" ? ($("onbi-adempimento-tipo").value || null) : null;
+  if ((wf === "accetta_click" || wf === "genera_pdf_template") && !templateId) {
+    alert("Questo workflow richiede un modello documento: sceglilo o crealo in Configurazione → Modelli.");
+    return;
+  }
+  if (wf === "crea_adempimento" && !admTipoId) {
+    alert("Scegli il tipo di requisito che questa voce deve registrare.");
+    return;
+  }
   const row = {
     id,
     label: $("onbi-label").value.trim(),
     descrizione: $("onbi-descrizione").value.trim() || null,
     giorni_da_assunzione: parseInt($("onbi-giorni").value, 10) || 0,
     ordine: parseInt($("onbi-ordine").value, 10) || 100,
+    tipo_workflow: wf,
+    template_id: templateId,
+    adempimento_tipo_id: admTipoId,
   };
   if (await sbUpsert("onboarding_items", row)) closeModal("modal-onboard-item");
 }
@@ -2078,19 +2129,70 @@ async function copyInviteLink() {
   }
 }
 
+// Tabelle figlie di un dipendente, con lo store locale e la colonna che
+// contiene l'eventuale PDF. In produzione NON esistono foreign key verso
+// dipendenti (deriva di schema: dipendenti.id e' bigint, le figlie hanno
+// dipendente_id text), quindi il cascade va fatto esplicitamente qui:
+// senza, le righe restano orfane e i loro file restano nel bucket.
+const TABELLE_FIGLIE_DIP = [
+  { table: "dipendente_ruoli",      store: "dipRuoli",         doc: null },
+  { table: "adempimenti",           store: "adempimenti",      doc: "documento_path" },
+  { table: "provvedimenti",         store: "provvedimenti",    doc: "documento_path" },
+  { table: "onboarding_progressi",  store: "onboardProgressi", doc: "documento_path" },
+  { table: "accettazioni",          store: "accettazioni",     doc: null },
+  { table: "dpi_consegne",          store: "dpiConsegne",      doc: "modulo_path" },
+];
+
+// Tutti i PDF di un dipendente: cicli correnti, storico archiviato, moduli DPI,
+// lettere di provvedimento, documenti di onboarding.
+function tuttiIDocumentiDi(dipId) {
+  const paths = [];
+  for (const { store, doc } of TABELLE_FIGLIE_DIP) {
+    if (!doc) continue;
+    for (const row of state[store]) {
+      if (row.dipendente_id !== dipId) continue;
+      if (row[doc]) paths.push(row[doc]);
+    }
+  }
+  // I path archiviati vivono dentro adempimenti.history[].
+  for (const a of state.adempimenti) {
+    if (a.dipendente_id !== dipId || !Array.isArray(a.history)) continue;
+    for (const h of a.history) if (h.documentoPath) paths.push(h.documentoPath);
+  }
+  return [...new Set(paths)];
+}
+
 async function deleteDip() {
   const id = $("dip-id").value;
   if (!id) return;
-  if (!confirm("Eliminare il dipendente e tutti i suoi adempimenti (anche i PDF associati)?")) return;
-  // Rimuovi prima i PDF su Storage (FK cascade non li tocca).
-  const paths = state.adempimenti.filter((a) => a.dipendente_id === id && a.documento_path).map((a) => a.documento_path);
-  if (paths.length) {
-    try { await sb.storage.from(STORAGE_BUCKET).remove(paths); } catch (e) { console.warn(e); }
+  if (!confirm("Eliminare il dipendente con tutti i suoi dati (adempimenti, provvedimenti, DPI, onboarding) e i PDF associati?")) return;
+
+  // I path vanno raccolti PRIMA di cancellare le righe che li referenziano.
+  const paths = tuttiIDocumentiDi(id);
+
+  // 1) Righe figlie, 2) dipendente, 3) solo a cancellazione riuscita i file:
+  //    se qualcosa fallisce a meta', i documenti sono ancora al loro posto.
+  for (const { table } of TABELLE_FIGLIE_DIP) {
+    const { error } = await sb.from(table).delete().eq("dipendente_id", id);
+    if (error) {
+      if (isAuthError(error)) showLogin("Sessione scaduta. Rientra.");
+      else alert(`Errore eliminando ${table}: ${error.message}\nIl dipendente NON e' stato eliminato.`);
+      return;
+    }
   }
-  // FK on delete cascade in DB; puliamo anche lo stato locale.
-  await sbDelete("dipendenti", id);
-  state.dipRuoli = state.dipRuoli.filter((dr) => dr.dipendente_id !== id);
-  state.adempimenti = state.adempimenti.filter((a) => a.dipendente_id !== id);
+  // Gli inviti self-service: un token ancora valido terrebbe in vita
+  // l'autorizzazione di lettura sui file del portale.
+  await sb.from("invite_tokens").delete().eq("dipendente_id", id);
+
+  if (!await sbDelete("dipendenti", id)) return;
+
+  for (const { store } of TABELLE_FIGLIE_DIP) {
+    state[store] = state[store].filter((r) => r.dipendente_id !== id);
+  }
+  if (paths.length) {
+    const { error } = await sb.storage.from(STORAGE_BUCKET).remove(paths);
+    if (error) console.warn("PDF non rimossi dal bucket:", error.message);
+  }
   closeModal("modal-dip");
   renderAll();
 }
@@ -2720,6 +2822,7 @@ function wireEvents() {
   // Onboarding template (Configurazione)
   $("add-onboard-item").addEventListener("click", () => openOnboardItemModal(null));
   $("onbi-form").addEventListener("submit", saveOnboardItem);
+  $("onbi-workflow").addEventListener("change", aggiornaCampiWorkflowOnboarding);
   $("onbi-close").addEventListener("click", () => closeModal("modal-onboard-item"));
   $("onbi-cancel").addEventListener("click", () => closeModal("modal-onboard-item"));
   $("onbi-delete").addEventListener("click", deleteOnboardItem);

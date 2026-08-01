@@ -1,10 +1,10 @@
 // ============================================================
-// HR Overland — Portale self-service (me.html) — versione c1
+// HR Overland — Portale self-service (me.html) — versione c2
 // Auth basata su TOKEN passato nell'URL (?token=xxx). Niente login email.
 // L'HR genera il token, manda il link come vuole (WhatsApp/Outlook/SMS).
 // Tutte le operazioni passano da RPC SECURITY DEFINER che validano il token.
 // ============================================================
-console.log("[me.js] versione c1 caricata");
+console.log("[me.js] versione c2 caricata");
 
 const state = {
   token: null,
@@ -12,8 +12,23 @@ const state = {
   tipiDoc: [],
   adempimenti: [],
   onboardItems: [],   // voci che il dipendente deve gestire dal portale
-  clientIp: null,     // recuperato lato client per audit accettazioni
+  clientIp: null,     // solo fallback: l'IP dell'accettazione lo decide il server
+  uploadPrefix: null, // prefisso casuale dell'invito: i file vivono sotto portal/{prefisso}/
 };
+
+// Ogni file caricato dal portale sta sotto "portal/{prefisso dell'invito}/".
+// E' l'unico path che le policy storage concedono al ruolo anon: senza il
+// prefisso (che si ottiene solo con un token valido) il bucket e' chiuso.
+const PORTAL_PREFIX = "portal/";
+function portalPath(suffisso) {
+  if (!state.uploadPrefix) return null;
+  return `${PORTAL_PREFIX}${state.uploadPrefix}/${suffisso}`;
+}
+// I documenti caricati dall'HR non sono leggibili dal portale (by design):
+// il dipendente riapre solo cio' che ha inviato lui.
+function apribileDalPortale(path) {
+  return !!path && String(path).startsWith(PORTAL_PREFIX);
+}
 
 // $, els, esc, uid, fmtDate, STORAGE_BUCKET, sb: vedi common.js (condivisi con app.js).
 
@@ -65,6 +80,12 @@ async function loadMyData() {
   const { data: dip, error: e1 } = await rpcT("self_get", { t: state.token }, 8000, "self_get");
   if (e1 || !dip) { showError(e1?.message || "Link non valido o scaduto."); return; }
   state.dipendente = dip;
+
+  // Prefisso di upload: senza, il portale resta in sola lettura (l'invio file
+  // fallirebbe comunque a livello di policy storage).
+  const rPref = await rpcT("self_get_upload_prefix", { t: state.token }, 4000, "self_get_upload_prefix");
+  if (rPref.error) console.warn("upload_prefix skipped:", rPref.error.message);
+  state.uploadPrefix = rPref.data || null;
 
   // Le altre RPC sono opzionali: se falliscono/stallano, l'app si apre comunque e
   // le sezioni corrispondenti restano vuote/nascoste.
@@ -219,6 +240,7 @@ function renderDocs() {
     else if (mio?.documento_path) stato = "📤 Inviato — in attesa di verifica";
     else stato = "Da caricare";
     const hasFile = !!mio?.documento_path;
+    const riapribile = apribileDalPortale(mio?.documento_path);
     return `<div class="me-doc-row" data-tipo="${esc(t.id)}" data-ad="${esc(mio?.id || "")}">
       <div class="me-doc-head">
         <div>
@@ -232,7 +254,7 @@ function renderDocs() {
         <div class="me-doc-progress" hidden>⏳ Caricamento…</div>
         <div class="me-actions">
           <button type="button" class="primary-btn me-doc-save">Invia documento</button>
-          ${hasFile ? `<button type="button" class="ghost-btn me-doc-open" data-path="${esc(mio.documento_path)}">📎 Apri file attuale</button>` : ""}
+          ${riapribile ? `<button type="button" class="ghost-btn me-doc-open" data-path="${esc(mio.documento_path)}">📎 Apri file attuale</button>` : ""}
         </div>
         <span class="me-status me-doc-status"></span>
       </div>
@@ -267,6 +289,11 @@ async function saveDoc(e, row) {
     status.className = "me-status err";
     return;
   }
+  if (!state.uploadPrefix) {
+    status.textContent = "Link non piu' valido per l'invio di file. Chiedi all'HR un nuovo link.";
+    status.className = "me-status err";
+    return;
+  }
   saveBtn.disabled = true;
   status.textContent = "";
   status.className = "me-status";
@@ -275,7 +302,7 @@ async function saveDoc(e, row) {
   progress.hidden = false;
   try {
     const ext = (file.name.split(".").pop() || "bin").toLowerCase();
-    documento_path = `${admId || uid()}/${Date.now()}.${ext}`;
+    documento_path = portalPath(`doc-${admId || uid()}-${Date.now()}.${ext}`);
     const up = await sb.storage.from(STORAGE_BUCKET).upload(documento_path, file, {
       upsert: false, contentType: file.type || "application/octet-stream",
     });
@@ -429,6 +456,7 @@ function renderFirma() {
   section.hidden = false;
   host.innerHTML = items.map((it) => {
     const caricato = !!it.documento_path;
+    const riapribile = apribileDalPortale(it.documento_path);
     const stato = caricato ? `📎 Firmato e caricato il ${fmtDate(it.fatto_il)}` : "⏳ In attesa di firma";
     return `<div class="me-doc-row" data-item="${esc(it.item_id)}" data-tpl="${esc(it.template_id || "")}">
       <div class="me-doc-head">
@@ -439,7 +467,7 @@ function renderFirma() {
         </div>
         <div class="me-actions" style="gap:6px">
           ${it.template_id ? `<button type="button" class="ghost-btn me-firma-download">📄 Scarica da firmare</button>` : ""}
-          ${caricato ? `<button type="button" class="ghost-btn me-firma-open" data-path="${esc(it.documento_path)}">📎 Vedi firmato</button>` : ""}
+          ${riapribile ? `<button type="button" class="ghost-btn me-firma-open" data-path="${esc(it.documento_path)}">📎 Vedi firmato</button>` : ""}
         </div>
       </div>
       <div class="me-firma-upload">
@@ -478,12 +506,17 @@ async function uploadFirmato(row) {
   const progress = row.querySelector(".me-doc-progress");
   const status = row.querySelector(".me-firma-status");
   const saveBtn = row.querySelector(".me-firma-save");
+  if (!state.uploadPrefix) {
+    status.textContent = "✕ Link non piu' valido per l'invio di file. Chiedi all'HR un nuovo link.";
+    status.className = "me-status err";
+    return;
+  }
   saveBtn.disabled = true;
   progress.hidden = false;
   status.textContent = "";
   try {
     const ext = (file.name.split(".").pop() || "bin").toLowerCase();
-    const path = `onboard/${itemId}/${state.dipendente.id}/${Date.now()}.${ext}`;
+    const path = portalPath(`firmato-${itemId}-${Date.now()}.${ext}`);
     const up = await sb.storage.from(STORAGE_BUCKET).upload(path, file, {
       upsert: false, contentType: file.type || "application/octet-stream",
     });
