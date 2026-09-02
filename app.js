@@ -22,6 +22,9 @@ const state = {
   dpiTipi: [],            // catalogo DPI
   dpiConsegne: [],        // registro consegne DPI per dipendente
   storicoModifiche: [],   // audit trail scritto dal trigger, mai dall'app (1.6)
+  parametri: [],          // 3.1 · i numeri che cambiano con le norme, editabili dall'app
+  cedolini: [],           // 3.2 · cedolini caricati dall'HR, letti dal dipendente nel portale
+  scambiConsulente: [],   // 3.3 · registro degli scambi con il consulente del lavoro
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
@@ -33,7 +36,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -58,6 +61,13 @@ const STORE_BY_TABLE = {
   dpi_tipi: "dpiTipi",
   dpi_consegne: "dpiConsegne",
   storico_modifiche: "storicoModifiche",
+  // 3.1-3.3 · Le tre tabelle della Fase 3. Entrano in TABLES e qui, NON in
+  // REALTIME_TABLES: nessun altro le scrive mentre l'HR ha l'app aperta (il
+  // dipendente dal portale le legge soltanto). L'unica tabella nuova prevista in
+  // realtime da tutto il piano e' `eventi`, in Fase 4.
+  parametri: "parametri",
+  cedolini: "cedolini",
+  scambi_consulente: "scambiConsulente",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -680,13 +690,65 @@ function renderConfig() {
   $("cfg-matrice").hidden = state.configTab !== "matrice";
   $("cfg-onboarding").hidden = state.configTab !== "onboarding";
   $("cfg-modelli").hidden = state.configTab !== "modelli";
+  $("cfg-parametri").hidden = state.configTab !== "parametri";
   if (state.configTab === "ruoli") renderRuoliTable();
   else if (state.configTab === "categorie") renderCategorieTable();
   else if (state.configTab === "tipi") renderTipiTable();
   else if (state.configTab === "matrice") renderMatriceTable();
   else if (state.configTab === "onboarding") renderOnboardingItemsTable();
   else if (state.configTab === "modelli") renderModelliTable();
+  else if (state.configTab === "parametri") renderParametriTable();
 }
+
+// ============================================================
+// 3.1 · Parametri — i numeri che cambiano con le norme.
+// La chiave e' in SOLA LETTURA: i parametri li crea una migrazione, insieme al
+// codice che li legge. Una chiave inventata dall'HR non la leggerebbe nessuno, e
+// sembrerebbe una manopola collegata a niente.
+// ============================================================
+function renderParametriTable() {
+  const righe = state.parametri.slice().sort((x, y) => (x.chiave || "").localeCompare(y.chiave || ""));
+  $("parametri-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-param"><div>Parametro</div><div>Valore</div><div>A cosa serve</div></div>` +
+    (righe.length === 0
+      ? '<div class="muted" style="padding:14px">Nessun parametro configurato.</div>'
+      : righe.map((p) => `<div class="cfg-row cfg-cols-param" data-id="${esc(p.chiave)}">
+          <div><strong>${esc(p.chiave)}</strong></div>
+          <div>${esc(p.valore)}</div>
+          <div class="muted">${esc(p.descrizione || "—")}</div>
+        </div>`).join(""));
+  els("#parametri-table .cfg-row:not(.head)").forEach((el2) =>
+    el2.addEventListener("click", () => openParametroModal(el2.dataset.id)));
+}
+
+function openParametroModal(chiave) {
+  const p = state.parametri.find((x) => x.chiave === chiave);
+  if (!p) return;
+  $("param-title").textContent = p.chiave;
+  $("param-chiave").value = p.chiave;
+  $("param-valore").value = p.valore || "";
+  $("param-descrizione").value = p.descrizione || "";
+  openModal("modal-parametro");
+}
+
+async function saveParametro(e) {
+  e.preventDefault();
+  const chiave = $("param-chiave").value;
+  const prec = state.parametri.find((x) => x.chiave === chiave);
+  if (!prec) return;
+  const row = {
+    ...prec,
+    valore: $("param-valore").value.trim(),
+    descrizione: $("param-descrizione").value.trim() || null,
+    aggiornato_il: new Date().toISOString(),
+  };
+  if (!row.valore) { alert("Il valore non puo' restare vuoto."); return; }
+  if (await sbUpsert("parametri", row)) closeModal("modal-parametro");
+}
+
+// Quanti giorni vale il link del portale: dai parametri, con lo stesso ripiego
+// che applica il database in parametro_int.
+function giorniLinkPortale() { return parametroInt(state.parametri, "portale_giorni_link", 365); }
 
 // 1c · Bottone e didascalia dei dati di prova: esistono finche' esistono quelle
 // persone, e spariscono da soli quando non ce ne sono piu'. E' la guardia
@@ -2594,7 +2656,11 @@ async function inviaInvitoSelfService() {
     const link = `${base}me.html?token=${token}`;
     $("invite-target").textContent = `${d.cognome} ${d.nome}`;
     $("invite-link").value = link;
-    $("invite-status").textContent = "Il link scade dopo 30 giorni. Si può rigenerare in qualsiasi momento.";
+    // 3.1 · La durata non e' piu' cablata: la decide `parametri`.
+    const gg = giorniLinkPortale();
+    $("invite-status").textContent =
+      `Il link scade fra ${gg} giorni (${fmtDate(localISO(addDays(todayMid(), gg)))}). `
+      + "Rigenerandolo, quello di prima smette di funzionare all'istante.";
     openModal("modal-invite");
     setTimeout(() => $("invite-link").select(), 100);
   } catch (err) {
@@ -3746,6 +3812,11 @@ function wireEvents() {
   $("add-tipo").addEventListener("click", () => openTipoModal(null));
   $("add-requisito").addEventListener("click", () => openReqModal(null));
 
+  // Modale parametro (3.1).
+  $("param-form").addEventListener("submit", saveParametro);
+  $("param-close").addEventListener("click", () => closeModal("modal-parametro"));
+  $("param-cancel").addEventListener("click", () => closeModal("modal-parametro"));
+
   // Modale categoria.
   $("cat-form").addEventListener("submit", saveCategoria);
   $("cat-close").addEventListener("click", () => closeModal("modal-categoria"));
@@ -3815,6 +3886,11 @@ function wireEvents() {
   $("invite-close").addEventListener("click", () => closeModal("modal-invite"));
   $("invite-done").addEventListener("click", () => closeModal("modal-invite"));
   $("invite-copy").addEventListener("click", copyInviteLink);
+  // 3.1 · "Rigenera link" chiama LA STESSA funzione del bottone della scheda:
+  // create_invite_token cancella gia' il token precedente, quindi "genera" e
+  // "rigenera" sono la stessa azione. Il bottone qui evita di dover chiudere e
+  // riaprire la scheda per rifarlo.
+  $("invite-rigenera").addEventListener("click", inviaInvitoSelfService);
   $("invite-link").addEventListener("focus", (e) => e.target.select());
   $("dip-history-toggle").addEventListener("click", () => toggleSection("dip-history-toggle", "dip-history-list"));
   $("dip-modifiche-toggle").addEventListener("click", () => toggleSection("dip-modifiche-toggle", "dip-modifiche-list"));

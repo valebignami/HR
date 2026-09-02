@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HR Overland — Compliance personale</title>
-<link rel="stylesheet" href="style.css?v=b7">
+<link rel="stylesheet" href="style.css?v=b8">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous" defer></script>
 </head>
@@ -251,6 +251,7 @@
         <button class="ct-btn" data-ctab="matrice">🔗 Matrice ruolo → requisiti</button>
         <button class="ct-btn" data-ctab="onboarding">✅ Onboarding</button>
         <button class="ct-btn" data-ctab="modelli">📄 Modelli documento</button>
+        <button class="ct-btn" data-ctab="parametri">🎚 Parametri</button>
       </div>
 
       <div class="config-toolbar">
@@ -303,6 +304,17 @@
         </div>
         <p class="cfg-hint">Queste voci vengono assegnate automaticamente a ogni nuovo dipendente. La data di scadenza si calcola sommando i giorni indicati alla sua data di assunzione.</p>
         <div class="cfg-table" id="onboard-items-table"></div>
+      </div>
+
+      <div class="config-panel" id="cfg-parametri" hidden>
+        <div class="config-toolbar">
+          <h3>Parametri</h3>
+        </div>
+        <p class="cfg-hint">I numeri che cambiano con le norme o con le scelte aziendali:
+          quanto dura il link del portale, quanto durano i collegamenti ai cedolini.
+          Cambiarli qui <strong>non richiede di toccare il programma</strong>.
+          Il nome del parametro non si modifica: lo conosce il programma che lo legge.</p>
+        <div class="cfg-table" id="parametri-table"></div>
       </div>
 
       <div class="config-panel" id="cfg-matrice" hidden>
@@ -933,10 +945,30 @@
       <p class="cfg-hint" id="invite-status"></p>
       <div class="modal-foot">
         <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="invite-rigenera" title="Ne crea uno nuovo: quello di adesso smette subito di funzionare">🔄 Rigenera link</button>
         <button type="button" class="ghost-btn" id="invite-copy">📋 Copia link</button>
         <button type="button" class="primary-btn" id="invite-done">Chiudi</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ============ MODALE PARAMETRO (3.1) ============ -->
+<div id="modal-parametro" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><h2 id="param-title">Parametro</h2><button class="icon-btn" id="param-close">✕</button></div>
+    <form id="param-form" class="modal-body">
+      <label><span>Nome del parametro</span><input type="text" id="param-chiave" readonly></label>
+      <label><span>Valore *</span><input type="text" id="param-valore" required></label>
+      <label><span>A cosa serve</span><textarea id="param-descrizione" rows="3"></textarea></label>
+      <p class="cfg-hint">I valori sono <strong>numeri interi</strong> (giorni). Se scrivi
+        qualcos'altro, il programma torna al suo valore di sicurezza invece di sbagliare i conti.</p>
+      <div class="modal-foot">
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="param-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1006,7 +1038,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
 <script src="data.js?v=c2"></script>
-<script src="common.js?v=c7"></script>
-<script src="app.js?v=c9"></script>
+<script src="common.js?v=c8"></script>
+<script src="app.js?v=c10"></script>
 </body>
 </html>

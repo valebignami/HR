@@ -693,6 +693,8 @@ body {
 /* 2.1 · Voci di checklist: una colonna in piu' (Fase) rispetto a cfg-cols-tipi.
    Riusare cfg-cols-tipi, che ha quattro colonne, manderebbe a capo la quinta. */
 .cfg-cols-onb     { grid-template-columns: minmax(180px,2fr) 90px 90px 130px minmax(140px,1.4fr); }
+/* 3.1 · Parametri: nome, valore, a cosa serve. */
+.cfg-cols-param   { grid-template-columns: minmax(200px,1.4fr) 120px minmax(200px,2fr); }
 
 /* ---------- Modal ---------- */
 .modal {
@@ -1390,6 +1392,8 @@ body.self-service { background: var(--bg); }
   .cfg-cols-tipi > *:nth-child(3), .cfg-cols-tipi > *:nth-child(4) { display: none; }
   .cfg-cols-ruoli { grid-template-columns: 1fr auto; }
   .cfg-cols-ruoli > *:nth-child(3) { display: none; }
+  .cfg-cols-param { grid-template-columns: 1fr auto; }
+  .cfg-cols-param > *:nth-child(3) { display: none; }
   .cfg-cols-onb { grid-template-columns: 1fr auto; }
   .cfg-cols-onb > *:nth-child(3), .cfg-cols-onb > *:nth-child(4),
   .cfg-cols-onb > *:nth-child(5) { display: none; }

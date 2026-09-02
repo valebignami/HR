@@ -20,6 +20,7 @@ const { classificaStato, calcolaGap, avvisoScadenza,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
         scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,
+        parametroInt,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -488,5 +489,33 @@ assert.deepEqual(
 assert.deepEqual(incarichiDaRevocare({ dipRuoli: assegnazioni, ruoli: ruoliCat, dipId: "ignoto" }), []);
 assert.deepEqual(incarichiDaRevocare({ dipRuoli: [], ruoli: ruoliCat, dipId: "d1" }), []);
 assert.deepEqual(incarichiDaRevocare({ dipRuoli: null, ruoli: null, dipId: "d1" }), []);
+
+// ============================================================
+// 3.1 · parametroInt — la lettura di un parametro con ripiego.
+// I parametri li scrive l'HR a mano da Configurazione: un valore sbagliato non
+// deve diventare NaN nel calcolo della durata dei link, deve tornare al ripiego.
+// ============================================================
+const par = [
+  { chiave: "portale_giorni_link", valore: "365" },
+  { chiave: "cedolino_giorni_link", valore: " 396 " },   // spazi intorno: si accettano
+  { chiave: "vuoto", valore: "" },
+  { chiave: "parole", valore: "trecento" },
+  { chiave: "misto", valore: "365 giorni" },
+  { chiave: "decimale", valore: "12.9" },
+  { chiave: "negativo", valore: "-7" },
+  { chiave: "nullo", valore: null },
+];
+assert.equal(parametroInt(par, "portale_giorni_link", 30), 365);
+assert.equal(parametroInt(par, "cedolino_giorni_link", 30), 396);
+assert.equal(parametroInt(par, "assente", 30), 30);          // chiave che non c'e'
+assert.equal(parametroInt(par, "vuoto", 30), 30);
+assert.equal(parametroInt(par, "parole", 30), 30);
+assert.equal(parametroInt(par, "misto", 30), 30);            // NON 365: "365 giorni" non e' un intero
+assert.equal(parametroInt(par, "decimale", 30), 30);         // niente decimali: troncare o arrotondare sarebbe una scelta nascosta
+assert.equal(parametroInt(par, "negativo", 30), -7);         // un intero negativo e' un intero
+assert.equal(parametroInt(par, "nullo", 30), 30);
+assert.equal(parametroInt([], "portale_giorni_link", 30), 30);
+assert.equal(parametroInt(null, "portale_giorni_link", 30), 30);
+assert.equal(parametroInt(undefined, "x", 365), 365);
 
 console.log("OK tutti i test common.js");

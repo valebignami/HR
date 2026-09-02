@@ -339,6 +339,29 @@ function incarichiDaRevocare({ dipRuoli, ruoli, dipId }) {
 }
 
 // ============================================================
+// 3.1 · I numeri che cambiano con le norme sono DATI, non codice.
+// La tabella `parametri` nasce in questa fase (durata del link del portale,
+// durata e preavviso dei link dei cedolini) e le fasi 4 e 5 la riusano per i
+// giorni di comporto, la denuncia INAIL e il mese dei colloqui.
+//
+// Perche' questa lettura sta qui e non in app.js: e' una regola con RIPIEGO, la
+// stessa che il database applica in `parametro_int`. I parametri li scrive l'HR
+// da Configurazione, cioe' a mano: un "trecento" o un "365 giorni" scritti per
+// sbaglio non devono diventare NaN nel calcolo della scadenza dei link — devono
+// far tornare il valore di ripiego, in silenzio e sempre nello stesso modo nelle
+// due metà dell'app.
+// Solo interi: nessun parametro di questa fase e' un decimale, e accettare
+// "12.9" vorrebbe dire decidere se troncare o arrotondare.
+function parametroInt(parametri, chiave, valoreDiRipiego) {
+  const riga = (parametri || []).find((p) => p && p.chiave === chiave);
+  if (!riga) return valoreDiRipiego;
+  const testo = String(riga.valore == null ? "" : riga.valore).trim();
+  if (!/^-?\d+$/.test(testo)) return valoreDiRipiego;
+  const n = Number(testo);
+  return Number.isFinite(n) ? n : valoreDiRipiego;
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -397,5 +420,6 @@ if (typeof module !== "undefined" && module.exports) {
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,
+    parametroInt,
     daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }
