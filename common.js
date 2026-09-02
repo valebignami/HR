@@ -494,6 +494,63 @@ function conteggioCedoliniDelMese({ dipendenti, cedolini, anno, mese, tipo = "me
 }
 
 // ============================================================
+// 3.3 · La griglia degli scambi con il consulente del lavoro.
+// Una domanda sola: "con lo studio, questo mese, sono a posto?".
+//
+// La regola che vale la pena di scrivere qui, con un test, e' una: un mese NON
+// ANCORA FINITO non e' "mancante". Senza questa distinzione la griglia sarebbe
+// rossa da gennaio a dicembre il primo di gennaio, cioe' un allarme che non vuol
+// dire niente e che si impara a ignorare — e il giorno in cui manca davvero il
+// LUL di luglio nessuno se ne accorge.
+//
+//   tipi      il vocabolario da data.js: { key, label, direzione, periodicita }
+//   righe     tutte le righe di scambi_consulente
+//   oggiISO   solo per i test: forza la data di riferimento
+//
+// I mensili hanno dodici caselle (mese 1-12), gli annuali una sola (mese 0).
+// ============================================================
+function grigliaScambi({ anno, tipi, righe, oggiISO }) {
+  const oggi = oggiISO || localISO(new Date());
+  const a = Number(anno);
+  const perChiave = new Map();
+  for (const r of righe || []) {
+    if (!r || Number(r.anno) !== a) continue;
+    perChiave.set(`${r.tipo}|${Number(r.mese)}|${r.direzione}`, r);
+  }
+
+  const ultimoGiorno = (mese) => {
+    const g = new Date(a, Number(mese), 0).getDate();
+    return `${a}-${String(mese).padStart(2, "0")}-${String(g).padStart(2, "0")}`;
+  };
+
+  return (tipi || []).map((t) => {
+    const annuale = t.periodicita === "annuale";
+    const mesi = annuale ? [0] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    const celle = mesi.map((mese) => {
+      const riga = perChiave.get(`${t.key}|${mese}|${t.direzione}`) || null;
+      // La fine del periodo: l'ultimo giorno del mese, o del dicembre dell'anno
+      // per le voci annuali.
+      const fine = annuale ? `${a}-12-31` : ultimoGiorno(mese);
+      let stato;
+      if (riga) stato = "presente";
+      else if (fine >= oggi) stato = "futuro";
+      else stato = "mancante";
+      return { mese, riga, stato };
+    });
+    return {
+      tipo: t.key, label: t.label, direzione: t.direzione,
+      periodicita: t.periodicita, annuale, celle,
+      mancanti: celle.filter((c) => c.stato === "mancante").length,
+    };
+  });
+}
+
+// Quante caselle mancano davvero, per il contatore in barra laterale.
+function scambiMancanti(griglia) {
+  return (griglia || []).reduce((n, r) => n + r.mancanti, 0);
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -556,5 +613,6 @@ if (typeof module !== "undefined" && module.exports) {
     normalizzaPeriodoCedolino, linkCedolinoDaRinnovare, cedoliniDaRinnovare,
     contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, conteggioCedoliniDelMese,
     MESE_TREDICESIMA, MESE_CU,
+    grigliaScambi, scambiMancanti,
     daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }

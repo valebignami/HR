@@ -29,6 +29,7 @@ const state = {
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
   dipTab: "anagrafica",      // 2.3 · linguetta aperta nella scheda dipendente
+  scambiAnno: new Date().getFullYear(),   // 3.3 · anno mostrato nella vista Consulente
   search: "",
   compFilter: { dipendente: "", mansione: "", incarico: "", stato: "" },
   storicoFilter: { dipendente: "", tipo: "", categoria: "", anno: "", mese: "" },
@@ -443,6 +444,7 @@ function renderAll() {
   else if (state.view === "cariche") renderCariche();
   else if (state.view === "dipendenti") renderDipendenti();
   else if (state.view === "storico") renderStorico();
+  else if (state.view === "consulente") renderConsulente();
   else if (state.view === "config") renderConfig();
 }
 
@@ -464,6 +466,8 @@ function renderCounts() {
   });
   $("btn-cedolini-mese").textContent =
     `🧾 Cedolini di ${nomeMese(pagheMese.mese)}: ${quanti.presenti}/${quanti.attesi}`;
+  // 3.3 · Le caselle che mancano allo studio, per l'anno in corso.
+  $("count-consulente").textContent = scambiMancanti(grigliaScambiAnno(new Date().getFullYear()));
   const daRinnovare = cedoliniConLinkDaRinnovare().length;
   $("count-link-cedolini").textContent = daRinnovare;
   $("count-link-cedolini").hidden = daRinnovare === 0;
@@ -3119,6 +3123,170 @@ async function rinnovaLinkCedolini() {
   }
 }
 
+// ============================================================
+// 3.3 · SCAMBI CON IL CONSULENTE DEL LAVORO
+// Una tabella sola per le due direzioni, perche' la domanda dell'HR e' una:
+// "con lo studio, questo mese, sono a posto?". In entrata LUL, F24, Uniemens,
+// prospetti, CU, 770; in uscita il riepilogo delle variabili del mese, che dalla
+// Fase 4.4 si scrivera' da solo.
+// I tipi e la loro periodicita' stanno in data.js: sono nomi di documenti, non
+// numeri che cambiano con le norme.
+// ============================================================
+const tipiScambio = () => window.TIPI_SCAMBIO_CONSULENTE || [];
+const tipoScambio = (k) => tipiScambio().find((t) => t.key === k) || { key: k, label: k, direzione: "entrata" };
+
+const SIMBOLO_SCAMBIO = { presente: "✓", mancante: "!", futuro: "·" };
+
+function grigliaScambiAnno(anno) {
+  return grigliaScambi({ anno, tipi: tipiScambio(), righe: state.scambiConsulente });
+}
+
+function etichettaPeriodoScambio(mese, anno) {
+  return Number(mese) === 0 ? `anno ${anno}` : `${nomeMese(mese)} ${anno}`;
+}
+
+function renderConsulente() {
+  const anno = state.scambiAnno;
+  const corrente = new Date().getFullYear();
+  const anni = [];
+  for (let y = corrente + 1; y >= corrente - 4; y--) anni.push(y);
+  $("consulente-anno").innerHTML = anni.map((y) =>
+    `<option value="${y}"${y === anno ? " selected" : ""}>${y}</option>`).join("");
+
+  const griglia = grigliaScambiAnno(anno);
+  const mancanti = scambiMancanti(griglia);
+  $("consulente-mancanti").textContent = mancanti === 0
+    ? "Con lo studio sei a posto: non manca niente per quest'anno."
+    : `${mancanti} ${mancanti === 1 ? "casella manca" : "caselle mancano"}: ` + descriviMancanti(griglia);
+
+  const mensili = griglia.filter((r) => !r.annuale);
+  const annuali = griglia.filter((r) => r.annuale);
+
+  const intestazione = `<div class="sc-riga sc-testa">
+      <div>Documento</div>
+      ${(window.MESI || []).map((m) => `<div title="${esc(m)}">${esc(m.slice(0, 3))}</div>`).join("")}
+    </div>`;
+
+  const rigaHtml = (r) => `<div class="sc-riga">
+      <div class="sc-nome"><strong>${esc(r.label)}</strong>
+        <div class="hist-note">${r.direzione === "entrata" ? "dallo studio" : "allo studio"}</div></div>
+      ${r.celle.map((c) => `<button type="button" class="sc-cella ${c.stato}"
+          data-tipo="${esc(r.tipo)}" data-mese="${c.mese}"
+          title="${esc(r.label)} — ${esc(etichettaPeriodoScambio(c.mese, anno))}">${SIMBOLO_SCAMBIO[c.stato]}</button>`).join("")}
+    </div>`;
+
+  $("consulente-grid").innerHTML = intestazione + mensili.map(rigaHtml).join("");
+
+  $("consulente-annuali").innerHTML = annuali.length === 0 ? "" :
+    `<div class="sc-annuali-titolo">Una volta l'anno</div>` +
+    annuali.map((r) => `<div class="sc-annuale">
+        <span class="sc-nome"><strong>${esc(r.label)}</strong></span>
+        <button type="button" class="sc-cella ${r.celle[0].stato}"
+          data-tipo="${esc(r.tipo)}" data-mese="0"
+          title="${esc(r.label)} — anno ${anno}">${SIMBOLO_SCAMBIO[r.celle[0].stato]}</button>
+      </div>`).join("");
+
+  els(".sc-cella").forEach((b) => b.addEventListener("click", () =>
+    openScambioModal(b.dataset.tipo, Number(b.dataset.mese))));
+}
+
+// "manca il LUL di luglio": a parole, non con un numero soltanto. Al massimo
+// quattro, poi "e altri N": un elenco lungo trenta voci non lo legge nessuno.
+function descriviMancanti(griglia) {
+  const voci = [];
+  for (const r of griglia) {
+    for (const c of r.celle) {
+      if (c.stato === "mancante") voci.push(`${r.label} di ${etichettaPeriodoScambio(c.mese, state.scambiAnno)}`);
+    }
+  }
+  const primi = voci.slice(0, 4).join(", ");
+  return voci.length > 4 ? `${primi} e altri ${voci.length - 4}.` : `${primi}.`;
+}
+
+let pendingScambioFile = null;
+
+function openScambioModal(tipoKey, mese) {
+  const t = tipoScambio(tipoKey);
+  const anno = state.scambiAnno;
+  const riga = state.scambiConsulente.find((r) => Number(r.anno) === anno
+    && Number(r.mese) === Number(mese) && r.tipo === tipoKey && r.direzione === t.direzione) || null;
+  $("scambio-title").textContent = t.label;
+  $("scambio-id").value = riga?.id || "";
+  $("scambio-target").textContent =
+    `${t.label} — ${etichettaPeriodoScambio(mese, anno)} · ${t.direzione === "entrata" ? "ricevuto dallo studio" : "mandato allo studio"}`;
+  // Il periodo e il tipo NON si modificano dalla modale: si sceglie la casella.
+  $("scambio-tipo").value = tipoKey;
+  $("scambio-mese").value = String(mese);
+  $("scambio-data").value = riga?.data || localISO(new Date());
+  $("scambio-note").value = riga?.note || "";
+  $("scambio-delete").hidden = !riga;
+  pendingScambioFile = null;
+  $("scambio-doc-file").value = "";
+  $("scambio-doc-upload-label").textContent = "Carica un file";
+  $("scambio-doc-progress").hidden = true;
+  $("scambio-doc-current").hidden = !riga?.path;
+  if (riga?.path) $("scambio-doc-current-name").textContent = `${t.label} — ${etichettaPeriodoScambio(mese, anno)}`;
+  openModal("modal-scambio");
+}
+
+async function saveScambio(e) {
+  e.preventDefault();
+  const tipoKey = $("scambio-tipo").value;
+  const t = tipoScambio(tipoKey);
+  const mese = Number($("scambio-mese").value);
+  const anno = state.scambiAnno;
+  const id = $("scambio-id").value || uid();
+  const prec = state.scambiConsulente.find((r) => r.id === id) || null;
+
+  const oldPath = prec?.path || null;
+  let path = oldPath;
+  let caricato = null;
+  if (pendingScambioFile) {
+    $("scambio-doc-progress").hidden = false;
+    try {
+      const ext = (pendingScambioFile.name.split(".").pop() || "bin").toLowerCase();
+      const nuovo = `consulente/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(nuovo, pendingScambioFile, {
+        upsert: false, contentType: pendingScambioFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      caricato = nuovo;
+      path = nuovo;
+    } catch (err) {
+      $("scambio-doc-progress").hidden = true;
+      alert("Errore caricamento file: " + err.message);
+      return;
+    }
+    $("scambio-doc-progress").hidden = true;
+  }
+
+  const row = {
+    ...(prec || {}),
+    id, anno, mese, tipo: tipoKey, direzione: t.direzione,
+    data: $("scambio-data").value || null,
+    path,
+    note: $("scambio-note").value.trim() || null,
+  };
+  const ok = await sbUpsert("scambi_consulente", row);
+  if (!ok) { if (caricato) await deleteDoc(caricato); return; }
+  // Il file vecchio solo a salvataggio riuscito, mai prima.
+  if (caricato && oldPath && oldPath !== caricato) await deleteDoc(oldPath);
+  pendingScambioFile = null;
+  closeModal("modal-scambio");
+}
+
+async function deleteScambio() {
+  const id = $("scambio-id").value;
+  if (!id) return;
+  const prec = state.scambiConsulente.find((r) => r.id === id);
+  if (!confirm("Togliere questa casella dal registro degli scambi?"
+    + (prec?.path ? NL + "Anche il file allegato viene cancellato." : ""))) return;
+  // Prima la riga, poi il file.
+  if (!await sbDelete("scambi_consulente", id)) return;
+  if (prec?.path) await deleteDoc(prec.path);
+  closeModal("modal-scambio");
+}
+
 // ---------- Adempimento ----------
 function openAdmModal(dipId, admId, preTipoId) {
   const a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
@@ -3931,6 +4099,13 @@ function collegaDocumentiAiDati(prefissoDip) {
     segna(c.path, dipById(c.dipendente_id), "Cedolino", etichettaPeriodoCedolino(c),
       (c.caricato_il || "").slice(0, 10), "corrente");
   }
+  // 3.3 · Gli scambi con il consulente non sono di NESSUNA persona: la colonna
+  // Dipendente resta vuota di proposito. Senza questo ciclo finirebbero
+  // nell'indice come "non collegati", cioe' file senza padrone.
+  for (const s of state.scambiConsulente) {
+    segna(s.path, null, "Scambio consulente",
+      `${tipoScambio(s.tipo).label} ${etichettaPeriodoScambio(s.mese, s.anno)}`, s.data, "corrente");
+  }
 
   // Fallback per i file del portale: portal/{prefisso}/... . Serve ai documenti
   // caricati dal dipendente e non ancora validati dall'HR, che non sono
@@ -4033,13 +4208,16 @@ function setView(v) {
   $("view-cariche").hidden = v !== "cariche";
   $("view-dipendenti").hidden = v !== "dipendenti";
   $("view-storico").hidden = v !== "storico";
+  $("view-consulente").hidden = v !== "consulente";
   $("view-config").hidden = v !== "config";
   // Topbar contestuale: toggle Lista/Calendario solo nel tab Scadenze (ex-Compliance).
   $("comp-view-toggle").hidden = v !== "compliance";
   const addBtn = $("btn-add");
   if (v === "dipendenti") { addBtn.hidden = false; addBtn.textContent = "+ Nuovo dipendente"; }
   else { addBtn.hidden = true; }
-  $("search-wrap").style.display = v === "config" ? "none" : "";
+  // La ricerca non ha niente da cercare in Configurazione ne' nella griglia del
+  // consulente: un campo che non fa niente e' peggio di un campo assente.
+  $("search-wrap").style.display = (v === "config" || v === "consulente") ? "none" : "";
   closeDrawer();
   renderAll();
 }
@@ -4112,6 +4290,25 @@ function wireEvents() {
     if (files.length) abbinaFileScelti(files);
   });
   $("dip-cedolini-toggle").addEventListener("click", () => toggleSection("dip-cedolini-toggle", "dip-cedolini-list"));
+
+  // 3.3 · Scambi con il consulente.
+  $("consulente-anno").addEventListener("change", (e) => {
+    state.scambiAnno = Number(e.target.value);
+    renderConsulente();
+  });
+  $("scambio-form").addEventListener("submit", saveScambio);
+  $("scambio-close").addEventListener("click", () => closeModal("modal-scambio"));
+  $("scambio-cancel").addEventListener("click", () => closeModal("modal-scambio"));
+  $("scambio-delete").addEventListener("click", deleteScambio);
+  $("scambio-doc-file").addEventListener("change", (e) => {
+    const file = e.target.files?.[0] || null;
+    pendingScambioFile = file;
+    $("scambio-doc-upload-label").textContent = file ? `📄 ${file.name} (salva per caricare)` : "Carica un file";
+  });
+  $("scambio-doc-open").addEventListener("click", async () => {
+    const r = state.scambiConsulente.find((x) => x.id === $("scambio-id").value);
+    await openSignedDoc(r?.path);
+  });
 
   $("btn-add").addEventListener("click", () => {
     if (state.view === "dipendenti") openDipModal(null);

@@ -73,6 +73,10 @@
         <span class="mod-ico">📜</span><span>Storico</span>
         <span class="mod-count" id="count-storico">0</span>
       </button>
+      <button class="module-btn" data-view="consulente">
+        <span class="mod-ico">🧮</span><span>Consulente</span>
+        <span class="mod-count" id="count-consulente">0</span>
+      </button>
       <button class="module-btn" data-view="config">
         <span class="mod-ico">⚙️</span><span>Configurazione</span>
       </button>
@@ -244,6 +248,20 @@
           </div>
         </div>
       </section>
+    </section>
+
+    <!-- ============ VISTA CONSULENTE (3.3) ============ -->
+    <section class="view" id="view-consulente" hidden>
+      <div class="config-toolbar">
+        <h3>Scambi con il consulente del lavoro</h3>
+        <label class="sc-anno-label"><span>Anno</span><select id="consulente-anno"></select></label>
+      </div>
+      <p class="cfg-hint">Una casella per ogni documento e per ogni mese.
+        <strong>✓</strong> c'è, <strong>!</strong> manca, <strong>·</strong> il mese non è ancora finito.
+        Clicca una casella per segnare la data, allegare il file o togliere la spunta.</p>
+      <p class="cfg-hint sc-mancanti" id="consulente-mancanti">—</p>
+      <div class="sc-griglia" id="consulente-grid"></div>
+      <div class="sc-annuali" id="consulente-annuali"></div>
     </section>
 
     <!-- ============ VISTA CONFIGURAZIONE ============ -->
@@ -964,6 +982,41 @@
         <button type="button" class="primary-btn" id="invite-done">Chiudi</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ============ MODALE SCAMBIO CON IL CONSULENTE (3.3) ============ -->
+<div id="modal-scambio" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><h2 id="scambio-title">Scambio</h2><button class="icon-btn" id="scambio-close">✕</button></div>
+    <form id="scambio-form" class="modal-body">
+      <input type="hidden" id="scambio-id">
+      <input type="hidden" id="scambio-tipo">
+      <input type="hidden" id="scambio-mese">
+      <div class="done-target" id="scambio-target">—</div>
+      <label><span>Data</span><input type="date" id="scambio-data"></label>
+      <fieldset class="recur doc-block">
+        <legend>Documento (facoltativo)</legend>
+        <div id="scambio-doc-current" class="doc-current" hidden>
+          <span id="scambio-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="scambio-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="scambio-doc-upload-label">Carica un file</span>
+          <input type="file" id="scambio-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="scambio-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <label><span>Note</span><textarea id="scambio-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="scambio-delete" hidden>🗑 Togli la spunta</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="scambio-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
   </div>
 </div>
 

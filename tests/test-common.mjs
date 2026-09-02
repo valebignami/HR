@@ -23,6 +23,7 @@ const { classificaStato, calcolaGap, avvisoScadenza,
         parametroInt,
         normalizzaPeriodoCedolino, linkCedolinoDaRinnovare, cedoliniDaRinnovare,
         contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, conteggioCedoliniDelMese,
+        grigliaScambi, scambiMancanti,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -648,5 +649,75 @@ assert.deepEqual(conteggioCedoliniDelMese({ dipendenti: dipCedolini, cedolini: c
   { presenti: 2, attesi: 3 });
 assert.deepEqual(conteggioCedoliniDelMese({ dipendenti: [], cedolini: [], anno: 2026, mese: 7 }),
   { presenti: 0, attesi: 0 });
+
+// ============================================================
+// 3.3 · grigliaScambi — un mese non ancora finito non e' "mancante".
+// ============================================================
+const tipiScambio = [
+  { key: "lul",       label: "LUL",                direzione: "entrata", periodicita: "mensile" },
+  { key: "variabili", label: "Variabili del mese", direzione: "uscita",  periodicita: "mensile" },
+  { key: "cu",        label: "CU",                 direzione: "entrata", periodicita: "annuale" },
+];
+
+// Siamo il 15 luglio 2026: gennaio-giugno sono finiti, luglio no.
+const gr = grigliaScambi({
+  anno: 2026,
+  tipi: tipiScambio,
+  righe: [
+    { anno: 2026, mese: 1, tipo: "lul", direzione: "entrata", data: "2026-02-10" },
+    { anno: 2026, mese: 3, tipo: "lul", direzione: "entrata", data: "2026-04-10" },
+    { anno: 2025, mese: 4, tipo: "lul", direzione: "entrata" },              // altro anno: ignorata
+    { anno: 2026, mese: 4, tipo: "lul", direzione: "uscita" },               // direzione diversa: ignorata
+  ],
+  oggiISO: "2026-07-15",
+});
+
+const rigaLul = gr.find((r) => r.tipo === "lul");
+assert.equal(rigaLul.celle.length, 12);
+assert.equal(rigaLul.celle[0].stato, "presente");      // gennaio: c'e'
+assert.equal(rigaLul.celle[1].stato, "mancante");      // febbraio: finito e non c'e'
+assert.equal(rigaLul.celle[2].stato, "presente");      // marzo: c'e'
+// Aprile ha una riga con la direzione SBAGLIATA: non conta, la casella manca.
+assert.equal(rigaLul.celle[3].stato, "mancante");
+assert.equal(rigaLul.celle[5].stato, "mancante");      // giugno: finito il 30, oggi e' il 15/07
+// Luglio non e' ancora finito: NON e' mancante. E' la regola che questo test difende.
+assert.equal(rigaLul.celle[6].stato, "futuro");
+assert.equal(rigaLul.celle[11].stato, "futuro");       // dicembre
+assert.equal(rigaLul.mancanti, 4);                     // feb, apr, mag, giu — e NON luglio
+assert.deepEqual(rigaLul.celle.filter((c) => c.stato === "mancante").map((c) => c.mese),
+  [2, 4, 5, 6]);
+
+// Le voci annuali hanno UNA casella sola (mese 0) e restano "future" per tutto l'anno.
+const rigaCu = gr.find((r) => r.tipo === "cu");
+assert.equal(rigaCu.annuale, true);
+assert.equal(rigaCu.celle.length, 1);
+assert.equal(rigaCu.celle[0].mese, 0);
+assert.equal(rigaCu.celle[0].stato, "futuro");
+assert.equal(rigaCu.mancanti, 0);
+
+// La riga trovata viene restituita, non solo il suo stato: la modale la apre.
+assert.equal(rigaLul.celle[0].riga.data, "2026-02-10");
+assert.equal(rigaLul.celle[1].riga, null);
+
+// Un anno gia' passato: tutto quello che non c'e' e' mancante, annuali comprese.
+const grVecchio = grigliaScambi({ anno: 2025, tipi: tipiScambio, righe: [], oggiISO: "2026-07-15" });
+assert.equal(scambiMancanti(grVecchio), 12 + 12 + 1);
+
+// Un anno futuro: niente e' mancante.
+const grFuturo = grigliaScambi({ anno: 2027, tipi: tipiScambio, righe: [], oggiISO: "2026-07-15" });
+assert.equal(scambiMancanti(grFuturo), 0);
+
+// L'ultimo giorno del mese il mese non e' ancora finito.
+const grUltimo = grigliaScambi({ anno: 2026, tipi: [tipiScambio[0]], righe: [], oggiISO: "2026-02-28" });
+assert.equal(grUltimo[0].celle[1].stato, "futuro");
+const grPrimo = grigliaScambi({ anno: 2026, tipi: [tipiScambio[0]], righe: [], oggiISO: "2026-03-01" });
+assert.equal(grPrimo[0].celle[1].stato, "mancante");
+// Febbraio bisestile: il 29 esiste, e il mese non e' finito il 28.
+const grBis = grigliaScambi({ anno: 2024, tipi: [tipiScambio[0]], righe: [], oggiISO: "2024-02-29" });
+assert.equal(grBis[0].celle[1].stato, "futuro");
+
+assert.deepEqual(grigliaScambi({ anno: 2026, tipi: [], righe: [], oggiISO: "2026-07-15" }), []);
+assert.equal(scambiMancanti([]), 0);
+assert.equal(scambiMancanti(null), 0);
 
 console.log("OK tutti i test common.js");
