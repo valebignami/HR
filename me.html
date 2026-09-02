@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>I miei dati — HR Overland</title>
-<link rel="stylesheet" href="style.css?v=b8">
+<link rel="stylesheet" href="style.css?v=b9">
 </head>
 <body class="self-service">
 
@@ -131,6 +131,41 @@
       <div id="me-cedolini-list"></div>
     </section>
 
+    <!-- 4.5 · Il saldo secondo il cedolino, e cosa e' stato approvato dopo.
+         I due numeri NON si sommano: l'app non calcola le ferie maturate. -->
+    <section class="me-fieldset" id="me-saldo-section" hidden>
+      <legend>🏖 Ferie e permessi</legend>
+      <div id="me-saldo-testo"></div>
+    </section>
+
+    <!-- 4.3 · Chiedi ferie o permesso. La richiesta non cambia niente finche'
+         l'ufficio del personale non la approva. -->
+    <section class="me-fieldset" id="me-richieste-section" hidden>
+      <legend>📅 Chiedi ferie o un permesso</legend>
+      <p class="cfg-hint">
+        Scegli cosa ti serve e i giorni. La richiesta arriva all'ufficio del personale:
+        <strong>finché non la approva, non cambia niente</strong>. Qui sotto vedi lo stato
+        di quelle che hai già mandato.
+      </p>
+      <form id="me-richiesta-form" class="me-form">
+        <label><span>Cosa chiedi</span><select id="me-req-tipo"></select></label>
+        <div class="me-addr-row">
+          <label><span>Dal</span><input type="date" id="me-req-dal"></label>
+          <label><span>Al (vuoto = un giorno solo)</span><input type="date" id="me-req-al"></label>
+        </div>
+        <label><span>Nota (facoltativa)</span>
+          <textarea id="me-req-note" rows="2" maxlength="500"></textarea>
+          <span class="cfg-hint">Scrivi solo quello che serve a organizzare il lavoro.
+            <strong>Non scrivere motivi di salute.</strong></span>
+        </label>
+        <div class="me-actions">
+          <button type="submit" class="primary-btn" id="me-req-invia">📨 Invia la richiesta</button>
+          <span id="me-req-status" class="me-status"></span>
+        </div>
+      </form>
+      <div id="me-richieste-list"></div>
+    </section>
+
     <section class="me-fieldset" id="me-accetta-section" hidden>
       <legend>📝 Documenti da leggere e accettare</legend>
       <p class="cfg-hint">
@@ -152,8 +187,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
-<script src="data.js?v=c3"></script>
-<script src="common.js?v=c8"></script>
-<script src="me.js?v=c5"></script>
+<script src="data.js?v=c4"></script>
+<script src="common.js?v=c9"></script>
+<script src="me.js?v=c6"></script>
 </body>
 </html>

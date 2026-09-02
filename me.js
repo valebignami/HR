@@ -1,10 +1,10 @@
 // ============================================================
-// HR Overland — Portale self-service (me.html) — versione c5
+// HR Overland — Portale self-service (me.html) — versione c6
 // Auth basata su TOKEN passato nell'URL (?token=xxx). Niente login email.
 // L'HR genera il token, manda il link come vuole (WhatsApp/Outlook/SMS).
 // Tutte le operazioni passano da RPC SECURITY DEFINER che validano il token.
 // ============================================================
-console.log("[me.js] versione c5 caricata");
+console.log("[me.js] versione c6 caricata");
 
 const state = {
   token: null,
@@ -13,6 +13,7 @@ const state = {
   adempimenti: [],
   onboardItems: [],   // voci che il dipendente deve gestire dal portale
   cedolini: [],       // 3.2 · i cedolini della persona, con il loro collegamento firmato
+  richieste: [],      // 4.3 · le MIE richieste di ferie e permesso, con lo stato
   uploadPrefix: null, // prefisso casuale dell'invito: i file vivono sotto portal/{prefisso}/
 };
 
@@ -120,6 +121,15 @@ async function loadMyData() {
   // showApp(), per non rallentare la prima schermata, e disegnare la sezione
   // insieme alle altre la lascerebbe vuota e quindi nascosta per sempre.
   renderCedolini();
+
+  // 4.3 · Le mie richieste di ferie e permesso. Opzionale come le altre: se la
+  // RPC non c'e' ancora (portale aperto fra migrazione e deploy) la sezione
+  // resta nascosta e tutto il resto funziona.
+  await ricaricaRichieste();
+  // 4.5 · Il saldo secondo il cedolino si disegna DOPO le richieste: i due
+  // numeri stanno nella stessa frase, e disegnarlo prima lo mostrerebbe senza
+  // la parte "approvato dopo".
+  renderSaldo();
 
   // OPZIONALE — Onboarding self-service (richiede iter_b1_accettazioni.sql).
   // Se non disponibile, le 2 sezioni nuove restano nascoste, il resto funziona.
@@ -452,6 +462,177 @@ function renderAttestati() {
 }
 
 // ============================================================
+// 4.3 · CHIEDI FERIE O UN PERMESSO, E GUARDA LE TUE RICHIESTE
+//
+// Il dipendente_id NON viaggia mai: la RPC lo prende dal token. Non esiste un
+// parametro con cui indicare una persona, ed e' la guardia che il piano chiede
+// per nome ("un dipendente che chiede per un altro").
+//
+// La richiesta nasce "richiesto" e NON cambia niente: i conteggi delle
+// variabili del mese e del saldo guardano solo quelle approvate.
+// ============================================================
+const tipiRichiedibili = () => (window.TIPI_EVENTO || []).filter((t) => t.richiedibile);
+const tipoEvento = (k) => (window.TIPI_EVENTO || []).find((t) => t.key === k)
+  || { key: k, label: k || "—", icon: "📌", misura: "giorni" };
+const statoEvento = (k) => (window.STATI_EVENTO || []).find((s) => s.key === k)
+  || { key: k, labelPortale: k || "—", icon: "" };
+
+async function ricaricaRichieste() {
+  const r = await rpcT("self_get_eventi", { t: state.token }, 4000, "self_get_eventi");
+  if (r.error) { console.warn("eventi skipped:", r.error.message); return; }
+  state.richieste = r.data || [];
+  renderRichieste();
+}
+
+function renderRichieste() {
+  const section = $("me-richieste-section");
+  const host = $("me-richieste-list");
+  if (!section || !host) return;   // HTML vecchio in cache: esco in silenzio
+  const tipi = tipiRichiedibili();
+  if (!tipi.length) { section.hidden = true; return; }
+  section.hidden = false;
+
+  // La tendina si riempie una volta sola: rifarla a ogni render azzererebbe la
+  // scelta di chi sta compilando mentre arriva un aggiornamento.
+  const sel = $("me-req-tipo");
+  if (!sel.options.length) {
+    sel.innerHTML = tipi.map((t) => `<option value="${esc(t.key)}">${esc(t.icon)} ${esc(t.label)}</option>`).join("");
+  }
+
+  // Il calendario del telefono non propone nemmeno le date troppo indietro. Il
+  // numero arriva da self_get (il portale non legge `parametri`): se non c'e',
+  // nessun limite qui e il messaggio lo dara' la RPC, che il numero ce l'ha.
+  const gg = state.dipendente?.richiesta_giorni_indietro;
+  if (gg != null && Number.isFinite(Number(gg))) {
+    const limite = localISO(addDays(new Date(), -Number(gg)));
+    $("me-req-dal").min = limite;
+    $("me-req-al").min = limite;
+  }
+
+  host.innerHTML = !state.richieste.length
+    ? '<div class="muted">Non hai ancora mandato nessuna richiesta.</div>'
+    : state.richieste.map((r) => {
+        const t = tipoEvento(r.tipo);
+        const s = statoEvento(r.stato);
+        const fine = r.al || r.dal;
+        const quando = fine === r.dal ? fmtDate(r.dal) : `${fmtDate(r.dal)} – ${fmtDate(fine)}`;
+        // "Ritira" solo dove la RPC accetterebbe davvero di ritirare: dopo la
+        // risposta decide l'ufficio, e una richiesta scritta dall'ufficio non
+        // la ritira il dipendente. Un bottone che fallisce sempre e' peggio di
+        // un bottone assente.
+        const ritirabile = r.stato === "richiesto" && r.origine === "portale";
+        return `<div class="me-doc-row" data-req="${esc(r.id)}">
+          <div class="me-doc-head">
+            <div>
+              <div class="me-doc-nome">${esc(t.icon)} ${esc(t.label)} — ${esc(quando)}</div>
+              <div class="me-doc-stato">${esc(s.icon)} ${esc(s.labelPortale)}${r.note ? " · " + esc(r.note) : ""}</div>
+            </div>
+            ${ritirabile ? '<button type="button" class="ghost-btn me-req-ritira">Ritira</button>' : ""}
+          </div>
+          <span class="me-status me-req-riga-status"></span>
+        </div>`;
+      }).join("");
+
+  els(".me-req-ritira", host).forEach((btn) => btn.addEventListener("click", (e) => {
+    const row = e.currentTarget.closest(".me-doc-row");
+    ritiraRichiesta(row.dataset.req, row);
+  }));
+}
+
+async function inviaRichiesta(e) {
+  e.preventDefault();
+  const btn = $("me-req-invia");
+  const status = $("me-req-status");
+  const tipo = $("me-req-tipo").value;
+  const dal = $("me-req-dal").value;
+  const al = $("me-req-al").value;
+
+  // La stessa regola della RPC, dal lato di chi scrive: dice subito e in
+  // italiano cosa non va. La guardia resta la RPC, che ricontrolla tutto.
+  // Il limite all'indietro arriva da self_get: NON e' scritto qui dentro, o
+  // divergerebbe dai parametri alla prima modifica in Configurazione.
+  const problema = validaRichiesta({
+    tipo, dal, al,
+    tipiConsentiti: tipiRichiedibili().map((t) => t.key),
+    giorniIndietro: state.dipendente?.richiesta_giorni_indietro,
+  });
+  if (problema) {
+    status.textContent = "✕ " + problema;
+    status.className = "me-status err";
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = "Invio…";
+  status.className = "me-status";
+  const { error } = await sb.rpc("self_richiedi_evento", {
+    t: state.token, p_tipo: tipo, p_dal: dal, p_al: al || null,
+    p_note: $("me-req-note").value.trim() || null,
+  });
+  btn.disabled = false;
+  if (error) {
+    status.textContent = "✕ " + error.message;
+    status.className = "me-status err";
+    return;
+  }
+  status.textContent = "✓ Richiesta inviata. L'ufficio del personale la vede subito.";
+  status.className = "me-status ok";
+  $("me-req-al").value = "";
+  $("me-req-note").value = "";
+  await ricaricaRichieste();
+  renderSaldo();
+  setTimeout(() => { status.textContent = ""; }, 4000);
+}
+
+async function ritiraRichiesta(id, row) {
+  const status = row.querySelector(".me-req-riga-status");
+  const btn = row.querySelector(".me-req-ritira");
+  if (!confirm("Ritirare questa richiesta?")) return;
+  if (btn) btn.disabled = true;
+  status.textContent = "Ritiro in corso…";
+  status.className = "me-status";
+  const { error } = await sb.rpc("self_ritira_evento", { t: state.token, p_id: id });
+  if (error) {
+    status.textContent = "✕ " + error.message;
+    status.className = "me-status err";
+    if (btn) btn.disabled = false;
+    return;
+  }
+  await ricaricaRichieste();
+  renderSaldo();
+}
+
+// ============================================================
+// 4.5 · IL SALDO SECONDO IL CEDOLINO
+// Lo stesso numero che vede l'ufficio del personale, calcolato dalla STESSA
+// funzione di common.js: due conti diversi vorrebbero dire che un giorno il
+// portale dice una cosa e l'app un'altra, per la stessa persona.
+// I due numeri NON si sommano, e la pagina lo dice.
+// ============================================================
+function renderSaldo() {
+  const section = $("me-saldo-section");
+  const host = $("me-saldo-testo");
+  if (!section || !host) return;   // HTML vecchio in cache
+  const saldo = saldoDichiarato({ dip: state.dipendente, eventiDellaPersona: state.richieste });
+  if (!saldo) { section.hidden = true; return; }   // senza la data non si mostra niente
+  section.hidden = false;
+  host.innerHTML =
+    `<div class="me-doc-row"><div class="me-doc-head"><div>
+        <div class="me-doc-nome">Secondo il cedolino al ${esc(fmtDate(saldo.al))}</div>
+        <div class="me-doc-stato">Ferie: ${saldo.ferie == null ? "—" : esc(String(saldo.ferie))} ·
+          PAR/permessi: ${saldo.par == null ? "—" : esc(String(saldo.par))}</div>
+      </div></div></div>`
+    + `<div class="me-doc-row"><div class="me-doc-head"><div>
+        <div class="me-doc-nome">Approvato dopo quella data</div>
+        <div class="me-doc-stato">${saldo.ferieDopo} ${saldo.ferieDopo === 1 ? "giorno" : "giorni"} di ferie
+          (giorni di calendario) · ${saldo.oreDopo} ${saldo.oreDopo === 1 ? "ora" : "ore"} di permesso</div>
+      </div></div></div>`
+    + `<p class="cfg-hint">I due numeri <strong>non vanno sommati</strong>: il primo è quello che
+        ha scritto l'ufficio del personale leggendo il tuo cedolino, il secondo è quello che è
+        stato approvato dopo. Per il saldo esatto fa fede il cedolino.</p>`;
+}
+
+// ============================================================
 // SEZIONE 1 — DOCUMENTI DA LEGGERE E ACCETTARE (click "ho letto")
 // ============================================================
 function valoreSegnaposto(key) {
@@ -660,6 +841,8 @@ async function uploadFirmato(row) {
 async function init() {
   $("me-form").addEventListener("submit", saveMyData);
   $("me-dom-diverso").addEventListener("change", (e) => { $("me-dom-block").hidden = !e.target.checked; });
+  $("me-richiesta-form").addEventListener("submit", inviaRichiesta);
+  $("me-req-dal").value = localISO(new Date());
 
   const params = new URLSearchParams(window.location.search);
   state.token = params.get("token");
