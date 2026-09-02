@@ -1015,7 +1015,7 @@ function openDipModal(id) {
 
   $("dip-incarichi").innerHTML = incarichiList().map((i) => {
     const a = perRuolo.get(i.id);
-    return `<div class="inc-row" data-ruolo="${esc(i.id)}">
+    return `<div class="inc-row" data-ruolo="${esc(i.id)}" data-esistente="${a ? "1" : ""}">
       <label class="inline-check"><input type="checkbox" class="inc-check" value="${esc(i.id)}" ${a ? "checked" : ""}> <span>${esc(i.nome)}</span></label>
       <div class="inc-dettagli" ${a ? "" : "hidden"}>
         <label><span>dal</span><input type="date" class="inc-dal" value="${esc(a?.dal || "")}"></label>
@@ -1029,9 +1029,12 @@ function openDipModal(id) {
     const riga = c.closest(".inc-row");
     el(".inc-dettagli", riga).hidden = !c.checked;
     // Una casella appena spuntata e' una nomina che avviene ORA: quella data,
-    // a differenza di quelle gia' in archivio, la conosciamo.
+    // a differenza di quelle gia' in archivio, la conosciamo. Ma solo se
+    // l'incarico NON era gia' assegnato all'apertura della scheda: togliere e
+    // rimettere la spunta a un incarico vecchio senza data non deve stampargli
+    // la data di oggi, che sarebbe falsa.
     const dal = el(".inc-dal", riga);
-    if (c.checked && !dal.value) dal.value = localISO(new Date());
+    if (c.checked && !dal.value && !riga.dataset.esistente) dal.value = localISO(new Date());
   }));
   els("#dip-incarichi .inc-doc").forEach((b) => b.addEventListener("click", () => openSignedDoc(b.dataset.path)));
 
@@ -1422,6 +1425,14 @@ function openOnboardModal(dipId, itemId) {
   const dip = dipById(dipId);
   const item = state.onboardItems.find((i) => i.id === itemId);
   if (!dip || !item) return;
+  // I due campi scadenza sono in blocchi che si escludono: `required` va SEMPRE
+  // azzerato prima di riassegnarlo. Un campo required dentro un blocco nascosto
+  // blocca l'invio del form e il browser non puo' nemmeno metterci il fuoco:
+  // il bottone Salva smetterebbe di funzionare senza dire niente.
+  $("onboard-adm-scadenza").required = false;
+  $("onboard-adm-scadenza-form").required = false;
+  $("onboard-adm-scadenza-avviso").hidden = true;
+  $("onboard-adm-scadenza-form-avviso").hidden = true;
   const p = state.onboardProgressi.find((x) => x.dipendente_id === dipId && x.item_id === itemId);
   $("onboard-title").textContent = item.label;
   $("onboard-progr-id").value = p?.id || "";
@@ -2679,6 +2690,20 @@ async function applyFatto(e) {
   if (!dipId || !tipoId) { alert("Manca dipendente o tipo requisito."); return; }
   const dataEvento = $("fatto-data").value;
   if (!dataEvento) { alert("Inserisci la data dell'evento."); return; }
+
+  // 1.1 · La scadenza la decide l'HR: precompilata dalla regola, correggibile.
+  // Il medico competente scrive "prossima visita fra 6 mesi" e l'app deve
+  // registrare quello, non i 12 mesi della matrice.
+  // La guardia sta QUI, prima dell'upload: uscire dopo aver caricato il PDF
+  // lascerebbe nel bucket un file che nessuna riga referenzia.
+  const v = validitaMesiForTipo(tipoId, dipId);
+  const newScadenza = $("fatto-scadenza").value || null;
+  if (scadenzaRichiesta(v) && !newScadenza) {
+    alert(`La regola prevede una validità di ${v} mesi: la scadenza è obbligatoria. `
+          + 'Lasciandola vuota, questo obbligo risulterebbe "non scade" per sempre.');
+    return;
+  }
+
   const newFile = $("fatto-file").files?.[0] || null;
 
   const targetId = admId || uid();
@@ -2711,17 +2736,6 @@ async function applyFatto(e) {
       documentoPath: a.documento_path || null,
       note: a.note || null,
     });
-  }
-
-  // 1.1 · La scadenza la decide l'HR: precompilata dalla regola, correggibile.
-  // Il medico competente scrive "prossima visita fra 6 mesi" e l'app deve
-  // registrare quello, non i 12 mesi della matrice.
-  const v = validitaMesiForTipo(tipoId, dipId);
-  const newScadenza = $("fatto-scadenza").value || null;
-  if (scadenzaRichiesta(v) && !newScadenza) {
-    alert(`La regola prevede una validità di ${v} mesi: la scadenza è obbligatoria. `
-          + 'Lasciandola vuota, questo obbligo risulterebbe "non scade" per sempre.');
-    return;
   }
 
   const row = a
@@ -3515,6 +3529,15 @@ function wireEvents() {
 
   // Modale dipendente.
   $("dip-form").addEventListener("submit", saveDip);
+  // 1.5 · Cambiare mansione apre una riga nuova: la sua data di ingresso e' oggi,
+  // a meno che quella mansione fosse gia' attiva (allora si riprende la sua data).
+  // Non si tocca mai il campo senza che l'utente abbia cambiato la tendina: e'
+  // cosi' che si evita di stampare una data falsa su un'assegnazione vecchia.
+  $("dip-mansione").addEventListener("change", (e) => {
+    const dipId = $("dip-id").value;
+    const gia = dipId ? assegnazioniOfDip(dipId).find((a) => a.ruolo_id === e.target.value) : null;
+    $("dip-mansione-dal").value = gia ? (gia.dal || "") : (e.target.value ? localISO(new Date()) : "");
+  });
   $("dip-close").addEventListener("click", () => closeModal("modal-dip"));
   $("dip-cancel").addEventListener("click", () => closeModal("modal-dip"));
   $("dip-delete").addEventListener("click", deleteDip);
