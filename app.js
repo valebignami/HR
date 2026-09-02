@@ -21,6 +21,7 @@ const state = {
   modelli: [],            // documenti_template (lettera assunzione, GDPR, ecc.)
   dpiTipi: [],            // catalogo DPI
   dpiConsegne: [],        // registro consegne DPI per dipendente
+  storicoModifiche: [],   // audit trail scritto dal trigger, mai dall'app (1.6)
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
@@ -31,7 +32,15 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche"];
+
+// Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
+// scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
+// quindi "caricata ma non in realtime" era impossibile da esprimere. Una tabella
+// nuova entra in TABLES e NON qui, se non per una decisione motivata.
+// storico_modifiche non c'e': e' un registro, non una vista, e ogni salvataggio
+// ne produrrebbe una riga e un render in piu'.
+const REALTIME_TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne"];
 const STORE_BY_TABLE = {
   categorie: "categorie",
   ruoli: "ruoli",
@@ -47,6 +56,7 @@ const STORE_BY_TABLE = {
   documenti_template: "modelli",
   dpi_tipi: "dpiTipi",
   dpi_consegne: "dpiConsegne",
+  storico_modifiche: "storicoModifiche",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -117,6 +127,19 @@ async function uploadDoc(adempimentoId, file) {
   // (il vecchio resta nel bucket, recuperabile dallo storico).
   const ext = (file.name.split(".").pop() || "bin").toLowerCase();
   const path = `${adempimentoId}/${Date.now()}.${ext}`;
+  const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, file, {
+    upsert: false,
+    contentType: file.type || "application/octet-stream",
+  });
+  if (error) throw error;
+  return path;
+}
+
+// 1.5 · Atto di nomina: stesso schema degli altri upload, prefisso proprio.
+// Il timestamp evita che una nomina nuova sovrascriva quella vecchia.
+async function uploadNomina(rigaId, file) {
+  const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+  const path = `nomine/${rigaId}/${Date.now()}.${ext}`;
   const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, file, {
     upsert: false,
     contentType: file.type || "application/octet-stream",
@@ -308,7 +331,7 @@ async function sbDelete(table, id) {
 let rtChannel = null;
 function subscribeRealtime() {
   rtChannel = sb.channel("hr-all");
-  for (const t of TABLES) {
+  for (const t of REALTIME_TABLES) {
     rtChannel.on("postgres_changes", { event: "*", schema: "public", table: t }, (payload) => {
       const store = STORE_BY_TABLE[t];
       const arr = state[store];
@@ -333,8 +356,20 @@ function unsubscribeAll() {
 const ruoloById = (id) => state.ruoli.find((r) => r.id === id);
 const tipoById = (id) => state.tipi.find((t) => t.id === id);
 const dipById = (id) => state.dipendenti.find((d) => d.id === id);
+// 1.5 · UNICO punto che filtra le assegnazioni attive di una persona.
+// Da qui passano il motore gap, il sync degli obblighi, il calcolo della
+// validita' e la scheda: se il filtro finisse in piu' posti, un incarico
+// revocato tornerebbe a contare da qualche parte, in silenzio.
+// L'altro lettore di state.dipRuoli e' calcolaCariche in common.js, che ha il
+// suo filtro e il suo test.
+function assegnazioniOfDip(dipId, { conRevocate = false } = {}) {
+  return state.dipRuoli
+    .filter((dr) => dr.dipendente_id === dipId && (conRevocate || assegnazioneAttiva(dr)))
+    .map((dr) => ({ ...dr, ruolo: ruoloById(dr.ruolo_id) }))
+    .filter((a) => a.ruolo);
+}
 function ruoliOfDip(dipId) {
-  return state.dipRuoli.filter((dr) => dr.dipendente_id === dipId).map((dr) => ruoloById(dr.ruolo_id)).filter(Boolean);
+  return assegnazioniOfDip(dipId).map((a) => a.ruolo);
 }
 function mansioniList() { return state.ruoli.filter((r) => r.tipo === "mansione"); }
 function incarichiList() { return state.ruoli.filter((r) => r.tipo === "incarico"); }
@@ -412,16 +447,11 @@ function renderCounts() {
   $("count-storico").textContent = collectStoricoEvents().length;
 }
 
-// Ritorna lo stato di ogni incarico aziendale con minimo > 0.
+// Stato di ogni incarico aziendale con minimo > 0.
+// Adattatore: il conteggio e' una regola su stati e vive in common.js (testata);
+// qui resta solo l'ORDINAMENTO, che e' presentazione — sotto soglia in cima.
 function caricheStato() {
-  return state.ruoli
-    .filter((r) => r.tipo === "incarico" && (r.minimo_richiesto || 0) > 0)
-    .map((r) => {
-      const nominati = state.dipendenti.filter((d) => d.attivo !== false &&
-        state.dipRuoli.some((dr) => dr.dipendente_id === d.id && dr.ruolo_id === r.id));
-      const minimo = r.minimo_richiesto || 0;
-      return { ruolo: r, nominati, minimo, sottoSoglia: nominati.length < minimo };
-    })
+  return calcolaCariche({ ruoli: state.ruoli, dipRuoli: state.dipRuoli, dipendenti: state.dipendenti })
     .sort((a, b) => (a.sottoSoglia === b.sottoSoglia ? a.ruolo.nome.localeCompare(b.ruolo.nome) : (a.sottoSoglia ? -1 : 1)));
 }
 
@@ -453,6 +483,34 @@ function matchSearch(text) {
   return text.toLowerCase().includes(state.search.toLowerCase());
 }
 
+// Filtri della barra Scadenze, in un punto solo: li usano sia le righe di
+// sicurezza sia il blocco Contratti (1.7).
+function passaFiltriCompliance(dip, stato, testo) {
+  const f = state.compFilter;
+  if (f.stato && stato !== f.stato) return false;
+  if (f.dipendente && dip.id !== f.dipendente) return false;
+  const ruoli = ruoliOfDip(dip.id);
+  if (f.mansione && !ruoli.some((x) => x.id === f.mansione)) return false;
+  if (f.incarico && !ruoli.some((x) => x.id === f.incarico)) return false;
+  return matchSearch(dip.nome + " " + dip.cognome + " " + (testo || ""));
+}
+
+// 1.7 · Il blocco Contratti. Non c'e' un "Fatto": una scadenza contrattuale si
+// risolve modificando la scheda (proroga, conferma, trasformazione), e il
+// trigger dello storico conserva la data precedente.
+function renderContratti(righe) {
+  $("contratti-count").textContent = righe.length;
+  $("contratti-wrap").hidden = righe.length === 0;
+  $("contratti-rows").innerHTML = righe.map((r) => `<div class="comp-row contratti-cols" data-dip="${esc(r.dip.id)}">
+      <div><strong>${esc(r.dip.cognome)} ${esc(r.dip.nome)}</strong></div>
+      <div>${esc(r.etichetta)}</div>
+      <div>${fmtDate(r.data)}</div>
+      <div><span class="stato ${r.stato}">${STATO_INFO[r.stato].label}</span></div>
+    </div>`).join("");
+  els(".comp-row", $("contratti-rows")).forEach((el2) =>
+    el2.addEventListener("click", () => openDipModal(el2.dataset.dip)));
+}
+
 function renderCompliance() {
   let rows = gapRows();
 
@@ -464,32 +522,34 @@ function renderCompliance() {
   $("kpi-ok").textContent = counts.ok;
   els('#view-compliance .kpi').forEach((k) => k.classList.toggle("active", k.dataset.cstatus === (state.compFilter.stato || "all")));
 
-  // Filtri.
-  const f = state.compFilter;
-  rows = rows.filter((r) => {
-    if (f.stato && r.stato !== f.stato) return false;
-    if (f.dipendente && r.dip.id !== f.dipendente) return false;
-    const ruoli = ruoliOfDip(r.dip.id);
-    if (f.mansione && !ruoli.some((x) => x.id === f.mansione)) return false;
-    if (f.incarico && !ruoli.some((x) => x.id === f.incarico)) return false;
-    const hay = r.dip.nome + " " + r.dip.cognome + " " + (r.tipo.nome || "");
-    if (!matchSearch(hay)) return false;
-    return true;
-  });
+  // Filtri. Gli stessi valgono per le righe di sicurezza e per quelle
+  // contrattuali (1.7): filtrare "Rossi" deve nascondere entrambe.
+  rows = rows.filter((r) => passaFiltriCompliance(r.dip, r.stato, r.tipo.nome));
 
-  // Modalità Calendario: nasconde la lista e disegna il mese con gli stessi eventi.
+  // 1.7 · Righe contrattuali: fine prova e fine contratto dei soli dipendenti in
+  // forza. NON entrano nei KPI di sicurezza, che restano quelli degli adempimenti.
+  const contratti = state.dipendenti
+    .flatMap((d) => righeContrattuali(d))
+    .filter((r) => passaFiltriCompliance(r.dip, r.stato, r.etichetta))
+    .sort((a, b) => (a.data || "").localeCompare(b.data || ""));
+
+  // Modalità Calendario: nasconde le liste e disegna il mese con gli stessi eventi.
   if (state.compView === "calendar") {
     $("comp-wrap").hidden = true;
+    $("contratti-wrap").hidden = true;
     $("comp-cal-wrap").hidden = false;
-    // Eventi calendario = righe con una data di scadenza utile.
+    // Eventi calendario = righe con una data di scadenza utile, piu' i contratti.
     const events = rows.filter((r) => r.scadenza).map((r) => ({
       a: r.adempimento, tipo: r.tipo, dip: r.dip, scadenza: r.scadenza,
-    }));
+    })).concat(contratti.map((r) => ({
+      kind: "contratto", dip: r.dip, scadenza: r.data, etichetta: r.etichetta,
+    })));
     renderCalendar(events);
     return;
   }
   $("comp-wrap").hidden = false;
   $("comp-cal-wrap").hidden = true;
+  renderContratti(contratti);
 
   const host = $("comp-rows");
   $("comp-empty").hidden = rows.length > 0;
@@ -590,8 +650,11 @@ function renderCalendar(all) {
     const other = d.getMonth() !== m;
     const evs = byDay[iso] || [];
     const shown = evs.slice(0, 3);
-    const evHtml = shown.map((x) =>
-      `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a?.id || ""}" data-tipo="${x.tipo.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`
+    const evHtml = shown.map((x) => x.kind === "contratto"
+      // 1.7 · Un contratto non si "fa": cliccandolo si apre la scheda, dove si
+      // proroga, si conferma o si trasforma.
+      ? `<div class="cal-event contratto" data-dipcard="${esc(x.dip.id)}" title="${esc(x.etichetta)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.etichetta)}</div>`
+      : `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a?.id || ""}" data-tipo="${x.tipo.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`
     ).join("");
     const more = evs.length > 3 ? `<div class="cal-more">+${evs.length - 3} altri</div>` : "";
     html += `<div class="cal-day ${other ? "other-month" : ""} ${iso === todayISO ? "today" : ""}">
@@ -600,7 +663,8 @@ function renderCalendar(all) {
   grid.innerHTML = html;
   els(".cal-event", grid).forEach((ev) => ev.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (ev.dataset.ad) openAdmModal(ev.dataset.dip, ev.dataset.ad);
+    if (ev.dataset.dipcard) openDipModal(ev.dataset.dipcard);
+    else if (ev.dataset.ad) openAdmModal(ev.dataset.dip, ev.dataset.ad);
     else openAdmModal(ev.dataset.dip, null, ev.dataset.tipo);
   }));
 }
@@ -937,14 +1001,54 @@ function openDipModal(id) {
   els(".dip-section .dip-section-body").forEach((b) => (b.hidden = true));
   els(".dip-section .history-arrow").forEach((a) => a.classList.remove("expanded"));
 
-  // Mansione (1) + incarichi (checkbox).
-  const assigned = d ? new Set(ruoliOfDip(d.id).map((r) => r.id)) : new Set();
+  // Mansione (1) + incarichi (checkbox), ciascuno con la sua data di nomina e
+  // il suo atto (1.5). Le righe revocate restano in fondo, in sola lettura.
+  const attive = d ? assegnazioniOfDip(d.id) : [];
+  const perRuolo = new Map(attive.map((a) => [a.ruolo_id, a]));
   fillSelect($("dip-mansione"), mansioniList(), { placeholder: "— seleziona —" });
-  const curMan = d ? ruoliOfDip(d.id).find((r) => r.tipo === "mansione") : null;
-  $("dip-mansione").value = curMan ? curMan.id : "";
-  $("dip-incarichi").innerHTML = incarichiList().map((i) =>
-    `<label><input type="checkbox" value="${i.id}" ${assigned.has(i.id) ? "checked" : ""}> ${esc(i.nome)}</label>`
-  ).join("") || '<span class="muted">Nessun incarico configurato.</span>';
+  const curMan = attive.find((a) => a.ruolo.tipo === "mansione") || null;
+  $("dip-mansione").value = curMan ? curMan.ruolo_id : "";
+  // ATTENZIONE: `dal` NON si precompila mai su una riga che esiste gia'. Se
+  // scrivessimo oggi, il primo salvataggio della scheda registrerebbe la data di
+  // oggi come data di nomina di un incarico vecchio di anni. Vuoto = non nota.
+  $("dip-mansione-dal").value = curMan?.dal || "";
+
+  $("dip-incarichi").innerHTML = incarichiList().map((i) => {
+    const a = perRuolo.get(i.id);
+    return `<div class="inc-row" data-ruolo="${esc(i.id)}" data-esistente="${a ? "1" : ""}">
+      <label class="inline-check"><input type="checkbox" class="inc-check" value="${esc(i.id)}" ${a ? "checked" : ""}> <span>${esc(i.nome)}</span></label>
+      <div class="inc-dettagli" ${a ? "" : "hidden"}>
+        <label><span>dal</span><input type="date" class="inc-dal" value="${esc(a?.dal || "")}"></label>
+        <label><span>atto di nomina</span><input type="file" class="inc-file" accept=".pdf,image/*"></label>
+        ${a?.documento_path ? `<button type="button" class="icon-btn inc-doc" data-path="${esc(a.documento_path)}" title="Apri l'atto di nomina">📎</button>` : ""}
+      </div>
+    </div>`;
+  }).join("") || '<span class="muted">Nessun incarico configurato.</span>';
+
+  els("#dip-incarichi .inc-check").forEach((c) => c.addEventListener("change", () => {
+    const riga = c.closest(".inc-row");
+    el(".inc-dettagli", riga).hidden = !c.checked;
+    // Una casella appena spuntata e' una nomina che avviene ORA: quella data,
+    // a differenza di quelle gia' in archivio, la conosciamo. Ma solo se
+    // l'incarico NON era gia' assegnato all'apertura della scheda: togliere e
+    // rimettere la spunta a un incarico vecchio senza data non deve stampargli
+    // la data di oggi, che sarebbe falsa.
+    const dal = el(".inc-dal", riga);
+    if (c.checked && !dal.value && !riga.dataset.esistente) dal.value = localISO(new Date());
+  }));
+  els("#dip-incarichi .inc-doc").forEach((b) => b.addEventListener("click", () => openSignedDoc(b.dataset.path)));
+
+  const revocate = d ? assegnazioniOfDip(d.id, { conRevocate: true }).filter((a) => !assegnazioneAttiva(a)) : [];
+  revocate.sort((a, b) => (b.al || "").localeCompare(a.al || ""));
+  $("dip-incarichi-revocati").innerHTML = revocate.length
+    ? '<div class="rev-titolo">Revocati</div>' + revocate.map((a) =>
+        `<div class="rev-row">
+          <span class="rev-nome">${esc(a.ruolo.nome)}</span>
+          <span>dal ${a.dal ? fmtDate(a.dal) : "—"} al ${fmtDate(a.al)}</span>
+          ${a.documento_path ? `<button type="button" class="icon-btn rev-doc" data-path="${esc(a.documento_path)}" title="Apri l'atto di nomina">📎</button>` : ""}
+        </div>`).join("")
+    : "";
+  els("#dip-incarichi-revocati .rev-doc").forEach((b) => b.addEventListener("click", () => openSignedDoc(b.dataset.path)));
 
   $("dip-delete").hidden = !d;
   // Genera link self-service: per qualunque dipendente esistente.
@@ -969,6 +1073,10 @@ function openDipModal(id) {
   // Provvedimenti disciplinari del dipendente.
   if (d) renderDipProvvedimenti(d.id);
   else $("dip-provv-section").hidden = true;
+
+  // Modifiche registrate dal database (1.6).
+  if (d) renderDipModifiche(d.id);
+  else $("dip-modifiche-section").hidden = true;
 
   // Storico esecuzioni del dipendente (tutte).
   if (d) renderDipHistory(d.id);
@@ -1305,10 +1413,26 @@ function renderDipOnboarding(dipId) {
 
 let pendingOnboardFile = null;
 
+// 1.1 · Nel flusso onboarding le due scadenze (visita / formazione) stanno in
+// due blocchi che si escludono a vicenda: qui si prende quella visibile.
+function campoScadenzaOnboard(isVisita) {
+  return isVisita
+    ? { input: $("onboard-adm-scadenza"), avviso: $("onboard-adm-scadenza-avviso") }
+    : { input: $("onboard-adm-scadenza-form"), avviso: $("onboard-adm-scadenza-form-avviso") };
+}
+
 function openOnboardModal(dipId, itemId) {
   const dip = dipById(dipId);
   const item = state.onboardItems.find((i) => i.id === itemId);
   if (!dip || !item) return;
+  // I due campi scadenza sono in blocchi che si escludono: `required` va SEMPRE
+  // azzerato prima di riassegnarlo. Un campo required dentro un blocco nascosto
+  // blocca l'invio del form e il browser non puo' nemmeno metterci il fuoco:
+  // il bottone Salva smetterebbe di funzionare senza dire niente.
+  $("onboard-adm-scadenza").required = false;
+  $("onboard-adm-scadenza-form").required = false;
+  $("onboard-adm-scadenza-avviso").hidden = true;
+  $("onboard-adm-scadenza-form-avviso").hidden = true;
   const p = state.onboardProgressi.find((x) => x.dipendente_id === dipId && x.item_id === itemId);
   $("onboard-title").textContent = item.label;
   $("onboard-progr-id").value = p?.id || "";
@@ -1345,17 +1469,44 @@ function openOnboardModal(dipId, itemId) {
     $("onboard-adm-prescrizioni").value = dati.prescrizioni || "";
     $("onboard-adm-ore").value = dati.ore_effettive ?? "";
     $("onboard-adm-hint").textContent =
-      tipoReq ? `Verrà creato/aggiornato l'adempimento "${tipoReq.nome}" con la data indicata. La scadenza si calcola dalla matrice ruoli del dipendente.`
+      tipoReq ? `Verrà creato/aggiornato l'adempimento "${tipoReq.nome}" con la data indicata. La scadenza è proposta dalla matrice ruoli e si può correggere.`
               : "Tipo di requisito non trovato.";
-    // Aggiorna le scadenze calcolate al cambio data.
-    const aggiornaScadenza = () => {
-      const d = $("onboard-adm-data").value;
-      const s = d ? calcScadenza(d, tipoReqId, dipId) : null;
-      $("onboard-adm-scadenza").value = s || "";
-      $("onboard-adm-scadenza-form").value = s || "";
+    // 1.1 · La scadenza e' precompilata dalla matrice ma MODIFICABILE: fino alla
+    // Fase 1 il campo era `disabled` e la data del medico si perdeva.
+    const v = validitaMesiForTipo(tipoReqId, dipId);
+    const { input: campoScad, avviso: campoAvviso } = campoScadenzaOnboard(isVisita);
+    const aggiornaAvviso = () => {
+      const msg = avvisoScadenza($("onboard-adm-data").value,
+                                 scadenzaRichiesta(v) ? v : null, campoScad.value);
+      campoAvviso.textContent = msg || "";
+      campoAvviso.hidden = !msg;
     };
-    aggiornaScadenza();
-    $("onboard-adm-data").onchange = aggiornaScadenza;
+    // `dallaRegola = false` all'apertura: se l'adempimento e' gia' registrato con
+    // quella stessa data, la scadenza che si mostra e' QUELLA SALVATA, non quella
+    // ricalcolata. Altrimenti riaprendo la voce per allegare il certificato si
+    // riproporrebbero i 12 mesi della matrice al posto dei 6 scritti dal medico,
+    // e il salvataggio successivo li sovrascriverebbe in silenzio: esattamente il
+    // difetto che la 1.1 esiste per chiudere.
+    // Cambiare la data dell'evento invece ricalcola: la data e' il presupposto.
+    const precompila = (dallaRegola) => {
+      const d = $("onboard-adm-data").value;
+      let scad = d ? (calcScadenza(d, tipoReqId, dipId) || "") : "";
+      if (!dallaRegola && existingAdm && existingAdm.data_rilascio === d && existingAdm.data_scadenza) {
+        scad = existingAdm.data_scadenza;
+      }
+      // Scrive su entrambi i campi: solo uno e' visibile, ma il salvataggio
+      // legge quello attivo e i due non devono divergere.
+      $("onboard-adm-scadenza").value = scad;
+      $("onboard-adm-scadenza-form").value = scad;
+      aggiornaAvviso();
+    };
+    campoScad.required = scadenzaRichiesta(v) && !!$("onboard-adm-data").value;
+    precompila(false);
+    $("onboard-adm-data").onchange = () => {
+      campoScad.required = scadenzaRichiesta(v) && !!$("onboard-adm-data").value;
+      precompila(true);
+    };
+    campoScad.oninput = aggiornaAvviso;
   } else {
     wfGenera.hidden = true;
     wfAdm.hidden = true;
@@ -1382,6 +1533,19 @@ async function saveOnboardProgresso(e) {
   const itemId = $("onboard-item-id").value;
   if (!progrId) { alert("Voce non sincronizzata. Chiudi e riapri la scheda."); return; }
   const prev = state.onboardProgressi.find((x) => x.id === progrId);
+
+  // 1.1 · Guardia della scadenza PRIMA dell'upload, come in applyFatto: uscire
+  // dopo aver caricato il file significherebbe caricarlo per niente.
+  const itemGuardia = state.onboardItems.find((i) => i.id === itemId);
+  if (itemGuardia?.tipo_workflow === "crea_adempimento" && $("onboard-adm-data").value) {
+    const vG = validitaMesiForTipo(itemGuardia.adempimento_tipo_id, dipId);
+    if (scadenzaRichiesta(vG) && !campoScadenzaOnboard(isTipoSanitario(itemGuardia.adempimento_tipo_id)).input.value) {
+      alert(`La regola prevede una validità di ${vG} mesi: la scadenza è obbligatoria. `
+            + 'Lasciandola vuota, questo obbligo risulterebbe "non scade" per sempre.');
+      return;
+    }
+  }
+
   const oldPath = prev?.documento_path || null;
   let documento_path = oldPath;
   let uploadedPath = null;
@@ -1426,7 +1590,9 @@ async function saveOnboardProgresso(e) {
     };
     // Se ho data evento + tipo requisito → creo/aggiorno l'adempimento.
     if (dataEvento && tipoReqId) {
-      const scadenza = calcScadenza(dataEvento, tipoReqId, dipId);
+      // 1.1 · La scadenza e' quella scritta nel campo, non piu' quella calcolata.
+      // La guardia sull'obbligatorieta' e' gia' passata, prima dell'upload.
+      const scadenza = campoScadenzaOnboard(isVisita).input.value || null;
       const existing = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId && a.corrente !== false);
       const admRow = {
         id: existing?.id || uid(),
@@ -1876,6 +2042,63 @@ function renderDipHistory(dipId) {
   }));
 }
 
+// 1.6 · "Modifiche": chi ha cambiato cosa, e quando. Le righe le scrive un
+// trigger nel database, mai l'app: e' insieme la storia delle variazioni
+// contrattuali e l'audit trail ("chi ha cancellato questo provvedimento").
+// Sola lettura per costruzione: non esiste nessuna scrittura verso questa tabella.
+// Registra QUANDO e' stato salvato, non la decorrenza: per due o tre variazioni
+// l'anno la lettera nel fascicolo basta.
+// La tabella NON e' in realtime (scelta del piano): le righe scritte dopo il
+// caricamento della pagina compaiono al primo ricaricamento.
+const ETICHETTA_TABELLA = {
+  dipendenti: "Scheda",
+  dipendente_ruoli: "Ruoli",
+  adempimenti: "Adempimento",
+  provvedimenti: "Provvedimento",
+  requisiti_ruolo: "Matrice",
+  ruoli: "Ruolo",
+  tipi_requisito: "Tipo requisito",
+};
+
+// Il valore com'e' scritto nel jsonb: null diventa un trattino, gli oggetti
+// (taglie_dpi) restano leggibili invece di diventare [object Object].
+function valoreModifica(v) {
+  if (v == null || v === "") return "—";
+  if (typeof v === "object") return JSON.stringify(v);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmtDate(v);
+  return String(v);
+}
+
+function renderDipModifiche(dipId) {
+  const section = $("dip-modifiche-section");
+  const list = $("dip-modifiche-list");
+  const righe = state.storicoModifiche
+    .filter((m) => m.dipendente_id === dipId)
+    .sort((a, b) => String(b.modificato_il || "").localeCompare(String(a.modificato_il || "")));
+  $("dip-modifiche-count").textContent = righe.length;
+  section.hidden = righe.length === 0;
+  // Default: collassato, come le altre sezioni della scheda.
+  list.hidden = true;
+  el(".history-arrow", $("dip-modifiche-toggle"))?.classList.remove("expanded");
+  $("dip-modifiche-toggle").setAttribute("aria-expanded", "false");
+
+  list.innerHTML = righe.map((m) => {
+    const campi = m.campi && typeof m.campi === "object" ? m.campi : {};
+    const dove = ETICHETTA_TABELLA[m.tabella] || m.tabella;
+    const testo = campi.__cancellata
+      ? '<span class="mod-cancellata">riga cancellata</span>'
+      : Object.entries(campi).map(([campo, v]) =>
+          `<span class="mod-campo">${esc(campo)}</span>: `
+          + `<span class="mod-da">${esc(valoreModifica(v && v.da))}</span> → ${esc(valoreModifica(v && v.a))}`
+        ).join(" · ");
+    return `<div class="mod-row">
+      <div class="mod-quando">${fmtDateTime(m.modificato_il)}</div>
+      <div class="mod-campi">${esc(dove)} · ${testo}</div>
+      <div class="mod-chi">${esc(m.modificato_da || "—")}</div>
+    </div>`;
+  }).join("");
+}
+
 function renderDipAdempimenti(dipId) {
   const dip = dipById(dipId);
   if (!dip) return;
@@ -1954,9 +2177,47 @@ function renderDipAdempimenti(dipId) {
   }));
 }
 
+// A capo nei messaggi di alert/confirm.
+const NL = String.fromCharCode(10);
+
+// Unico punto che legge le caselle degli incarichi dal form della scheda.
+const incarichiSpuntati = () => els("#dip-incarichi input.inc-check:checked").map((c) => c.value);
+
+// 1.2 · Prima di cessare qualcuno o di togliergli un incarico, ricalcola le
+// cariche COME SE fosse gia' fatto e chiede conferma se qualcuna resta scoperta.
+// E' l'unico momento in cui l'azienda si scopre senza accorgersene: cessare una
+// persona fa MIGLIORARE il cruscotto, perche' i suoi obblighi spariscono.
+// Ritorna false se l'utente annulla.
+function confermaCariche(id, esistente) {
+  const want = new Set([...($("dip-mansione").value ? [$("dip-mansione").value] : []), ...incarichiSpuntati()]);
+  const attivoNuovo = $("dip-attivo").checked;
+  const oggi = localISO(new Date());
+  const dipendentiDopo = state.dipendenti.map((d) => (d.id === id ? { ...d, attivo: attivoNuovo } : d));
+  // Le assegnazioni che stiamo per togliere vengono REVOCATE (al = oggi), non
+  // cancellate: e' quello che fara' il salvataggio vero (1.5).
+  const dipRuoliDopo = state.dipRuoli.map((dr) =>
+    (dr.dipendente_id === id && assegnazioneAttiva(dr) && !want.has(dr.ruolo_id)) ? { ...dr, al: oggi } : dr);
+
+  const scoperte = caricheScoperte(
+    calcolaCariche({ ruoli: state.ruoli, dipRuoli: state.dipRuoli, dipendenti: state.dipendenti }),
+    calcolaCariche({ ruoli: state.ruoli, dipRuoli: dipRuoliDopo, dipendenti: dipendentiDopo })
+  );
+  if (!scoperte.length) return true;
+
+  const chi = `${esistente.cognome || ""} ${esistente.nome || ""}`.trim() || "questa persona";
+  const righe = scoperte
+    .map((c) => `• Senza ${chi}, "${c.ruolo.nome}" scende a ${c.dopo} su ${c.minimo} richiesti.`)
+    .join(NL);
+  return confirm("Attenzione: questa modifica lascia scoperta una carica aziendale." + NL + NL
+    + righe + NL + NL + "Salvare lo stesso?");
+}
+
 async function saveDip(e) {
   e.preventDefault();
   const id = $("dip-id").value || uid();
+  const esistente = $("dip-id").value ? dipById(id) : null;
+  // L'avviso va dato PRIMA di qualunque scrittura: dopo, la carica e' gia' scoperta.
+  if (esistente && !confermaCariche(id, esistente)) return;
   const row = {
     id,
     nome: $("dip-nome").value.trim(),
@@ -2009,18 +2270,8 @@ async function saveDip(e) {
   const ok = await sbUpsert("dipendenti", row);
   if (!ok) return;
 
-  // Sincronizza ruoli (mansione + incarichi).
-  const wantMan = $("dip-mansione").value;
-  const wantInc = els("#dip-incarichi input:checked").map((c) => c.value);
-  const want = new Set([...(wantMan ? [wantMan] : []), ...wantInc]);
-  const current = state.dipRuoli.filter((dr) => dr.dipendente_id === id);
-  // Rimuovi quelli non più voluti.
-  for (const dr of current) if (!want.has(dr.ruolo_id)) await sbDelete("dipendente_ruoli", dr.id);
-  // Aggiungi i nuovi.
-  const have = new Set(current.map((dr) => dr.ruolo_id));
-  for (const ruoloId of want) {
-    if (!have.has(ruoloId)) await sbUpsert("dipendente_ruoli", { id: uid(), dipendente_id: id, ruolo_id: ruoloId });
-  }
+  // Sincronizza mansione e incarichi (1.5): revoca, non cancella.
+  if (!await sincronizzaAssegnazioni(id)) return;   // l'errore e' gia' stato mostrato
 
   // Genera adempimenti MANCANTI per i requisiti obbligatori dei ruoli attuali
   // (sia per nuovi dipendenti che per cambi ruolo su esistenti).
@@ -2028,6 +2279,82 @@ async function saveDip(e) {
 
   closeModal("modal-dip");
   renderAll();
+}
+
+// 1.5 · Mansione e incarichi dal form alla tabella. Togliere la spunta NON
+// cancella piu' la riga: la chiude con `al`. "Da quando e' preposto, e dov'e' la
+// nomina" e' la storia che un'app di sicurezza deve conoscere — la formazione
+// del preposto decorre dalla nomina — ed e' il presupposto della cessazione.
+// Vale anche per la mansione: passare da operatore a manutentore chiude la riga
+// vecchia e ne apre una nuova, e da quel giorno cambiano gli obblighi.
+// Ritorna false se qualcosa e' andato storto (l'errore e' gia' a schermo).
+async function sincronizzaAssegnazioni(dipId) {
+  const oggi = localISO(new Date());
+  const attive = state.dipRuoli.filter((dr) => dr.dipendente_id === dipId && assegnazioneAttiva(dr));
+  const perRuolo = new Map(attive.map((dr) => [dr.ruolo_id, dr]));
+
+  // Cosa chiede il form: ruolo → { dal, file }.
+  const voluti = new Map();
+  const man = $("dip-mansione").value;
+  if (man) voluti.set(man, { dal: $("dip-mansione-dal").value || null, file: null });
+  for (const riga of els("#dip-incarichi .inc-row")) {
+    const check = el(".inc-check", riga);
+    if (!check || !check.checked) continue;
+    voluti.set(check.value, {
+      dal: el(".inc-dal", riga)?.value || null,
+      file: el(".inc-file", riga)?.files?.[0] || null,
+    });
+  }
+
+  // 1) Prima si aprono le assegnazioni nuove, POI si revocano le vecchie.
+  // L'ordine conta se qualcosa fallisce a meta': revocando prima, un cambio di
+  // mansione andato storto lascia la persona SENZA mansione, il motore gap non
+  // le assegna piu' nessun obbligo e il cruscotto migliora da solo. Nell'ordine
+  // giusto, il caso peggiore sono due mansioni attive: obblighi in piu', non in
+  // meno. L'indice unico parziale e' per (dipendente, ruolo) e non si oppone,
+  // perche' un ruolo voluto non e' mai anche un ruolo da revocare.
+  for (const [ruoloId, v] of voluti) {
+    const esistente = perRuolo.get(ruoloId);
+    const rigaId = esistente?.id || uid();
+
+    let caricato = null;
+    if (v.file) {
+      try {
+        caricato = await uploadNomina(rigaId, v.file);
+      } catch (err) {
+        alert("Errore caricamento atto di nomina: " + err.message);
+        return false;
+      }
+    }
+    // Niente da scrivere: la riga c'e' gia', la data non e' cambiata, nessun file.
+    if (esistente && !caricato && (esistente.dal || null) === (v.dal || null)) continue;
+
+    const riga = {
+      ...(esistente || {}),
+      id: rigaId,
+      dipendente_id: dipId,
+      ruolo_id: ruoloId,
+      dal: v.dal || null,
+      al: null,
+      documento_path: caricato || esistente?.documento_path || null,
+    };
+    if (!await sbUpsert("dipendente_ruoli", riga)) {
+      // Mai lasciare nel bucket un file che nessuna riga referenzia.
+      if (caricato) await deleteDoc(caricato);
+      return false;
+    }
+    // Il file vecchio si cancella SOLO a salvataggio riuscito, mai prima.
+    if (caricato && esistente?.documento_path && esistente.documento_path !== caricato) {
+      await deleteDoc(esistente.documento_path);
+    }
+  }
+
+  // 2) Revoche: chiudono la riga, non la cancellano.
+  for (const dr of attive) {
+    if (voluti.has(dr.ruolo_id)) continue;
+    if (!await sbUpsert("dipendente_ruoli", { ...dr, al: oggi })) return false;
+  }
+  return true;
 }
 
 // Righe MANCANTI da creare per i requisiti obbligatori non ancora a DB.
@@ -2141,7 +2468,7 @@ async function copyInviteLink() {
 // dipendente_id text), quindi il cascade va fatto esplicitamente qui:
 // senza, le righe restano orfane e i loro file restano nel bucket.
 const TABELLE_FIGLIE_DIP = [
-  { table: "dipendente_ruoli",      store: "dipRuoli",         doc: null },
+  { table: "dipendente_ruoli",      store: "dipRuoli",         doc: "documento_path" },
   { table: "adempimenti",           store: "adempimenti",      doc: "documento_path" },
   { table: "provvedimenti",         store: "provvedimenti",    doc: "documento_path" },
   { table: "onboarding_progressi",  store: "onboardProgressi", doc: "documento_path" },
@@ -2286,9 +2613,12 @@ function renderAdmHistory(a) {
 }
 
 // Auto-calcolo scadenza da data rilascio + validita_mesi della regola del tipo selezionato.
-function validitaMesiForTipo(tipoId, dipId) {
+// `requisiti` e' un parametro (1.3): serve a calcolare la validita' effettiva
+// anche con una matrice SIMULATA, cioe' come sarebbe se la regola che si sta
+// modificando avesse gia' il valore nuovo.
+function validitaMesiForTipo(tipoId, dipId, requisiti = state.requisiti) {
   const ruoloIds = new Set(ruoliOfDip(dipId).map((r) => r.id));
-  const reqs = state.requisiti.filter((req) => req.tipo_requisito_id === tipoId && ruoloIds.has(req.ruolo_id));
+  const reqs = requisiti.filter((req) => req.tipo_requisito_id === tipoId && ruoloIds.has(req.ruolo_id));
   if (!reqs.length) return undefined;
   // validità più stringente
   return reqs.reduce((min, r) => {
@@ -2310,6 +2640,50 @@ function calcScadenza(rilascio, tipoId, dipId) {
 // Conferma → archivia il ciclo corrente in history + calcola la nuova scadenza
 // dalla regola in matrice + salva atomicamente sul DB. Niente PDF / nota qui:
 // l'utente li carica/scrive dalla modale principale dopo, se vuole.
+// 1.1 · Dipendente, tipo e validita' in gioco nella modale Fatto. Li legge come
+// fa applyFatto: dall'adempimento se esiste, altrimenti dalla modale adempimento
+// sottostante (caso "prima registrazione", admId vuoto).
+function contestoFatto() {
+  const admId = $("fatto-adm-id").value;
+  const a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
+  const dipId = a?.dipendente_id || $("adm-dip-id").value;
+  const tipoId = a?.tipo_requisito_id || $("adm-tipo").value;
+  const validita = (dipId && tipoId) ? validitaMesiForTipo(tipoId, dipId) : undefined;
+  return { a, dipId, tipoId, validita };
+}
+
+// La scadenza e' OBBLIGATORIA quando la regola prevede una validita': lasciarla
+// vuota renderebbe l'obbligo "non scade" per sempre, cioe' verde per sempre.
+// undefined = il tipo non e' nei requisiti della persona; Infinity = non scade.
+const scadenzaRichiesta = (v) => v !== undefined && v !== Infinity;
+
+function aggiornaHintFatto() {
+  const { validita: v } = contestoFatto();
+  const data = $("fatto-data").value;
+  if (v === undefined) {
+    $("fatto-hint").textContent = "Questo tipo non è fra i requisiti del dipendente: la scadenza, se ne ha una, scrivila tu.";
+  } else if (v === Infinity) {
+    $("fatto-hint").textContent = "Questo requisito non scade: la scadenza può restare vuota.";
+  } else {
+    $("fatto-hint").textContent = `Validità da regola: ${v} mesi${data ? " → " + fmtDate(addMonths(data, v)) : ""}.`;
+  }
+  $("fatto-scadenza").required = scadenzaRichiesta(v);
+  // L'avviso confronta con la regola SOLO se una regola c'e'.
+  const avviso = avvisoScadenza(data, scadenzaRichiesta(v) ? v : null, $("fatto-scadenza").value);
+  $("fatto-scadenza-avviso").textContent = avviso || "";
+  $("fatto-scadenza-avviso").hidden = !avviso;
+}
+
+// Riporta la scadenza al valore della regola. Si chiama all'apertura e a ogni
+// cambio della data dell'evento: una correzione a mano fatta prima di cambiare
+// la data viene sostituita, ed e' giusto cosi' (la data e' il presupposto).
+function precompilaScadenzaFatto() {
+  const { validita: v } = contestoFatto();
+  const data = $("fatto-data").value;
+  $("fatto-scadenza").value = (scadenzaRichiesta(v) && data) ? (addMonths(data, v) || "") : "";
+  aggiornaHintFatto();
+}
+
 function openFattoModal(admId, dipIdFallback, tipoIdFallback) {
   // Caso 1: rinnovo di adempimento esistente. Caso 2: prima registrazione (admId vuoto).
   let a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
@@ -2324,14 +2698,7 @@ function openFattoModal(admId, dipIdFallback, tipoIdFallback) {
   $("fatto-data").value = today;
   $("fatto-file").value = "";
   $("fatto-progress").hidden = true;
-  const v = validitaMesiForTipo(tipoId, dipId);
-  if (v === undefined) {
-    $("fatto-hint").textContent = "Questo tipo non è nei requisiti del dipendente: nuova scadenza non calcolabile in automatico.";
-  } else if (v === Infinity) {
-    $("fatto-hint").textContent = "Questo requisito non scade: verrà archiviato il ciclo precedente, nuova scadenza vuota.";
-  } else {
-    $("fatto-hint").textContent = `Validità ${v} mesi → nuova scadenza ${fmtDate(addMonths(today, v))}.`;
-  }
+  precompilaScadenzaFatto();
   openModal("modal-fatto");
 }
 
@@ -2346,6 +2713,20 @@ async function applyFatto(e) {
   if (!dipId || !tipoId) { alert("Manca dipendente o tipo requisito."); return; }
   const dataEvento = $("fatto-data").value;
   if (!dataEvento) { alert("Inserisci la data dell'evento."); return; }
+
+  // 1.1 · La scadenza la decide l'HR: precompilata dalla regola, correggibile.
+  // Il medico competente scrive "prossima visita fra 6 mesi" e l'app deve
+  // registrare quello, non i 12 mesi della matrice.
+  // La guardia sta QUI, prima dell'upload: uscire dopo aver caricato il PDF
+  // lascerebbe nel bucket un file che nessuna riga referenzia.
+  const v = validitaMesiForTipo(tipoId, dipId);
+  const newScadenza = $("fatto-scadenza").value || null;
+  if (scadenzaRichiesta(v) && !newScadenza) {
+    alert(`La regola prevede una validità di ${v} mesi: la scadenza è obbligatoria. `
+          + 'Lasciandola vuota, questo obbligo risulterebbe "non scade" per sempre.');
+    return;
+  }
+
   const newFile = $("fatto-file").files?.[0] || null;
 
   const targetId = admId || uid();
@@ -2379,11 +2760,6 @@ async function applyFatto(e) {
       note: a.note || null,
     });
   }
-
-  // Calcolo nuova scadenza dalla regola in matrice.
-  const v = validitaMesiForTipo(tipoId, dipId);
-  let newScadenza = null;
-  if (v !== undefined && v !== Infinity) newScadenza = addMonths(dataEvento, v);
 
   const row = a
     ? { ...a, corrente: true, data_rilascio: dataEvento, data_scadenza: newScadenza,
@@ -2452,7 +2828,20 @@ async function saveRuolo(e) {
 async function deleteRuolo() {
   const id = $("ruolo-id").value;
   if (!id) return;
-  if (!confirm("Eliminare il ruolo? Verranno rimosse anche le sue regole e assegnazioni.")) return;
+  // 1.3 · Rifiuta se in uso, come gia' fa deleteCategoria, e dice quanto.
+  // Le assegnazioni REVOCATE contano: la cascata cancellerebbe anche la storia,
+  // cioe' la prova di chi era preposto e da quando.
+  const dipCoinvolti = new Set(state.dipRuoli.filter((dr) => dr.ruolo_id === id).map((dr) => dr.dipendente_id)).size;
+  const regole = state.requisiti.filter((r) => r.ruolo_id === id).length;
+  if (dipCoinvolti || regole) {
+    const parti = [];
+    if (dipCoinvolti) parti.push(`${dipCoinvolti} ${dipCoinvolti === 1 ? "dipendente lo ha" : "dipendenti lo hanno"} assegnato (anche revocato)`);
+    if (regole) parti.push(`${regole} ${regole === 1 ? "regola della matrice lo usa" : "regole della matrice lo usano"}`);
+    alert(`Impossibile eliminare questo ruolo: ${parti.join(" e ")}.`
+      + NL + "Togli prima le assegnazioni e le regole, poi riprova.");
+    return;
+  }
+  if (!confirm("Eliminare il ruolo? Non è assegnato a nessuno e non ha regole.")) return;
   await sbDelete("ruoli", id);
   state.requisiti = state.requisiti.filter((r) => r.ruolo_id !== id);
   state.dipRuoli = state.dipRuoli.filter((dr) => dr.ruolo_id !== id);
@@ -2527,7 +2916,23 @@ async function saveTipo(e) {
 async function deleteTipo() {
   const id = $("tipo-id").value;
   if (!id) return;
-  if (!confirm("Eliminare il tipo di requisito? Verranno rimosse anche le regole collegate.")) return;
+  // 1.3 · Rifiuta se in uso. Le voci di onboarding sono contate perche' fra
+  // onboarding_items e tipi_requisito NON c'e' foreign key: senza questo
+  // conteggio la guardia direbbe "non in uso" e lascerebbe una voce del flusso
+  // di ingresso che punta a un tipo che non esiste piu'.
+  const dipCoinvolti = new Set(state.adempimenti.filter((a) => a.tipo_requisito_id === id).map((a) => a.dipendente_id)).size;
+  const regole = state.requisiti.filter((r) => r.tipo_requisito_id === id).length;
+  const vociOnboarding = state.onboardItems.filter((i) => i.adempimento_tipo_id === id).length;
+  if (dipCoinvolti || regole || vociOnboarding) {
+    const parti = [];
+    if (dipCoinvolti) parti.push(`${dipCoinvolti} ${dipCoinvolti === 1 ? "dipendente ce l'ha" : "dipendenti ce l'hanno"} registrato`);
+    if (regole) parti.push(`${regole} ${regole === 1 ? "regola della matrice lo usa" : "regole della matrice lo usano"}`);
+    if (vociOnboarding) parti.push(`${vociOnboarding} ${vociOnboarding === 1 ? "voce di onboarding lo crea" : "voci di onboarding lo creano"}`);
+    alert(`Impossibile eliminare questo tipo di requisito: ${parti.join(", ")}.`
+      + NL + "Togli prima quelle righe, poi riprova.");
+    return;
+  }
+  if (!confirm("Eliminare il tipo di requisito? Non è usato da nessuna regola né da nessun dipendente.")) return;
   await sbDelete("tipi_requisito", id);
   state.requisiti = state.requisiti.filter((r) => r.tipo_requisito_id !== id);
   closeModal("modal-tipo");
@@ -2535,6 +2940,59 @@ async function deleteTipo() {
 }
 
 // ---------- Regola (matrice) ----------
+
+// 1.3 · Quali adempimenti cambierebbero scadenza se questa regola passasse a
+// `nuovaValidita`. Adattatore: raccoglie lo stato e chiama ricalcolaScadenze.
+// Tre filtri che decidono tutto:
+//   - `corrente !== false`: un ciclo archiviato e' una prova storica. Ha una
+//     data di rilascio e una scadenza coerente col vecchio calcolo, quindi
+//     senza questo filtro verrebbe riscritto: si altererebbe un attestato.
+//   - solo chi ha DAVVERO il ruolo di questa regola;
+//   - la validita' e' quella EFFETTIVA della persona (validitaMesiForTipo tiene
+//     conto degli altri suoi ruoli), non la regola da sola.
+function righeDaRicalcolare(req, nuovaValidita) {
+  if (!req || !req.id || !req.ruolo_id || !req.tipo_requisito_id) return [];
+  const requisitiDopo = state.requisiti.map((r) => (r.id === req.id ? { ...r, validita_mesi: nuovaValidita } : r));
+  const effettiva = (v) => (v === undefined || v === Infinity ? null : v);
+  const righe = [];
+  for (const a of state.adempimenti) {
+    if (a.tipo_requisito_id !== req.tipo_requisito_id) continue;
+    if (a.corrente === false) continue;
+    if (!a.data_rilascio) continue;
+    if (!ruoliOfDip(a.dipendente_id).some((r) => r.id === req.ruolo_id)) continue;
+    const vVecchia = validitaMesiForTipo(req.tipo_requisito_id, a.dipendente_id);
+    if (vVecchia === undefined) continue;
+    righe.push({
+      id: a.id,
+      data_rilascio: a.data_rilascio,
+      data_scadenza: a.data_scadenza,
+      validitaVecchia: effettiva(vVecchia),
+      validitaNuova: effettiva(validitaMesiForTipo(req.tipo_requisito_id, a.dipendente_id, requisitiDopo)),
+    });
+  }
+  return ricalcolaScadenze(righe);
+}
+
+// La modale dice quante righe sarebbero toccate, mentre si scrive.
+function aggiornaHintRicalcolo() {
+  const box = $("req-ricalcolo-hint");
+  const id = $("req-id").value;
+  const prev = id ? state.requisiti.find((r) => r.id === id) : null;
+  const vRaw = $("req-validita").value;
+  const nuova = vRaw === "" ? null : Number(vRaw);
+  if (!prev || (prev.validita_mesi ?? null) === nuova
+      || prev.ruolo_id !== $("req-ruolo").value
+      || prev.tipo_requisito_id !== $("req-tipo").value) {
+    box.hidden = true;
+    return;
+  }
+  const n = righeDaRicalcolare(prev, nuova).length;
+  box.textContent = n
+    ? `${n} ${n === 1 ? "adempimento registrato ha" : "adempimenti registrati hanno"} la scadenza calcolata con la validità vecchia: al salvataggio potrai ricalcolarla.`
+    : "Nessun adempimento registrato usa questa validità: non c'è niente da ricalcolare.";
+  box.hidden = false;
+}
+
 function openReqModal(id) {
   const req = id ? state.requisiti.find((r) => r.id === id) : null;
   $("req-title").textContent = req ? "Modifica regola" : "Nuova regola";
@@ -2548,6 +3006,7 @@ function openReqModal(id) {
   $("req-validita").value = req?.validita_mesi ?? "";
   $("req-note").value = req?.note || "";
   $("req-delete").hidden = !req;
+  $("req-ricalcolo-hint").hidden = true;
   openModal("modal-requisito");
 }
 async function saveReq(e) {
@@ -2563,7 +3022,30 @@ async function saveReq(e) {
     note: $("req-note").value.trim() || null,
   };
   if (!row.ruolo_id || !row.tipo_requisito_id) { alert("Seleziona ruolo e tipo di requisito."); return; }
-  if (await sbUpsert("requisiti_ruolo", row)) closeModal("modal-requisito");
+
+  // 1.3 · Le righe da ricalcolare si calcolano PRIMA di salvare, quando lo stato
+  // ha ancora la validita' vecchia. Solo se e' cambiata la validita' e nient'altro.
+  const prev = $("req-id").value ? state.requisiti.find((r) => r.id === id) : null;
+  const cambiaSoloValidita = prev
+    && prev.ruolo_id === row.ruolo_id
+    && prev.tipo_requisito_id === row.tipo_requisito_id
+    && (prev.validita_mesi ?? null) !== (row.validita_mesi ?? null);
+  const daRicalcolare = cambiaSoloValidita ? righeDaRicalcolare(prev, row.validita_mesi) : [];
+
+  if (!await sbUpsert("requisiti_ruolo", row)) return;
+
+  if (daRicalcolare.length) {
+    const n = daRicalcolare.length;
+    const ok = confirm(`Regola salvata. ${n} ${n === 1 ? "adempimento registrato ha" : "adempimenti registrati hanno"} ancora la scadenza calcolata con la validità vecchia.`
+      + NL + NL + "Ricalcolarla adesso? Le date corrette a mano e i cicli archiviati non vengono toccati.");
+    if (ok) {
+      for (const u of daRicalcolare) {
+        const a = state.adempimenti.find((x) => x.id === u.id);
+        if (a) await sbUpsert("adempimenti", { ...a, data_scadenza: u.data_scadenza });
+      }
+    }
+  }
+  closeModal("modal-requisito");
 }
 async function deleteReq() {
   const id = $("req-id").value;
@@ -2757,6 +3239,28 @@ async function backupDati() {
   }
 }
 
+// ---------- 1.3 · Scarica configurazione ----------
+// Le regole di compliance vivono SOLO nel database e si cambiano dall'app: una
+// modifica sbagliata in Configurazione non ha un "annulla". Questo bottone e' la
+// fotografia da fare prima. Solo il catalogo: nessun dato personale (per quelli
+// c'e' il Backup dati).
+const TABELLE_CONFIGURAZIONE = [
+  ["categorie", "categorie"],
+  ["ruoli", "ruoli"],
+  ["tipi_requisito", "tipi"],
+  ["requisiti_ruolo", "requisiti"],
+  ["onboarding_items", "onboardItems"],
+  ["documenti_template", "modelli"],
+  ["dpi_tipi", "dpiTipi"],
+];
+
+function scaricaConfigurazione() {
+  const contenuto = { esportato_il: new Date().toISOString(), tabelle: {} };
+  for (const [tabella, store] of TABELLE_CONFIGURAZIONE) contenuto.tabelle[tabella] = state[store] || [];
+  const blob = new Blob([JSON.stringify(contenuto, null, 2)], { type: "application/json" });
+  scaricaBlob(blob, `configurazione-${localISO(new Date())}.json`);
+}
+
 // ---------- 0.6 · Backup dei documenti ----------
 
 const BACKUP_DOC_AVVISO_BYTE = 200 * 1024 * 1024;   // oltre 200 MB il browser puo' non farcela
@@ -2812,6 +3316,13 @@ function collegaDocumentiAiDati(prefissoDip) {
         segna(h.documentoPath, dip, "Adempimento (archiviato)", nomeTipo, h.doneAt || h.rilascio, "archiviato");
       }
     }
+  }
+  for (const dr of state.dipRuoli) {
+    // 1.5 · Gli atti di nomina sono documenti come gli altri: senza questa riga
+    // uscirebbero dal backup come "non collegato", cioe' file senza padrone.
+    segna(dr.documento_path, dipById(dr.dipendente_id), "Nomina",
+      ruoloById(dr.ruolo_id)?.nome || dr.ruolo_id || "", dr.dal,
+      assegnazioneAttiva(dr) ? "corrente" : "revocata");
   }
   for (const p of state.provvedimenti) {
     const et = (window.TIPI_PROVVEDIMENTO || []).find((t) => t.key === p.tipo)?.label || p.tipo || "";
@@ -2990,6 +3501,7 @@ function wireEvents() {
   $("btn-export").addEventListener("click", exportExcel);
   $("btn-backup-dati").addEventListener("click", backupDati);
   $("btn-backup-documenti").addEventListener("click", backupDocumenti);
+  $("btn-scarica-config").addEventListener("click", scaricaConfigurazione);
 
   $("btn-add").addEventListener("click", () => {
     if (state.view === "dipendenti") openDipModal(null);
@@ -3040,6 +3552,15 @@ function wireEvents() {
 
   // Modale dipendente.
   $("dip-form").addEventListener("submit", saveDip);
+  // 1.5 · Cambiare mansione apre una riga nuova: la sua data di ingresso e' oggi,
+  // a meno che quella mansione fosse gia' attiva (allora si riprende la sua data).
+  // Non si tocca mai il campo senza che l'utente abbia cambiato la tendina: e'
+  // cosi' che si evita di stampare una data falsa su un'assegnazione vecchia.
+  $("dip-mansione").addEventListener("change", (e) => {
+    const dipId = $("dip-id").value;
+    const gia = dipId ? assegnazioniOfDip(dipId).find((a) => a.ruolo_id === e.target.value) : null;
+    $("dip-mansione-dal").value = gia ? (gia.dal || "") : (e.target.value ? localISO(new Date()) : "");
+  });
   $("dip-close").addEventListener("click", () => closeModal("modal-dip"));
   $("dip-cancel").addEventListener("click", () => closeModal("modal-dip"));
   $("dip-delete").addEventListener("click", deleteDip);
@@ -3072,6 +3593,7 @@ function wireEvents() {
   $("invite-copy").addEventListener("click", copyInviteLink);
   $("invite-link").addEventListener("focus", (e) => e.target.select());
   $("dip-history-toggle").addEventListener("click", () => toggleSection("dip-history-toggle", "dip-history-list"));
+  $("dip-modifiche-toggle").addEventListener("click", () => toggleSection("dip-modifiche-toggle", "dip-modifiche-list"));
   // Onboarding (scheda dipendente)
   $("dip-onboard-toggle").addEventListener("click", () => toggleSection("dip-onboard-toggle", "dip-onboard-list"));
   $("onboard-form").addEventListener("submit", saveOnboardProgresso);
@@ -3202,17 +3724,10 @@ function wireEvents() {
   $("fatto-form").addEventListener("submit", applyFatto);
   $("fatto-close").addEventListener("click", () => closeModal("modal-fatto"));
   $("fatto-cancel").addEventListener("click", () => closeModal("modal-fatto"));
-  $("fatto-data").addEventListener("change", () => {
-    // Ricalcola hint con la nuova scadenza al cambio data.
-    const admId = $("fatto-adm-id").value;
-    const a = state.adempimenti.find((x) => x.id === admId);
-    if (!a) return;
-    const v = validitaMesiForTipo(a.tipo_requisito_id, a.dipendente_id);
-    const d = $("fatto-data").value;
-    if (v !== undefined && v !== Infinity && d) {
-      $("fatto-hint").textContent = `Validità ${v} mesi → nuova scadenza ${fmtDate(addMonths(d, v))}.`;
-    }
-  });
+  // Cambiare la data dell'evento riporta la scadenza al valore della regola;
+  // scriverla a mano aggiorna solo l'avviso.
+  $("fatto-data").addEventListener("change", precompilaScadenzaFatto);
+  $("fatto-scadenza").addEventListener("input", aggiornaHintFatto);
 
   // Modale ruolo.
   $("ruolo-form").addEventListener("submit", saveRuolo);
@@ -3231,6 +3746,7 @@ function wireEvents() {
 
   // Modale regola.
   $("req-form").addEventListener("submit", saveReq);
+  $("req-validita").addEventListener("input", aggiornaHintRicalcolo);
   $("req-close").addEventListener("click", () => closeModal("modal-requisito"));
   $("req-cancel").addEventListener("click", () => closeModal("modal-requisito"));
   $("req-delete").addEventListener("click", deleteReq);
@@ -3258,19 +3774,43 @@ async function startApp() {
   setView("compliance");
 }
 
+// 1.4 · Se l'avvio fallisce, la pagina NON resta bianca.
+// wireEvents() collega ~130 id a mano: un id sbagliato lancia alla prima riga
+// che lo tocca, init() muore a meta' e l'unica utente dell'app si trova davanti
+// uno schermo vuoto, senza nulla da leggere e nulla da riferire.
+// Il test tests/test-dom-ids.mjs previene la causa piu' probabile; questo
+// riquadro copre tutte le altre.
+function mostraErroreFatale(err) {
+  console.error("Avvio fallito:", err);
+  const box = document.getElementById("fatal-error");
+  const msg = document.getElementById("fatal-error-msg");
+  if (!box || !msg) return;   // se manca anche il riquadro non c'e' altro da fare
+  msg.textContent = [
+    String(err && err.message ? err.message : err),
+    err && err.stack ? "\n" + err.stack : "",
+    "\nPagina: " + location.href,
+    "Data: " + new Date().toISOString(),
+  ].join("\n");
+  box.hidden = false;
+}
+
 async function init() {
-  wireEvents();
-  const { data } = await sb.auth.getSession();
-  if (data?.session) {
-    state.user = data.session.user;
-    hideLogin();
-    await startApp();
-  } else {
-    showLogin();
+  try {
+    wireEvents();
+    const { data } = await sb.auth.getSession();
+    if (data?.session) {
+      state.user = data.session.user;
+      hideLogin();
+      await startApp();
+    } else {
+      showLogin();
+    }
+    sb.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT") showLogin();
+    });
+  } catch (err) {
+    mostraErroreFatale(err);
   }
-  sb.auth.onAuthStateChange((event, session) => {
-    if (event === "SIGNED_OUT") showLogin();
-  });
 }
 
 document.addEventListener("DOMContentLoaded", init);

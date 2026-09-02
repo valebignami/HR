@@ -104,6 +104,122 @@ function classificaStato(hasRilascio, scadenza) {
   return "ok";
 }
 
+// 1.1 · Confronta la scadenza scritta a mano con quella che la regola calcolerebbe.
+// Nasce da un difetto vero: il catalogo dice che la periodicita' della visita la
+// decide il medico competente, ma l'app scriveva sempre quella della matrice, con
+// l'aria di avere ragione. Ora la data si corregge, e questa funzione dice quando
+// la correzione si allontana dalla regola — senza impedirla.
+// null = nessun avviso da mostrare.
+function avvisoScadenza(dataRilascio, validitaMesi, scadenzaInserita) {
+  if (validitaMesi == null || !Number.isFinite(Number(validitaMesi))) return null;
+  if (!dataRilascio || !scadenzaInserita) return null;
+  const attesa = addMonths(dataRilascio, Number(validitaMesi));
+  if (!attesa || attesa === scadenzaInserita) return null;
+  return `Diversa dalla regola (${validitaMesi} mesi → ${fmtDate(attesa)}).`;
+}
+
+// ============================================================
+// 1.2 · Cariche aziendali — quanti sono e quanti dovrebbero essere.
+// Era in app.js e leggeva lo stato globale, quindi non era provabile. E' una
+// regola su stati (chi conta e chi no), quindi sta qui, con un test.
+// NON ordina: l'ordine e' presentazione e resta in app.js.
+// ============================================================
+
+// Un'assegnazione ruolo→dipendente e' attiva finche' non e' stata revocata.
+// Regola unica: la usano sia calcolaCariche qui sia assegnazioniOfDip in app.js.
+// Prima della Fase 1.5 la colonna `al` non esisteva: undefined == null e' vero,
+// quindi le righe vecchie risultano attive, che e' esattamente quello che erano.
+function assegnazioneAttiva(a) {
+  return !!a && a.al == null;
+}
+
+function calcolaCariche({ ruoli, dipRuoli, dipendenti }) {
+  return ruoli
+    .filter((r) => r.tipo === "incarico" && (r.minimo_richiesto || 0) > 0)
+    .map((r) => {
+      const nominati = dipendenti.filter((d) => d.attivo !== false &&
+        dipRuoli.some((dr) => dr.dipendente_id === d.id && dr.ruolo_id === r.id && assegnazioneAttiva(dr)));
+      const minimo = r.minimo_richiesto || 0;
+      return { ruolo: r, nominati, minimo, sottoSoglia: nominati.length < minimo };
+    });
+}
+
+// Quali cariche PEGGIORANO passando da uno stato all'altro: meno nominati e
+// sotto il minimo. Serve a chiedere conferma prima di cessare una persona o di
+// toglierle un incarico — l'unico momento in cui l'azienda si scopre senza
+// accorgersene, perche' il cruscotto migliora.
+function caricheScoperte(prima, dopo) {
+  const primaById = new Map(prima.map((c) => [c.ruolo.id, c]));
+  const out = [];
+  for (const d of dopo) {
+    const p = primaById.get(d.ruolo.id);
+    if (!p) continue;
+    if (d.nominati.length < p.nominati.length && d.sottoSoglia) {
+      out.push({ ruolo: d.ruolo, minimo: d.minimo, prima: p.nominati.length, dopo: d.nominati.length });
+    }
+  }
+  return out;
+}
+
+// ============================================================
+// 1.3 · Ricalcolo delle scadenze dopo un cambio di validita' in matrice.
+// Chi chiama passa, per ogni adempimento candidato:
+//   { id, data_rilascio, data_scadenza, validitaVecchia, validitaNuova }
+// dove le due validita' sono quelle EFFETTIVE della persona (che tengono conto
+// degli altri suoi ruoli), non la regola da sola; null = "non scade".
+// Ritorna solo le righe da aggiornare: [{ id, data_scadenza }].
+//
+// Due cose che questa funzione NON tocca, ed e' il punto:
+//   - le righe mai registrate (senza data_rilascio): non c'e' niente da cui
+//     ricalcolare, e la loro scadenza e' quella dell'onboarding;
+//   - le righe la cui scadenza NON coincide col vecchio calcolo: sono quelle
+//     corrette a mano (1.1), cioe' la data che ha scritto il medico. Riscriverle
+//     disferebbe esattamente il lavoro che la 1.1 rende possibile.
+// ============================================================
+function ricalcolaScadenze(righe) {
+  const out = [];
+  for (const r of righe || []) {
+    if (!r || !r.data_rilascio) continue;
+    const attesaVecchia = r.validitaVecchia == null ? null : addMonths(r.data_rilascio, r.validitaVecchia);
+    if ((r.data_scadenza || null) !== attesaVecchia) continue;   // corretta a mano
+    const nuova = r.validitaNuova == null ? null : addMonths(r.data_rilascio, r.validitaNuova);
+    if ((r.data_scadenza || null) === nuova) continue;           // gia' giusta
+    out.push({ id: r.id, data_scadenza: nuova });
+  }
+  return out;
+}
+
+// ============================================================
+// 1.7 · Scadenze contrattuali.
+// Fine periodo di prova e fine contratto erano solo campi del form: non
+// comparivano in NESSUNA vista. Un contratto a termine che scade inosservato si
+// trasforma per legge; una prova che scade senza decisione conferma l'assunzione.
+// Stesso semaforo del resto dell'app: classificaStato con hasRilascio = true,
+// perche' la data c'e' ed e' certa — non e' un adempimento da registrare.
+// (Il permesso di soggiorno NON sta qui: e' un tipo di requisito e passa dal
+// motore gap come tutti gli altri.)
+// ============================================================
+const CAMPI_CONTRATTUALI = [
+  { campo: "data_fine_prova", etichetta: "Fine periodo di prova" },
+  { campo: "data_fine_contratto", etichetta: "Fine contratto" },
+];
+
+function righeContrattuali(dip, giorniSoglia = GG_SCAD) {
+  if (!dip || dip.attivo === false) return [];   // di un cessato non importa piu'
+  const out = [];
+  for (const { campo, etichetta } of CAMPI_CONTRATTUALI) {
+    const data = dip[campo] || null;
+    if (!data) continue;
+    const gg = daysUntil(data);
+    // Futura, o passata da non piu' di `giorniSoglia` giorni: piu' indietro di
+    // cosi' la decisione e' stata presa (o il danno e' fatto) e la riga sarebbe
+    // solo rumore permanente.
+    if (gg == null || gg < -giorniSoglia) continue;
+    out.push({ dip, campo, etichetta, data, stato: classificaStato(true, data) });
+  }
+  return out;
+}
+
 // ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
@@ -159,5 +275,6 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { classificaStato, calcolaGap, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
+  module.exports = { classificaStato, calcolaGap, avvisoScadenza,
+    assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }

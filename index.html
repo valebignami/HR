@@ -4,11 +4,24 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HR Overland — Compliance personale</title>
-<link rel="stylesheet" href="style.css?v=b5">
+<link rel="stylesheet" href="style.css?v=b6">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous" defer></script>
 </head>
 <body>
+
+<!-- ============ ERRORE FATALE (1.4) ============ -->
+<!-- Se init() muore, la pagina non resta bianca: qui c'e' scritto cosa e' successo
+     e cosa deve fare l'unica persona che usa l'app. -->
+<div id="fatal-error" class="fatal-error" hidden>
+  <div class="fatal-card">
+    <h1>⚠️ L'app non e' riuscita ad avviarsi</h1>
+    <p>Non e' colpa di quello che hai fatto: e' un errore del programma.
+       <strong>Fai una foto o uno screenshot di questa schermata e mandala a chi gestisce
+       l'app.</strong> Nel frattempo puoi provare a ricaricare la pagina.</p>
+    <pre id="fatal-error-msg"></pre>
+  </div>
+</div>
 
 <!-- ============ LOGIN ============ -->
 <div id="login-overlay" class="login-overlay">
@@ -134,6 +147,23 @@
         </div>
       </div>
 
+      <!-- 1.7 · Contratti: blocco separato dal KPI di sicurezza. -->
+      <div class="contratti-wrap" id="contratti-wrap" hidden>
+        <div class="list">
+          <div class="contratti-titolo">
+            <span>📄 Contratti</span>
+            <span class="history-count" id="contratti-count">0</span>
+          </div>
+          <div class="comp-head contratti-cols">
+            <div>Dipendente</div>
+            <div>Voce</div>
+            <div>Data</div>
+            <div>Stato</div>
+          </div>
+          <div id="contratti-rows"></div>
+        </div>
+      </div>
+
       <section class="calendar-wrap" id="comp-cal-wrap" hidden>
         <div class="cal-toolbar">
           <button class="icon-btn cal-nav" id="cal-prev">‹</button>
@@ -145,6 +175,7 @@
             <span class="leg"><i class="leg-chip formazione"></i>Formazione</span>
             <span class="leg"><i class="leg-chip abilitazione"></i>Abilitazione</span>
             <span class="leg"><i class="leg-chip dpi"></i>DPI</span>
+            <span class="leg"><i class="leg-chip contratto"></i>Contratti</span>
           </div>
         </div>
         <div class="cal-weekdays">
@@ -220,6 +251,11 @@
         <button class="ct-btn" data-ctab="matrice">🔗 Matrice ruolo → requisiti</button>
         <button class="ct-btn" data-ctab="onboarding">✅ Onboarding</button>
         <button class="ct-btn" data-ctab="modelli">📄 Modelli documento</button>
+      </div>
+
+      <div class="config-toolbar">
+        <h3>Configurazione</h3>
+        <button class="ghost-btn" id="btn-scarica-config" title="Scarica ruoli, tipi di requisito, matrice, categorie, voci di onboarding, modelli e DPI in un file JSON. Fallo prima di ogni modifica.">⬇ Scarica configurazione</button>
       </div>
 
       <div class="config-panel" id="cfg-ruoli">
@@ -401,12 +437,16 @@
 
       <fieldset class="responsabili-fieldset">
         <legend>Mansione (obbligatoria, una sola)</legend>
-        <select id="dip-mansione" required></select>
+        <div class="row">
+          <label><span>Mansione *</span><select id="dip-mansione" required></select></label>
+          <label><span>In mansione dal</span><input type="date" id="dip-mansione-dal"></label>
+        </div>
       </fieldset>
 
       <fieldset class="responsabili-fieldset">
         <legend>Incarichi / nomine</legend>
         <div id="dip-incarichi" class="responsabili-checkboxes"></div>
+        <div id="dip-incarichi-revocati" class="incarichi-revocati"></div>
       </fieldset>
 
       <label class="inline-check"><input type="checkbox" id="dip-attivo" checked> <span>In forza (attivo)</span></label>
@@ -466,6 +506,15 @@
           <button type="button" class="ghost-btn" id="dip-provv-add" style="margin-left:8px">+ Nuovo</button>
         </button>
         <div id="dip-provv-list" hidden></div>
+      </div>
+
+      <div id="dip-modifiche-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-modifiche-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>Modifiche</span>
+          <span class="history-count" id="dip-modifiche-count">0</span>
+        </button>
+        <div id="dip-modifiche-list" hidden></div>
       </div>
 
       <div id="dip-history-section" class="history-section" hidden>
@@ -541,6 +590,9 @@
       <div class="done-target" id="fatto-target">—</div>
       <label><span>Data dell'evento (visita, corso, ecc.)</span>
         <input type="date" id="fatto-data" required></label>
+      <label><span>Scadenza</span>
+        <input type="date" id="fatto-scadenza"></label>
+      <p class="cfg-hint avviso-scadenza" id="fatto-scadenza-avviso" hidden></p>
       <label><span>Nuovo PDF (opzionale, sostituisce quello attuale che resta nello storico)</span>
         <input type="file" id="fatto-file" accept=".pdf,image/*"></label>
       <div id="fatto-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
@@ -687,15 +739,17 @@
                 <option value="non_idoneo">❌ Non idoneo</option>
               </select>
             </label>
-            <label><span>Prossima scadenza calcolata</span><input type="date" id="onboard-adm-scadenza" disabled></label>
+            <label><span>Prossima scadenza</span><input type="date" id="onboard-adm-scadenza"></label>
           </div>
+          <p class="cfg-hint avviso-scadenza" id="onboard-adm-scadenza-avviso" hidden></p>
           <label><span>Prescrizioni / limitazioni (opzionale)</span><textarea id="onboard-adm-prescrizioni" rows="2"></textarea></label>
         </div>
         <div id="onboard-adm-formazione-wrap" hidden>
           <div class="row">
             <label><span>Ore effettive</span><input type="number" id="onboard-adm-ore" min="0" step="0.5" placeholder="Es. 4 / 12"></label>
-            <label><span>Prossima scadenza calcolata</span><input type="date" id="onboard-adm-scadenza-form" disabled></label>
+            <label><span>Prossima scadenza</span><input type="date" id="onboard-adm-scadenza-form"></label>
           </div>
+          <p class="cfg-hint avviso-scadenza" id="onboard-adm-scadenza-form-avviso" hidden></p>
         </div>
       </fieldset>
 
@@ -893,6 +947,7 @@
         <label class="inline-check"><input type="checkbox" id="req-obblig" checked> <span>Obbligatorio</span></label>
         <label><span>Validità (mesi, vuoto = non scade)</span><input type="number" id="req-validita" min="1"></label>
       </div>
+      <p class="cfg-hint avviso-scadenza" id="req-ricalcolo-hint" hidden></p>
       <label><span>Note</span><textarea id="req-note" rows="2"></textarea></label>
       <div class="modal-foot">
         <button type="button" class="ghost-btn danger" id="req-delete" hidden>🗑 Elimina</button>
@@ -906,7 +961,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
 <script src="data.js?v=c2"></script>
-<script src="common.js?v=c4"></script>
-<script src="app.js?v=c6"></script>
+<script src="common.js?v=c5"></script>
+<script src="app.js?v=c7"></script>
 </body>
 </html>
