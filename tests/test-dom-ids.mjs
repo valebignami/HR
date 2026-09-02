@@ -32,6 +32,7 @@ const COPPIE = [
 //   $("x")                     -> x
 //   openModal("x") / closeModal("x") / bottoneOccupato("x", …) -> x
 //   toggleSection("x", "y")    -> x e y (sono due id)
+//   idCampo: "x"               -> x  (la tabella CAMPI_DIPENDENTE, voce 2.2)
 // Tutte queste strade finiscono in $() dentro common.js o app.js.
 function idUsati(sorgente) {
   const trovati = new Map(); // id -> numero di riga della prima occorrenza
@@ -43,6 +44,10 @@ function idUsati(sorgente) {
 
   righe.forEach((riga, i) => {
     for (const m of riga.matchAll(/\$\(\s*(["'])([^"'`\n]+)\1\s*\)/g)) segna(m[2], i);
+    // 2.2 · I 36 id della scheda dipendente vivono dentro CAMPI_DIPENDENTE, non
+    // in $("..."): senza questa riga uscirebbero dal controllo proprio nella
+    // fase che li sposta, e un refuso diventerebbe un campo che non si salva.
+    for (const m of riga.matchAll(/\bidCampo:\s*(["'])([^"'`\n]+)\1/g)) segna(m[2], i);
     for (const m of riga.matchAll(/\b(?:openModal|closeModal|bottoneOccupato)\(\s*(["'])([^"'`\n]+)\1/g)) segna(m[2], i);
     for (const m of riga.matchAll(/\btoggleSection\(\s*(["'])([^"'`\n]+)\1\s*,\s*(["'])([^"'`\n]+)\3/g)) {
       segna(m[2], i);

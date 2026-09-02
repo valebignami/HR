@@ -938,24 +938,114 @@ function fillSelect(sel, items, { value = "id", label = "nome", placeholder = nu
     items.map((i) => `<option value="${esc(i[value])}">${esc(typeof label === "function" ? label(i) : i[label])}</option>`).join("");
 }
 
+// ============================================================
+// 2.2 - La mappa dei campi della scheda dipendente.
+// Prima questa lista esisteva due volte, in due ordini diversi: 41 assegnazioni
+// in openDipModal e 41 chiavi in saveDip. Aggiungere un campo voleva dire
+// ricordarsene in due posti, e dimenticarne uno non dava nessun errore: dava un
+// campo che si compila e non si salva, o che si salva e riapre vuoto.
+//
+// ATTENZIONE: l'id sta scritto in `idCampo` apposta. tests/test-dom-ids.mjs
+// riconosce quella chiave e controlla che l'elemento esista davvero in
+// index.html. Senza, spostare 41 id dentro un array li toglierebbe dall'unica
+// rete che esiste sotto questa modale, e un refuso diventerebbe un campo che non
+// si salva, in silenzio.
+//
+//   tipo             testo | data | scelta (select) | numero | spunta (checkbox)
+//   maiNull          campo di testo che NON diventa null se vuoto (e' required)
+//   maiuscolo        normalizzato in maiuscolo (le sigle di provincia)
+//   soloSe           se ritorna false si salva null invece del valore letto
+//   scritturaAParte  scriviCampiDipendente lo salta (ha una regola sua)
+// ============================================================
+const dipDomicilioDiverso = () => $("dip-dom-diverso").checked;
+const dipDeterminato = () => $("dip-tipo-contratto").value === CONTRATTO_DETERMINATO;
+const dipCessato = () => !$("dip-attivo").checked;
+
+const CAMPI_DIPENDENTE = [
+  // Dati di base
+  { idCampo: "dip-nome",           campo: "nome",            tipo: "testo", maiNull: true },
+  { idCampo: "dip-cognome",        campo: "cognome",         tipo: "testo", maiNull: true },
+  { idCampo: "dip-cf",             campo: "codice_fiscale",  tipo: "testo" },
+  { idCampo: "dip-nascita",        campo: "data_nascita",    tipo: "data" },
+  { idCampo: "dip-assunzione",     campo: "data_assunzione", tipo: "data" },
+  { idCampo: "dip-livello",        campo: "livello_ccnl",    tipo: "scelta" },
+  { idCampo: "dip-email",          campo: "email",           tipo: "testo" },
+  { idCampo: "dip-telefono",       campo: "telefono",        tipo: "testo" },
+  { idCampo: "dip-attivo",         campo: "attivo",          tipo: "spunta", scritturaAParte: true },
+  { idCampo: "dip-note",           campo: "note",            tipo: "testo" },
+  // Dati personali estesi
+  { idCampo: "dip-luogo-nascita",  campo: "luogo_nascita",   tipo: "testo" },
+  { idCampo: "dip-sesso",          campo: "sesso",           tipo: "scelta" },
+  { idCampo: "dip-cittadinanza",   campo: "cittadinanza",    tipo: "testo" },
+  { idCampo: "dip-stato-civile",   campo: "stato_civile",    tipo: "scelta" },
+  { idCampo: "dip-titolo-studio",  campo: "titolo_studio",   tipo: "testo" },
+  // Residenza e domicilio
+  { idCampo: "dip-res-indirizzo",  campo: "residenza_indirizzo",  tipo: "testo" },
+  { idCampo: "dip-res-cap",        campo: "residenza_cap",        tipo: "testo" },
+  { idCampo: "dip-res-citta",      campo: "residenza_citta",      tipo: "testo" },
+  { idCampo: "dip-res-prov",       campo: "residenza_provincia",  tipo: "testo", maiuscolo: true },
+  { idCampo: "dip-dom-diverso",    campo: "domicilio_diverso",    tipo: "spunta" },
+  { idCampo: "dip-dom-indirizzo",  campo: "domicilio_indirizzo",  tipo: "testo", soloSe: dipDomicilioDiverso },
+  { idCampo: "dip-dom-cap",        campo: "domicilio_cap",        tipo: "testo", soloSe: dipDomicilioDiverso },
+  { idCampo: "dip-dom-citta",      campo: "domicilio_citta",      tipo: "testo", soloSe: dipDomicilioDiverso },
+  { idCampo: "dip-dom-prov",       campo: "domicilio_provincia",  tipo: "testo", maiuscolo: true, soloSe: dipDomicilioDiverso },
+  // Contratto
+  { idCampo: "dip-tipo-contratto",      campo: "tipo_contratto",      tipo: "scelta" },
+  { idCampo: "dip-data-fine-contratto", campo: "data_fine_contratto", tipo: "data", soloSe: dipDeterminato },
+  { idCampo: "dip-data-fine-prova",     campo: "data_fine_prova",     tipo: "data" },
+  { idCampo: "dip-qualifica",           campo: "qualifica",           tipo: "scelta" },
+  { idCampo: "dip-orario",              campo: "orario_tipo",         tipo: "scelta" },
+  { idCampo: "dip-ore",                 campo: "ore_settimanali",     tipo: "numero" },
+  { idCampo: "dip-sede",                campo: "sede_lavoro",         tipo: "testo" },
+  // Contatto di emergenza
+  { idCampo: "dip-emerg-nome",      campo: "emergenza_nome",      tipo: "testo" },
+  { idCampo: "dip-emerg-tel",       campo: "emergenza_telefono",  tipo: "testo" },
+  { idCampo: "dip-emerg-parentela", campo: "emergenza_parentela", tipo: "scelta" },
+  // Cessazione: si scrivono solo se la persona NON e' in forza.
+  { idCampo: "dip-data-cessazione",   campo: "data_cessazione",   tipo: "data",   soloSe: dipCessato },
+  { idCampo: "dip-motivo-cessazione", campo: "motivo_cessazione", tipo: "scelta", soloSe: dipCessato },
+];
+
+// IBAN e RAL non sono in questa tabella e non devono tornarci (voce 0.5): sono
+// dati del consulente del lavoro, l'app non li usa, e sono i due che fanno piu'
+// danno in caso di accesso indebito. Le colonne restano nel database e i valori
+// esistenti non vengono toccati: sbUpsert scrive solo le colonne che riceve.
+
+// Dal dipendente al form.
+function scriviCampiDipendente(d) {
+  for (const c of CAMPI_DIPENDENTE) {
+    if (c.scritturaAParte) continue;
+    const elemento = $(c.idCampo);
+    const v = d ? d[c.campo] : null;
+    if (c.tipo === "spunta") elemento.checked = !!v;
+    else if (c.tipo === "numero") elemento.value = v ?? "";
+    else elemento.value = v || "";
+  }
+}
+
+// Dal form al dipendente.
+function leggiCampiDipendente() {
+  const row = {};
+  for (const c of CAMPI_DIPENDENTE) {
+    const elemento = $(c.idCampo);
+    if (c.tipo === "spunta") { row[c.campo] = elemento.checked; continue; }
+    if (c.soloSe && !c.soloSe()) { row[c.campo] = null; continue; }
+    if (c.tipo === "numero") { row[c.campo] = elemento.value ? parseFloat(elemento.value) : null; continue; }
+    if (c.tipo === "data" || c.tipo === "scelta") { row[c.campo] = elemento.value || null; continue; }
+    let testo = elemento.value.trim();
+    if (c.maiuscolo) testo = testo.toUpperCase();
+    row[c.campo] = c.maiNull ? testo : (testo || null);
+  }
+  return row;
+}
+
 function openDipModal(id) {
   const d = id ? dipById(id) : null;
   $("dip-title").textContent = d ? `${d.cognome} ${d.nome}` : "Nuovo dipendente";
   $("dip-id").value = d ? d.id : "";
-  $("dip-nome").value = d?.nome || "";
-  $("dip-cognome").value = d?.cognome || "";
-  $("dip-cf").value = d?.codice_fiscale || "";
-  $("dip-nascita").value = d?.data_nascita || "";
-  $("dip-assunzione").value = d?.data_assunzione || "";
+  // Le tendine dei lookup vanno riempite PRIMA di scriverci dentro un valore
+  // (idempotente: riscrivere le option e' ok).
   fillSelect($("dip-livello"), (window.LIVELLI_CCNL || []).map((l) => ({ id: l, nome: "Livello " + l })), { placeholder: "—" });
-  $("dip-livello").value = d?.livello_ccnl || "";
-  $("dip-email").value = d?.email || "";
-  $("dip-telefono").value = d?.telefono || "";
-  $("dip-attivo").checked = d ? d.attivo !== false : true;
-  $("dip-note").value = d?.note || "";
-
-  // ----- Anagrafica estesa (Iterazione A) -----
-  // Popolo i select dei lookup (idempotente — riscrivere le option è ok).
   fillSelect($("dip-sesso"), (window.SESSI || []).map((s) => ({ id: s.key, nome: s.label })), { placeholder: "—" });
   fillSelect($("dip-stato-civile"), (window.STATI_CIVILI || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
   fillSelect($("dip-tipo-contratto"), (window.TIPI_CONTRATTO || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
@@ -964,57 +1054,24 @@ function openDipModal(id) {
   fillSelect($("dip-emerg-parentela"), (window.PARENTELE || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
   fillSelect($("dip-motivo-cessazione"), (window.MOTIVI_CESSAZIONE || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
 
-  // Dati personali estesi
-  $("dip-luogo-nascita").value = d?.luogo_nascita || "";
-  $("dip-sesso").value = d?.sesso || "";
-  $("dip-cittadinanza").value = d?.cittadinanza || "";
-  $("dip-stato-civile").value = d?.stato_civile || "";
-  $("dip-titolo-studio").value = d?.titolo_studio || "";
+  // 2.2 - Tutti i campi in una riga sola, dalla stessa tabella che legge saveDip.
+  scriviCampiDipendente(d);
+  // L'unica eccezione della tabella: una persona NUOVA nasce in forza.
+  $("dip-attivo").checked = d ? d.attivo !== false : true;
 
-  // Residenza
-  $("dip-res-indirizzo").value = d?.residenza_indirizzo || "";
-  $("dip-res-cap").value = d?.residenza_cap || "";
-  $("dip-res-citta").value = d?.residenza_citta || "";
-  $("dip-res-prov").value = d?.residenza_provincia || "";
-  $("dip-dom-diverso").checked = !!d?.domicilio_diverso;
+  // Blocchi che si mostrano o si nascondono a seconda dei valori appena scritti.
   $("dip-dom-block").hidden = !d?.domicilio_diverso;
-  $("dip-dom-indirizzo").value = d?.domicilio_indirizzo || "";
-  $("dip-dom-cap").value = d?.domicilio_cap || "";
-  $("dip-dom-citta").value = d?.domicilio_citta || "";
-  $("dip-dom-prov").value = d?.domicilio_provincia || "";
-
-  // Contratto
-  $("dip-tipo-contratto").value = d?.tipo_contratto || "";
-  $("dip-data-fine-contratto").value = d?.data_fine_contratto || "";
   $("dip-fine-contr-wrap").hidden = (d?.tipo_contratto || "") !== CONTRATTO_DETERMINATO;
-  $("dip-data-fine-prova").value = d?.data_fine_prova || "";
-  $("dip-qualifica").value = d?.qualifica || "";
-  $("dip-orario").value = d?.orario_tipo || "";
-  $("dip-ore").value = d?.ore_settimanali ?? "";
-  $("dip-sede").value = d?.sede_lavoro || "";
-  // IBAN e RAL non stanno piu' nella scheda (Fase 0.5): sono dati del consulente
-  // del lavoro, l'app non li usa e sono i due che fanno piu' danno se letti da
-  // chi non deve. Le colonne restano nel database e i valori esistenti non
-  // vengono toccati: sbUpsert scrive solo le colonne che gli passi.
+  $("dip-cessazione-section").hidden = !(d && d.attivo === false);
 
-  // Emergenza
-  $("dip-emerg-nome").value = d?.emergenza_nome || "";
-  $("dip-emerg-tel").value = d?.emergenza_telefono || "";
-  $("dip-emerg-parentela").value = d?.emergenza_parentela || "";
-
-  // Taglie DPI: popola i dropdown con le taglie disponibili dei tipi nel catalogo
-  // e pre-riempi coi valori salvati sul dipendente.
+  // Taglie DPI: quattro tendine che diventano UN SOLO oggetto JSON, e viceversa.
+  // Non e' una corrispondenza campo -> colonna, quindi resta fuori dalla tabella.
   populaTaglieDipDropdowns();
   const taglie = d?.taglie_dpi || {};
   $("dip-taglia-scarpe").value = taglie.scarpe || "";
   $("dip-taglia-tuta").value = taglie.tuta || "";
   $("dip-taglia-guanti").value = taglie.guanti || "";
   $("dip-taglia-maschera").value = taglie.maschera || "";
-
-  // Cessazione (visibile solo se NON attivo)
-  $("dip-cessazione-section").hidden = !(d && d.attivo === false);
-  $("dip-data-cessazione").value = d?.data_cessazione || "";
-  $("dip-motivo-cessazione").value = d?.motivo_cessazione || "";
 
   // Tutte le sezioni collassabili partono chiuse.
   els(".dip-section .dip-section-body").forEach((b) => (b.hidden = true));
@@ -2278,43 +2335,11 @@ async function saveDip(e) {
   if (esistente && !confermaCariche(id, esistente)) return;
   const row = {
     id,
-    nome: $("dip-nome").value.trim(),
-    cognome: $("dip-cognome").value.trim(),
-    codice_fiscale: $("dip-cf").value.trim() || null,
-    data_nascita: $("dip-nascita").value || null,
-    data_assunzione: $("dip-assunzione").value || null,
-    livello_ccnl: $("dip-livello").value || null,
-    email: $("dip-email").value.trim() || null,
-    telefono: $("dip-telefono").value.trim() || null,
-    attivo: $("dip-attivo").checked,
-    note: $("dip-note").value.trim() || null,
-    // Anagrafica estesa (Iterazione A)
-    luogo_nascita: $("dip-luogo-nascita").value.trim() || null,
-    sesso: $("dip-sesso").value || null,
-    cittadinanza: $("dip-cittadinanza").value.trim() || null,
-    stato_civile: $("dip-stato-civile").value || null,
-    titolo_studio: $("dip-titolo-studio").value.trim() || null,
-    residenza_indirizzo: $("dip-res-indirizzo").value.trim() || null,
-    residenza_cap: $("dip-res-cap").value.trim() || null,
-    residenza_citta: $("dip-res-citta").value.trim() || null,
-    residenza_provincia: ($("dip-res-prov").value.trim() || "").toUpperCase() || null,
-    domicilio_diverso: $("dip-dom-diverso").checked,
-    domicilio_indirizzo: $("dip-dom-diverso").checked ? ($("dip-dom-indirizzo").value.trim() || null) : null,
-    domicilio_cap: $("dip-dom-diverso").checked ? ($("dip-dom-cap").value.trim() || null) : null,
-    domicilio_citta: $("dip-dom-diverso").checked ? ($("dip-dom-citta").value.trim() || null) : null,
-    domicilio_provincia: $("dip-dom-diverso").checked ? (($("dip-dom-prov").value.trim() || "").toUpperCase() || null) : null,
-    tipo_contratto: $("dip-tipo-contratto").value || null,
-    data_fine_contratto: ($("dip-tipo-contratto").value === CONTRATTO_DETERMINATO) ? ($("dip-data-fine-contratto").value || null) : null,
-    data_fine_prova: $("dip-data-fine-prova").value || null,
-    qualifica: $("dip-qualifica").value || null,
-    orario_tipo: $("dip-orario").value || null,
-    ore_settimanali: $("dip-ore").value ? parseFloat($("dip-ore").value) : null,
-    sede_lavoro: $("dip-sede").value.trim() || null,
-    emergenza_nome: $("dip-emerg-nome").value.trim() || null,
-    emergenza_telefono: $("dip-emerg-tel").value.trim() || null,
-    emergenza_parentela: $("dip-emerg-parentela").value || null,
-    data_cessazione: $("dip-attivo").checked ? null : ($("dip-data-cessazione").value || null),
-    motivo_cessazione: $("dip-attivo").checked ? null : ($("dip-motivo-cessazione").value || null),
+    // 2.2 - I campi arrivano tutti dalla stessa tabella che ha riempito il form:
+    // se un campo si vede nella scheda, si salva; se non si salva, non si vede.
+    ...leggiCampiDipendente(),
+    // Le quattro taglie diventano un solo oggetto JSON, e null se sono vuote:
+    // non e' una corrispondenza campo -> colonna, quindi resta qui.
     taglie_dpi: (() => {
       const t = {
         scarpe:   $("dip-taglia-scarpe").value   || null,
