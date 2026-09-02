@@ -626,6 +626,13 @@ assert.equal(inForzaNelMese({ attivo: false }, 2026, 7), false);
 assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2024-02-29" }, 2024, 2), true);
 assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2023-03-01" }, 2023, 2), false);
 assert.equal(inForzaNelMese(null, 2026, 7), false);
+// I mesi "finti" dei cedolini (13 = tredicesima, 0 = CU) NON sono mesi: passandoli
+// si costruirebbero date come "2026-00-01" e il confronto fra stringhe
+// scarterebbe chiunque, cioe' un contatore "0 su 0" che dichiara tutto a posto.
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2020-01-01" }, 2026, 0), false);
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2020-01-01" }, 2026, 13), false);
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2020-01-01" }, 2026, null), false);
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2020-01-01" }, 2026, "7"), true);   // stringa da un select: ok
 
 // --- conteggioCedoliniDelMese ---
 const dipCedolini = [

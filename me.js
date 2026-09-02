@@ -104,7 +104,6 @@ async function loadMyData() {
     populateLookups();
     renderForm();
     renderDocs();
-    renderCedolini();
     renderAttestati();
   } catch (err) {
     console.error("Errore nel rendering iniziale:", err);
@@ -117,6 +116,10 @@ async function loadMyData() {
   const rCed = await rpcT("self_get_cedolini", { t: state.token }, 4000, "self_get_cedolini");
   if (rCed.error) console.warn("cedolini skipped:", rCed.error.message);
   state.cedolini = rCed.data || [];
+  // Il render va DOPO la risposta, non prima: la chiamata sta qui, sotto
+  // showApp(), per non rallentare la prima schermata, e disegnare la sezione
+  // insieme alle altre la lascerebbe vuota e quindi nascosta per sempre.
+  renderCedolini();
 
   // OPZIONALE — Onboarding self-service (richiede iter_b1_accettazioni.sql).
   // Se non disponibile, le 2 sezioni nuove restano nascoste, il resto funziona.

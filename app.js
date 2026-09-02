@@ -78,9 +78,17 @@ const STORE_BY_TABLE = {
 // documenti diventa un mucchio di file anonimi.
 // NON entra in TABLES ne' in STORE_BY_TABLE: non va in `state` ne' in realtime.
 const TABELLE_BACKUP = TABLES.concat(["invite_tokens"]);
-// Colonna su cui ordinare per paginare in modo deterministico. Quasi tutte hanno
-// `id`; `invite_tokens` no, la sua chiave e' `token`.
-const CHIAVE_ORDINE_BACKUP = { invite_tokens: "token" };
+// La colonna che identifica una riga. Quasi tutte le tabelle hanno `id`, ma non
+// tutte: `invite_tokens` ha `token` e `parametri` (3.1) ha `chiave`.
+// UNA mappa sola per i due mestieri che ne hanno bisogno, perche' sono lo stesso
+// fatto: sbUpsert/sbDelete la usano per ritrovare la riga in `state`, e il backup
+// per ordinare le pagine.
+// Non e' un dettaglio: con `id` su `parametri`, sbUpsert confronterebbe
+// undefined con undefined e ritroverebbe SEMPRE la prima riga — salvando un
+// parametro ne sovrascriverebbe un altro in memoria — e il backup ordinerebbe per
+// una colonna che non esiste, fermandosi con un errore e non scaricando niente.
+const CHIAVE_TABELLA = { invite_tokens: "token", parametri: "chiave" };
+const chiaveDi = (tabella) => CHIAVE_TABELLA[tabella] || "id";
 
 // ---------- Helpers ----------
 // $, el, els, uid, esc, localISO, parseISO, fmtDate, addMonths, addDays, daysUntil,
@@ -294,15 +302,16 @@ async function sbLoadAll() {
 async function sbUpsert(table, row) {
   const store = STORE_BY_TABLE[table];
   const arr = state[store];
-  const idx = arr.findIndex((r) => r.id === row.id);
+  const k = chiaveDi(table);
+  const idx = arr.findIndex((r) => r[k] === row[k]);
   const prev = idx >= 0 ? arr[idx] : null;
   if (idx >= 0) arr[idx] = row; else arr.push(row);   // optimistic
   renderAll();
   const { error } = await sb.from(table).upsert(row);
   if (error) {
-    // Rollback safe contro realtime concorrente: ritrova la riga per id ORA,
+    // Rollback safe contro realtime concorrente: ritrova la riga per chiave ORA,
     // non riusare l'idx vecchio (potrebbe essere stale dopo eventi RT).
-    const now = arr.findIndex((r) => r.id === row.id);
+    const now = arr.findIndex((r) => r[k] === row[k]);
     if (prev) {
       if (now >= 0) arr[now] = prev;
       else arr.push(prev);
@@ -320,15 +329,16 @@ async function sbUpsert(table, row) {
 async function sbDelete(table, id) {
   const store = STORE_BY_TABLE[table];
   const arr = state[store];
-  const idx = arr.findIndex((r) => r.id === id);
+  const k = chiaveDi(table);
+  const idx = arr.findIndex((r) => r[k] === id);
   const prev = idx >= 0 ? arr[idx] : null;
   if (idx >= 0) arr.splice(idx, 1);                   // optimistic
   renderAll();
-  const { error } = await sb.from(table).delete().eq("id", id);
+  const { error } = await sb.from(table).delete().eq(k, id);
   if (error) {
     if (prev) {
       // Rollback safe contro realtime concorrente: ricontrolla ORA se la riga esiste.
-      const now = arr.findIndex((r) => r.id === id);
+      const now = arr.findIndex((r) => r[k] === id);
       if (now < 0) arr.push(prev);
       renderAll();
     }
@@ -3939,7 +3949,7 @@ function appiattisciPerExcel(righe) {
 // L'ordinamento e' obbligatorio: senza, due pagine possono ripetere o saltare righe.
 const PAGINA_BACKUP = 1000;
 async function leggiTabellaIntera(tabella) {
-  const chiave = CHIAVE_ORDINE_BACKUP[tabella] || "id";
+  const chiave = chiaveDi(tabella);
   const righe = [];
   for (let da = 0; ; ) {
     const { data, error } = await sb.from(tabella).select("*")

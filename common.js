@@ -475,8 +475,15 @@ function abbinaCedoliniPerMatricola(nomiFile, dipendenti) {
 // andato, e contarlo per sempre terrebbe acceso un contatore che non si spegne.
 function inForzaNelMese(dip, anno, mese) {
   if (!dip) return false;
-  const ultimo = new Date(Number(anno), Number(mese), 0).getDate();
-  const mm = String(mese).padStart(2, "0");
+  // Il mese dev'essere un mese vero. I cedolini usano anche 13 (tredicesima) e 0
+  // (Certificazione Unica): passandoli qui si costruirebbero date come
+  // "2026-00-01", e il confronto fra stringhe scarterebbe chiunque — un
+  // contatore "0 su 0" che dichiara tutto a posto. Chi chiama deve dire di quale
+  // mese vero sta parlando.
+  const m = Number(mese);
+  if (!Number.isInteger(m) || m < 1 || m > 12) return false;
+  const ultimo = new Date(Number(anno), m, 0).getDate();
+  const mm = String(m).padStart(2, "0");
   const inizio = `${anno}-${mm}-01`;
   const fine = `${anno}-${mm}-${String(ultimo).padStart(2, "0")}`;
   if (dip.data_assunzione && String(dip.data_assunzione).slice(0, 10) > fine) return false;
