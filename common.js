@@ -248,8 +248,24 @@ function isDatoDiProva(dip) {
   return String(dip.id || "").startsWith(PREFISSO_ID_PROVA) || dip.note === NOTA_DATI_PROVA;
 }
 
+// Il dipendente di collaudo della procedura NON e' un dato di prova, e il
+// bottone non deve toccarlo mai. Oggi non ci finirebbe comunque (nota diversa,
+// id uuid), ma un bottone che cancella otto persone in un colpo deve dire per
+// iscritto chi salta, invece di fidarsi di una differenza. Qui il confronto e'
+// per forza "contiene": la nota vera e' una frase intera
+// ("FAC-SIMILE di collaudo: stessa persona di esempio ..."), non un'etichetta.
+function isDipendenteDiCollaudo(dip) {
+  const note = String(dip?.note || "").toLowerCase();
+  return note.includes("collaudo") || note.includes("fac-simile");
+}
+
+// Chi il bottone "Elimina i dati di prova" cancella davvero: le persone finte,
+// meno quella di collaudo. Una regola sola, in un posto solo: e' lo stesso
+// elenco che si conta per il numero sul bottone e che si scorre per cancellare,
+// e se i due divergessero il bottone direbbe un numero e ne cancellerebbe un
+// altro.
 function dipendentiDiProva(dipendenti) {
-  return (dipendenti || []).filter(isDatoDiProva);
+  return (dipendenti || []).filter((d) => isDatoDiProva(d) && !isDipendenteDiCollaudo(d));
 }
 
 // ============================================================
@@ -309,6 +325,6 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
-    isDatoDiProva, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
+    isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }

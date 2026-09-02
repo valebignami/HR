@@ -692,7 +692,7 @@ function renderConfig() {
 // contro il rischio vero della fase — dati finti dimenticati in mezzo a quelli
 // veri: finche' il bottone e' li' con un numero sopra, non si puo' non vederlo.
 function renderDatiDiProva() {
-  const n = daEliminareComeProva().length;
+  const n = dipendentiDiProva(state.dipendenti).length;
   const btn = $("btn-elimina-dati-prova");
   const hint = $("dati-prova-hint");
   btn.hidden = n === 0;
@@ -2574,21 +2574,10 @@ async function deleteDip() {
 // decide isDatoDiProva in common.js (nota esatta oppure id dip-prova-*).
 // ============================================================
 
-// Il dipendente di collaudo della procedura non e' un dato di prova e non deve
-// mai finire in questo mucchio. Oggi non ci finirebbe comunque (nota diversa,
-// id uuid), ma un bottone che cancella otto persone in un colpo deve dire per
-// iscritto chi non tocca, invece di fidarsi di una differenza.
-function isDipendenteDiCollaudo(dip) {
-  const note = String(dip?.note || "").toLowerCase();
-  return note.includes("collaudo") || note.includes("fac-simile");
-}
-
-function daEliminareComeProva() {
-  return dipendentiDiProva(state.dipendenti).filter((d) => !isDipendenteDiCollaudo(d));
-}
-
+// Chi e' finto, chi e' il dipendente di collaudo da saltare e quindi chi il
+// bottone cancella: tutto in dipendentiDiProva (common.js), con i suoi test.
 async function eliminaDatiDiProva() {
-  const persone = daEliminareComeProva();
+  const persone = dipendentiDiProva(state.dipendenti);
   if (!persone.length) return;
   const elenco = persone.map((d) => d.cognome).join(", ");
   if (!confirm(

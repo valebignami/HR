@@ -18,7 +18,7 @@ globalThis.document = { addEventListener: () => {} };
 const { classificaStato, calcolaGap, avvisoScadenza,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
-        isDatoDiProva, dipendentiDiProva, NOTA_DATI_PROVA,
+        isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -341,7 +341,18 @@ assert.equal(isDatoDiProva({}), false);
 assert.equal(isDatoDiProva(null), false);
 assert.equal(isDatoDiProva(undefined), false);
 
-// dipendentiDiProva: filtra e basta, e su niente non esplode.
+// isDipendenteDiCollaudo — la persona che il bottone non deve toccare mai.
+// Qui il confronto e' "contiene", perche' la nota vera e' una frase intera.
+assert.equal(isDipendenteDiCollaudo({ note: NOTA_COLLAUDO }), true);
+assert.equal(isDipendenteDiCollaudo({ note: "dipendente di COLLAUDO, non cancellare" }), true);
+assert.equal(isDipendenteDiCollaudo({ note: "Fac-Simile" }), true);        // maiuscole indifferenti
+assert.equal(isDipendenteDiCollaudo({ note: NOTA_DATI_PROVA }), false);
+assert.equal(isDipendenteDiCollaudo({ note: "Assunto tramite agenzia" }), false);
+assert.equal(isDipendenteDiCollaudo({ note: null }), false);
+assert.equal(isDipendenteDiCollaudo({}), false);
+assert.equal(isDipendenteDiCollaudo(null), false);
+
+// dipendentiDiProva: le finte MENO quella di collaudo, e su niente non esplode.
 const misti = [
   { id: "dip-prova-01", note: NOTA_DATI_PROVA },
   { id: "71cf86f3", note: NOTA_COLLAUDO },
@@ -349,6 +360,11 @@ const misti = [
   { id: "dip-prova-05", note: "nota riscritta dall'HR" },
 ];
 assert.deepEqual(dipendentiDiProva(misti).map((d) => d.id), ["dip-prova-01", "dip-prova-05"]);
+// Le due guardie insieme: anche se qualcuno scrivesse la nota dei dati di prova
+// sulla scheda del dipendente di collaudo, o gli desse un id dip-prova-*, il
+// bottone continuerebbe a saltarlo. E' l'unico caso in cui vince il "contiene".
+assert.deepEqual(dipendentiDiProva([{ id: "71cf86f3", note: NOTA_DATI_PROVA + " (collaudo)" }]), []);
+assert.deepEqual(dipendentiDiProva([{ id: "dip-prova-01", note: "FAC-SIMILE di collaudo" }]), []);
 assert.deepEqual(dipendentiDiProva([]), []);
 assert.deepEqual(dipendentiDiProva(undefined), []);
 assert.deepEqual(dipendentiDiProva(null), []);
