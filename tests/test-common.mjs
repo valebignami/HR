@@ -22,7 +22,7 @@ const { classificaStato, calcolaGap, avvisoScadenza,
         scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,
         parametroInt,
         normalizzaPeriodoCedolino, linkCedolinoDaRinnovare, cedoliniDaRinnovare,
-        contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, conteggioCedoliniDelMese,
+        contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, inForzaNellAnno, conteggioCedoliniDelMese,
         grigliaScambi, scambiMancanti,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
@@ -563,6 +563,31 @@ const cedRinnovo = [
 assert.deepEqual(cedoliniDaRinnovare(cedRinnovo, 30).map((c) => c.id), ["c2", "c3"]);
 assert.deepEqual(cedoliniDaRinnovare([], 30), []);
 assert.deepEqual(cedoliniDaRinnovare(null, 30), []);
+
+// I CESSATI restano fuori. Alla cessazione il collegamento dei loro cedolini
+// viene spento apposta: contandoli, il badge mostrerebbe per sempre un numero che
+// non si spegne, e "Rinnova i link" rifirmerebbe proprio quello che la cessazione
+// aveva chiuso — un bottone che disfa quello che ne fa un altro.
+const cedDiCessati = [
+  { id: "x1", dipendente_id: "d1", url_firmato: null, url_scade_il: null },
+  { id: "x2", dipendente_id: "d2", url_firmato: null, url_scade_il: null },
+];
+const dipConCessato = [{ id: "d1", attivo: true }, { id: "d2", attivo: false }];
+assert.deepEqual(cedoliniDaRinnovare(cedDiCessati, 30, dipConCessato).map((c) => c.id), ["x1"]);
+// Senza l'elenco delle persone il filtro non si applica: la firma resta compatibile.
+assert.deepEqual(cedoliniDaRinnovare(cedDiCessati, 30).map((c) => c.id), ["x1", "x2"]);
+assert.deepEqual(cedoliniDaRinnovare(cedDiCessati, 30, []).map((c) => c.id), ["x1", "x2"]);
+
+// --- inForzaNellAnno: tredicesima e CU sono dell'ANNO, non di un mese ---
+// La CU del 2026 spetta anche a chi se n'e' andato a luglio: con "chi era in
+// forza a dicembre" quella persona non comparirebbe nella modale, e la modale e'
+// l'unico posto da cui si caricano i cedolini.
+assert.equal(inForzaNellAnno({ attivo: false, data_assunzione: "2015-01-01", data_cessazione: "2026-07-29" }, 2026), true);
+assert.equal(inForzaNellAnno({ attivo: false, data_assunzione: "2015-01-01", data_cessazione: "2025-07-29" }, 2026), false);
+assert.equal(inForzaNellAnno({ attivo: true, data_assunzione: "2026-12-31" }, 2026), true);
+assert.equal(inForzaNellAnno({ attivo: true, data_assunzione: "2027-01-01" }, 2026), false);
+assert.equal(inForzaNellAnno({ attivo: false }, 2026), false);   // cessato senza data
+assert.equal(inForzaNellAnno(null, 2026), false);
 
 // --- contieneDelimitato: la regola sotto l'abbinamento ---
 assert.equal(contieneDelimitato("004_2026-07.pdf", "004"), true);

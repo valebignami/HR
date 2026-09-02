@@ -403,8 +403,17 @@ function linkCedolinoDaRinnovare(ced, giorniPreavviso) {
 // UNA lista sola, come dipendentiDiProva: se il numero mostrato e l'elenco
 // rigenerato venissero da due filtri diversi, il bottone direbbe un numero e ne
 // rinnoverebbe un altro.
-function cedoliniDaRinnovare(cedolini, giorniPreavviso) {
-  return (cedolini || []).filter((c) => linkCedolinoDaRinnovare(c, giorniPreavviso));
+//
+// I CESSATI restano fuori, e non e' un dettaglio: alla cessazione il collegamento
+// dei loro cedolini viene spento apposta. Contandoli, il badge mostrerebbe per
+// sempre un numero che non si spegne, e il primo "Rinnova i link" rifirmerebbe
+// proprio i collegamenti che la cessazione aveva chiuso — un bottone che disfa
+// quello che ne fa un altro.
+// `dipendenti` e' facoltativo: senza, il filtro non si applica.
+function cedoliniDaRinnovare(cedolini, giorniPreavviso, dipendenti) {
+  const cessati = new Set((dipendenti || []).filter((d) => d && d.attivo === false).map((d) => d.id));
+  return (cedolini || []).filter((c) =>
+    !cessati.has(c?.dipendente_id) && linkCedolinoDaRinnovare(c, giorniPreavviso));
 }
 
 // "Questo nome di file contiene questa matricola, delimitata?"
@@ -490,6 +499,15 @@ function inForzaNelMese(dip, anno, mese) {
   if (dip.attivo === false && !dip.data_cessazione) return false;
   if (dip.data_cessazione && String(dip.data_cessazione).slice(0, 10) < inizio) return false;
   return true;
+}
+
+// Tredicesima e Certificazione Unica non sono di un mese: sono dell'ANNO. La CU
+// del 2026 spetta anche a chi se n'e' andato a luglio, e con "chi era in forza a
+// dicembre" quella persona non comparirebbe da nessuna parte — l'unico posto da
+// cui si caricano i cedolini e' la modale del mese.
+function inForzaNellAnno(dip, anno) {
+  for (let m = 1; m <= 12; m++) if (inForzaNelMese(dip, anno, m)) return true;
+  return false;
 }
 
 function conteggioCedoliniDelMese({ dipendenti, cedolini, anno, mese, tipo = "mensile" }) {
@@ -618,7 +636,7 @@ if (typeof module !== "undefined" && module.exports) {
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,
     parametroInt,
     normalizzaPeriodoCedolino, linkCedolinoDaRinnovare, cedoliniDaRinnovare,
-    contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, conteggioCedoliniDelMese,
+    contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, inForzaNellAnno, conteggioCedoliniDelMese,
     MESE_TREDICESIMA, MESE_CU,
     grigliaScambi, scambiMancanti,
     daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };

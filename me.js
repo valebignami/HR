@@ -373,19 +373,26 @@ function renderCedolini() {
     const righe = perAnno.get(anno).slice().sort((a, b) => b.mese - a.mese);
     return `<div class="me-anno">
       <div class="me-anno-titolo">${esc(anno)}</div>
-      ${righe.map((c) => `<div class="me-doc-row">
+      ${righe.map((c) => {
+        // Un collegamento SCADUTO e' un collegamento che non c'e': presentarlo
+        // come "pronto da aprire" farebbe cliccare il dipendente per ricevere un
+        // errore dallo storage. linkCedolinoDaRinnovare con preavviso 0 e'
+        // esattamente questa domanda, ed e' gia' coperta dai test di common.js.
+        const apribile = !linkCedolinoDaRinnovare(c, 0);
+        return `<div class="me-doc-row">
         <div class="me-doc-head">
           <div>
             <div class="me-doc-nome">🧾 ${esc(nomePeriodoCedolino(c))}</div>
-            <div class="me-doc-stato">${c.url_firmato
-              ? "Pronto da aprire"
+            <div class="me-doc-stato">${apribile
+              ? "Caricato il " + esc(fmtDate(String(c.caricato_il || "").slice(0, 10)))
               : "Non disponibile: chiedi all'ufficio del personale di rifare il collegamento"}</div>
           </div>
-          ${c.url_firmato
+          ${apribile
             ? `<a class="ghost-btn" href="${esc(c.url_firmato)}" target="_blank" rel="noopener">📄 Apri</a>`
             : ""}
         </div>
-      </div>`).join("")}
+      </div>`;
+      }).join("")}
     </div>`;
   }).join("");
 }

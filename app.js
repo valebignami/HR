@@ -2988,8 +2988,10 @@ function periodoCedoliniScelto() {
 
 function renderRigheCedolini() {
   const p = periodoCedoliniScelto();
+  // Tredicesima e CU sono dell'ANNO, non di un mese: spettano anche a chi se n'e'
+  // andato a meta' anno, e questa modale e' l'unico posto da cui si caricano.
   const persone = state.dipendenti
-    .filter((d) => inForzaNelMese(d, p.anno, p.tipo === "mensile" ? p.mese : 12))
+    .filter((d) => (p.tipo === "mensile" ? inForzaNelMese(d, p.anno, p.mese) : inForzaNellAnno(d, p.anno)))
     .sort((a, b) => (a.cognome || "").localeCompare(b.cognome || ""));
   const host = $("ced-rows");
   if (!persone.length) {
@@ -3082,7 +3084,11 @@ async function caricaCedoliniDelMese(e) {
         url_scade_il: link.url_scade_il,
         caricato_il: new Date().toISOString(),
       };
-      if (!await sbUpsert("cedolini", row)) { await deleteDoc(path); return; }
+      if (!await sbUpsert("cedolini", row)) {
+        await deleteDoc(path);
+        $("ced-status").textContent = `✕ Interrotto dopo ${fatti} cedolini: salvataggio non riuscito.`;
+        return;
+      }
       // Il file vecchio si cancella SOLO a salvataggio riuscito, mai prima.
       if (esistente?.path && esistente.path !== path) await deleteDoc(esistente.path);
       fatti++;
@@ -3107,7 +3113,8 @@ async function caricaCedoliniDelMese(e) {
 // ---------- Rinnovo dei link ----------
 function cedoliniConLinkDaRinnovare() {
   return cedoliniDaRinnovare(state.cedolini,
-    parametroInt(state.parametri, "cedolino_giorni_preavviso", 30));
+    parametroInt(state.parametri, "cedolino_giorni_preavviso", 30),
+    state.dipendenti);   // i cessati restano fuori: il loro collegamento e' spento apposta
 }
 
 async function rinnovaLinkCedolini() {
@@ -4292,9 +4299,13 @@ function wireEvents() {
   $("ced-form").addEventListener("submit", caricaCedoliniDelMese);
   $("ced-close").addEventListener("click", () => closeModal("modal-cedolini"));
   $("ced-cancel").addEventListener("click", () => closeModal("modal-cedolini"));
-  $("ced-anno").addEventListener("change", renderRigheCedolini);
-  $("ced-mese").addEventListener("change", renderRigheCedolini);
-  $("ced-tipo").addEventListener("change", () => { aggiornaMeseCedolini(); renderRigheCedolini(); });
+  // Cambiare periodo azzera i file gia' scelti: un file scelto per luglio che
+  // restasse selezionato passando ad agosto verrebbe caricato come cedolino di
+  // agosto, e nessuno se ne accorgerebbe.
+  const cambiaPeriodo = () => { cedoliniPendenti = new Map(); $("ced-multi-hint").textContent = ""; renderRigheCedolini(); };
+  $("ced-anno").addEventListener("change", cambiaPeriodo);
+  $("ced-mese").addEventListener("change", cambiaPeriodo);
+  $("ced-tipo").addEventListener("change", () => { aggiornaMeseCedolini(); cambiaPeriodo(); });
   $("ced-multi-file").addEventListener("change", (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length) abbinaFileScelti(files);
