@@ -20,3 +20,12 @@ Thumbs.db
 
 # Debris di sessioni Playwright MCP (repo pubblicamente servito)
 .playwright-mcp/
+
+# Strumenti locali dell'agente (launch.json della prova nel browser)
+.claude/
+
+# Backup scaricati dall'app: vanno nell'archivio, mai nel repo pubblico
+Backup app/
+
+# Rapporti di fase (gia' coperti da *.md, ma l'intenzione va scritta)
+RAPPORTO_*

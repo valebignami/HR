@@ -67,6 +67,8 @@
 
     <div class="sidebar-foot">
       <button class="ghost-btn" id="btn-export">⬇ Export Excel</button>
+      <button class="ghost-btn" id="btn-backup-dati" title="Tutti i dati dell'app in Excel + JSON. Salvalo nella cartella Backup app dell'archivio.">💾 Backup dati</button>
+      <button class="ghost-btn" id="btn-backup-documenti" title="Tutti i documenti caricati nell'app, con l'indice di chi e cosa. Salvalo nella cartella Backup app dell'archivio.">📦 Backup documenti</button>
       <div class="sidebar-user">
         <span class="sidebar-user-email" id="user-email">—</span>
         <button class="ghost-btn logout-btn" id="btn-logout" title="Esci">🚪 Esci</button>
@@ -362,8 +364,6 @@
             <label><span>Ore settimanali</span><input type="number" id="dip-ore" min="0" max="60" step="0.5" placeholder="40"></label>
           </div>
           <label><span>Sede di lavoro</span><input type="text" id="dip-sede" placeholder="Es. Stabilimento Bergamo"></label>
-          <label><span>IBAN</span><input type="text" id="dip-iban" placeholder="IT00 X000 0000 0000 0000 0000 000" maxlength="34"></label>
-          <label><span>RAL (Reddito Annuo Lordo, opzionale)</span><input type="number" id="dip-ral" min="0" step="100" placeholder="€"></label>
         </div>
       </div>
 
@@ -907,6 +907,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
 <script src="data.js?v=c2"></script>
 <script src="common.js?v=c4"></script>
-<script src="app.js?v=c5"></script>
+<script src="app.js?v=c6"></script>
 </body>
 </html>

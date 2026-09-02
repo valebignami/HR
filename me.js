@@ -12,7 +12,6 @@ const state = {
   tipiDoc: [],
   adempimenti: [],
   onboardItems: [],   // voci che il dipendente deve gestire dal portale
-  clientIp: null,     // solo fallback: l'IP dell'accettazione lo decide il server
   uploadPrefix: null, // prefisso casuale dell'invito: i file vivono sotto portal/{prefisso}/
 };
 
@@ -115,7 +114,6 @@ async function loadMyData() {
 }
 
 async function loadOnboardingOptional() {
-  fetchClientIp();
   try {
     const { data: onb, error } = await sb.rpc("self_get_onboarding_my", { t: state.token });
     if (error) { console.warn("Onboarding self-service non disponibile:", error.message); return; }
@@ -125,15 +123,6 @@ async function loadOnboardingOptional() {
   } catch (err) {
     console.warn("loadOnboardingOptional failed:", err);
   }
-}
-
-async function fetchClientIp() {
-  try {
-    const r = await fetch("https://api.ipify.org?format=json", { cache: "no-store" });
-    if (!r.ok) return;
-    const j = await r.json();
-    state.clientIp = j.ip || null;
-  } catch { /* offline o blocco rete: lasciamo null */ }
 }
 
 function populateLookups() {
@@ -427,8 +416,12 @@ async function confermaAccettazione(itemId, row) {
   if (btn) btn.disabled = true;
   status.textContent = "Registrazione in corso…";
   status.className = "me-status";
+  // p_ip resta nella firma della RPC ma il client non lo riempie piu' (Fase 0.5):
+  // self_accetta prende l'IP dall'header x-forwarded-for della richiesta e usa
+  // p_ip solo come ripiego. L'IP del server e' sempre quello vero, e cosi' il
+  // portale non chiama piu' nessun servizio esterno oltre a Supabase.
   const { error } = await sb.rpc("self_accetta", {
-    t: state.token, p_item_id: itemId, p_ip: state.clientIp,
+    t: state.token, p_item_id: itemId, p_ip: null,
   });
   if (error) {
     status.textContent = "✕ Errore: " + error.message;
