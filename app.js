@@ -3258,19 +3258,43 @@ async function startApp() {
   setView("compliance");
 }
 
+// 1.4 · Se l'avvio fallisce, la pagina NON resta bianca.
+// wireEvents() collega ~130 id a mano: un id sbagliato lancia alla prima riga
+// che lo tocca, init() muore a meta' e l'unica utente dell'app si trova davanti
+// uno schermo vuoto, senza nulla da leggere e nulla da riferire.
+// Il test tests/test-dom-ids.mjs previene la causa piu' probabile; questo
+// riquadro copre tutte le altre.
+function mostraErroreFatale(err) {
+  console.error("Avvio fallito:", err);
+  const box = document.getElementById("fatal-error");
+  const msg = document.getElementById("fatal-error-msg");
+  if (!box || !msg) return;   // se manca anche il riquadro non c'e' altro da fare
+  msg.textContent = [
+    String(err && err.message ? err.message : err),
+    err && err.stack ? "\n" + err.stack : "",
+    "\nPagina: " + location.href,
+    "Data: " + new Date().toISOString(),
+  ].join("\n");
+  box.hidden = false;
+}
+
 async function init() {
-  wireEvents();
-  const { data } = await sb.auth.getSession();
-  if (data?.session) {
-    state.user = data.session.user;
-    hideLogin();
-    await startApp();
-  } else {
-    showLogin();
+  try {
+    wireEvents();
+    const { data } = await sb.auth.getSession();
+    if (data?.session) {
+      state.user = data.session.user;
+      hideLogin();
+      await startApp();
+    } else {
+      showLogin();
+    }
+    sb.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT") showLogin();
+    });
+  } catch (err) {
+    mostraErroreFatale(err);
   }
-  sb.auth.onAuthStateChange((event, session) => {
-    if (event === "SIGNED_OUT") showLogin();
-  });
 }
 
 document.addEventListener("DOMContentLoaded", init);
