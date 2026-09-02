@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HR Overland — Compliance personale</title>
-<link rel="stylesheet" href="style.css?v=b6">
+<link rel="stylesheet" href="style.css?v=b7">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous" defer></script>
 </head>
@@ -327,6 +327,17 @@
     </div>
     <form id="dip-form" class="modal-body">
       <input type="hidden" id="dip-id">
+      <!-- 2.3 - Cinque linguette dentro un solo form: il salvataggio resta uno.
+           I bottoni sono type="button", altrimenti dentro un form inviano. -->
+      <div class="dip-tabs">
+        <button type="button" class="dt-btn active" data-dtab="anagrafica">👤 Anagrafica</button>
+        <button type="button" class="dt-btn" data-dtab="sicurezza">🦺 Sicurezza</button>
+        <button type="button" class="dt-btn" data-dtab="ingresso-uscita">✅ Ingresso/Uscita</button>
+        <button type="button" class="dt-btn" data-dtab="registro">📋 Registro</button>
+        <button type="button" class="dt-btn" data-dtab="storia">📜 Storia</button>
+      </div>
+
+      <div class="dip-tab-panel" id="dip-tab-anagrafica" data-dtab="anagrafica">
       <div class="row">
         <label><span>Nome *</span><input type="text" id="dip-nome" required></label>
         <label><span>Cognome *</span><input type="text" id="dip-cognome" required></label>
@@ -439,20 +450,6 @@
         </div>
       </div>
 
-      <fieldset class="responsabili-fieldset">
-        <legend>Mansione (obbligatoria, una sola)</legend>
-        <div class="row">
-          <label><span>Mansione *</span><select id="dip-mansione" required></select></label>
-          <label><span>In mansione dal</span><input type="date" id="dip-mansione-dal"></label>
-        </div>
-      </fieldset>
-
-      <fieldset class="responsabili-fieldset">
-        <legend>Incarichi / nomine</legend>
-        <div id="dip-incarichi" class="responsabili-checkboxes"></div>
-        <div id="dip-incarichi-revocati" class="incarichi-revocati"></div>
-      </fieldset>
-
       <label class="inline-check"><input type="checkbox" id="dip-attivo" checked> <span>In forza (attivo)</span></label>
 
       <div class="dip-section" id="dip-cessazione-section" hidden>
@@ -469,6 +466,23 @@
       </div>
 
       <label><span>Note</span><textarea id="dip-note" rows="2"></textarea></label>
+      </div><!-- /anagrafica -->
+
+      <div class="dip-tab-panel" id="dip-tab-sicurezza" data-dtab="sicurezza" hidden>
+      <fieldset class="responsabili-fieldset">
+        <legend>Mansione (obbligatoria, una sola)</legend>
+        <div class="row">
+          <label><span>Mansione *</span><select id="dip-mansione" required></select></label>
+          <label><span>In mansione dal</span><input type="date" id="dip-mansione-dal"></label>
+        </div>
+      </fieldset>
+
+      <fieldset class="responsabili-fieldset">
+        <legend>Incarichi / nomine</legend>
+        <div id="dip-incarichi" class="responsabili-checkboxes"></div>
+        <div id="dip-incarichi-revocati" class="incarichi-revocati"></div>
+      </fieldset>
+
 
       <div id="dip-adempimenti-section" class="adempimenti-section" hidden>
         <div class="adempimenti-head">
@@ -493,6 +507,9 @@
         <div id="dip-dpi-list" hidden></div>
       </div>
 
+      </div><!-- /sicurezza -->
+
+      <div class="dip-tab-panel" id="dip-tab-ingresso-uscita" data-dtab="ingresso-uscita" hidden>
       <div id="dip-onboard-section" class="history-section" hidden>
         <button type="button" class="history-toggle" id="dip-onboard-toggle" aria-expanded="false">
           <span class="history-arrow">▸</span>
@@ -502,6 +519,18 @@
         <div id="dip-onboard-list" hidden></div>
       </div>
 
+      <div id="dip-uscita-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-uscita-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>Checklist di uscita</span>
+          <span class="history-count" id="dip-uscita-count">0/0</span>
+        </button>
+        <div id="dip-uscita-list" hidden></div>
+      </div>
+
+      </div><!-- /ingresso-uscita -->
+
+      <div class="dip-tab-panel" id="dip-tab-registro" data-dtab="registro" hidden>
       <div id="dip-provv-section" class="history-section" hidden>
         <button type="button" class="history-toggle" id="dip-provv-toggle" aria-expanded="false">
           <span class="history-arrow">▸</span>
@@ -512,6 +541,9 @@
         <div id="dip-provv-list" hidden></div>
       </div>
 
+      </div><!-- /registro -->
+
+      <div class="dip-tab-panel" id="dip-tab-storia" data-dtab="storia" hidden>
       <div id="dip-modifiche-section" class="history-section" hidden>
         <button type="button" class="history-toggle" id="dip-modifiche-toggle" aria-expanded="false">
           <span class="history-arrow">▸</span>
@@ -529,6 +561,8 @@
         </button>
         <div id="dip-history-list" hidden></div>
       </div>
+
+      </div><!-- /storia -->
 
       <div class="modal-foot">
         <button type="button" class="ghost-btn danger" id="dip-delete" hidden>🗑 Elimina</button>
@@ -683,10 +717,17 @@
       <input type="hidden" id="onbi-id">
       <label><span>Etichetta *</span><input type="text" id="onbi-label" required placeholder="Es. Consegna DPI iniziale"></label>
       <label><span>Descrizione</span><textarea id="onbi-descrizione" rows="2"></textarea></label>
+      <label><span>Fase</span>
+        <select id="onbi-fase">
+          <option value="ingresso">Ingresso — checklist di assunzione</option>
+          <option value="uscita">Uscita — checklist di cessazione</option>
+        </select>
+      </label>
       <div class="row">
-        <label><span>Giorni dall'assunzione *</span><input type="number" id="onbi-giorni" min="0" value="0"></label>
+        <label><span id="onbi-giorni-label">Giorni dall'assunzione *</span><input type="number" id="onbi-giorni" value="0"></label>
         <label><span>Ordine</span><input type="number" id="onbi-ordine" min="0" value="100"></label>
       </div>
+      <p class="cfg-hint">Per le voci di <strong>uscita</strong> i giorni si contano dalla data di cessazione e possono essere <strong>negativi</strong>: −7 vuol dire «una settimana prima dell'ultimo giorno».</p>
       <label><span>Tipo di workflow</span>
         <select id="onbi-workflow">
           <option value="semplice">Semplice — spunta manuale dell'HR</option>
@@ -965,7 +1006,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
 <script src="data.js?v=c2"></script>
-<script src="common.js?v=c6"></script>
-<script src="app.js?v=c8"></script>
+<script src="common.js?v=c7"></script>
+<script src="app.js?v=c9"></script>
 </body>
 </html>

@@ -690,6 +690,9 @@ body {
 .cfg-cols-ruoli   { grid-template-columns: minmax(180px,2fr) 130px minmax(120px,1fr); }
 .cfg-cols-tipi    { grid-template-columns: minmax(180px,2fr) 130px 130px minmax(140px,1.4fr); }
 .cfg-cols-matrice { grid-template-columns: minmax(160px,1.6fr) minmax(160px,1.6fr) 110px 110px; }
+/* 2.1 · Voci di checklist: una colonna in piu' (Fase) rispetto a cfg-cols-tipi.
+   Riusare cfg-cols-tipi, che ha quattro colonne, manderebbe a capo la quinta. */
+.cfg-cols-onb     { grid-template-columns: minmax(180px,2fr) 90px 90px 130px minmax(140px,1.4fr); }
 
 /* ---------- Modal ---------- */
 .modal {
@@ -1387,6 +1390,9 @@ body.self-service { background: var(--bg); }
   .cfg-cols-tipi > *:nth-child(3), .cfg-cols-tipi > *:nth-child(4) { display: none; }
   .cfg-cols-ruoli { grid-template-columns: 1fr auto; }
   .cfg-cols-ruoli > *:nth-child(3) { display: none; }
+  .cfg-cols-onb { grid-template-columns: 1fr auto; }
+  .cfg-cols-onb > *:nth-child(3), .cfg-cols-onb > *:nth-child(4),
+  .cfg-cols-onb > *:nth-child(5) { display: none; }
   .modal { padding: 0; align-items: end; }
   .modal-card, .modal-card.small {
     max-width: 100%;
@@ -1542,3 +1548,43 @@ body.self-service { background: var(--bg); }
   color: #5b21b6;
   border-left-color: #5b21b6;
 }
+
+/* ---------- 2.3 · Linguette della scheda dipendente ----------
+   Classi distinte da .config-tabs/.ct-btn di proposito: renderConfig e
+   wireEvents raccolgono i bottoni con els(".ct-btn"), e riusare quella classe
+   qui farebbe scrivere state.configTab = undefined al primo click su una
+   linguetta della scheda. */
+.dip-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;              /* su telefono scorrono, non vanno a capo */
+  -webkit-overflow-scrolling: touch;
+}
+.dt-btn {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  padding: 7px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-weight: 600;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.dt-btn:hover { background: var(--gray-soft); color: var(--ink); }
+.dt-btn.active { background: var(--brand-soft); color: var(--brand-ink); border-color: rgba(47,87,217,.25); }
+
+/* I campi erano figli diretti di .modal-body, che li distanzia con `gap: 14px`.
+   Infilandoli dentro un contenitore quel gap si sarebbe fermato al contenitore,
+   e dentro le linguette i campi si sarebbero toccati: il pannello ripete la
+   stessa colonna con lo stesso passo. */
+.dip-tab-panel { display: flex; flex-direction: column; gap: 14px; }
+/* Scritto per esteso come .config-panel[hidden], e DOPO la regola qui sopra:
+   senza, il display:flex del pannello vincerebbe sull'attributo hidden e si
+   vedrebbero tutti e cinque insieme. */
+.dip-tab-panel[hidden] { display: none; }

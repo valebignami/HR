@@ -25,6 +25,7 @@ const state = {
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
+  dipTab: "anagrafica",      // 2.3 · linguetta aperta nella scheda dipendente
   search: "",
   compFilter: { dipendente: "", mansione: "", incarico: "", stato: "" },
   storicoFilter: { dipendente: "", tipo: "", categoria: "", anno: "", mese: "" },
@@ -938,24 +939,133 @@ function fillSelect(sel, items, { value = "id", label = "nome", placeholder = nu
     items.map((i) => `<option value="${esc(i[value])}">${esc(typeof label === "function" ? label(i) : i[label])}</option>`).join("");
 }
 
+// ============================================================
+// 2.2 - La mappa dei campi della scheda dipendente.
+// Prima questa lista esisteva due volte, in due ordini diversi: 41 assegnazioni
+// in openDipModal e 41 chiavi in saveDip. Aggiungere un campo voleva dire
+// ricordarsene in due posti, e dimenticarne uno non dava nessun errore: dava un
+// campo che si compila e non si salva, o che si salva e riapre vuoto.
+//
+// ATTENZIONE: l'id sta scritto in `idCampo` apposta. tests/test-dom-ids.mjs
+// riconosce quella chiave e controlla che l'elemento esista davvero in
+// index.html. Senza, spostare 41 id dentro un array li toglierebbe dall'unica
+// rete che esiste sotto questa modale, e un refuso diventerebbe un campo che non
+// si salva, in silenzio.
+//
+//   tipo             testo | data | scelta (select) | numero | spunta (checkbox)
+//   maiNull          campo di testo che NON diventa null se vuoto (e' required)
+//   maiuscolo        normalizzato in maiuscolo (le sigle di provincia)
+//   soloSe           se ritorna false si salva null invece del valore letto
+//   scritturaAParte  scriviCampiDipendente lo salta (ha una regola sua)
+// ============================================================
+const dipDomicilioDiverso = () => $("dip-dom-diverso").checked;
+const dipDeterminato = () => $("dip-tipo-contratto").value === CONTRATTO_DETERMINATO;
+const dipCessato = () => !$("dip-attivo").checked;
+
+const CAMPI_DIPENDENTE = [
+  // Dati di base
+  { idCampo: "dip-nome",           campo: "nome",            tipo: "testo", maiNull: true },
+  { idCampo: "dip-cognome",        campo: "cognome",         tipo: "testo", maiNull: true },
+  { idCampo: "dip-cf",             campo: "codice_fiscale",  tipo: "testo" },
+  { idCampo: "dip-nascita",        campo: "data_nascita",    tipo: "data" },
+  { idCampo: "dip-assunzione",     campo: "data_assunzione", tipo: "data" },
+  { idCampo: "dip-livello",        campo: "livello_ccnl",    tipo: "scelta" },
+  { idCampo: "dip-email",          campo: "email",           tipo: "testo" },
+  { idCampo: "dip-telefono",       campo: "telefono",        tipo: "testo" },
+  { idCampo: "dip-attivo",         campo: "attivo",          tipo: "spunta", scritturaAParte: true },
+  { idCampo: "dip-note",           campo: "note",            tipo: "testo" },
+  // Dati personali estesi
+  { idCampo: "dip-luogo-nascita",  campo: "luogo_nascita",   tipo: "testo" },
+  { idCampo: "dip-sesso",          campo: "sesso",           tipo: "scelta" },
+  { idCampo: "dip-cittadinanza",   campo: "cittadinanza",    tipo: "testo" },
+  { idCampo: "dip-stato-civile",   campo: "stato_civile",    tipo: "scelta" },
+  { idCampo: "dip-titolo-studio",  campo: "titolo_studio",   tipo: "testo" },
+  // Residenza e domicilio
+  { idCampo: "dip-res-indirizzo",  campo: "residenza_indirizzo",  tipo: "testo" },
+  { idCampo: "dip-res-cap",        campo: "residenza_cap",        tipo: "testo" },
+  { idCampo: "dip-res-citta",      campo: "residenza_citta",      tipo: "testo" },
+  { idCampo: "dip-res-prov",       campo: "residenza_provincia",  tipo: "testo", maiuscolo: true },
+  { idCampo: "dip-dom-diverso",    campo: "domicilio_diverso",    tipo: "spunta" },
+  { idCampo: "dip-dom-indirizzo",  campo: "domicilio_indirizzo",  tipo: "testo", soloSe: dipDomicilioDiverso },
+  { idCampo: "dip-dom-cap",        campo: "domicilio_cap",        tipo: "testo", soloSe: dipDomicilioDiverso },
+  { idCampo: "dip-dom-citta",      campo: "domicilio_citta",      tipo: "testo", soloSe: dipDomicilioDiverso },
+  { idCampo: "dip-dom-prov",       campo: "domicilio_provincia",  tipo: "testo", maiuscolo: true, soloSe: dipDomicilioDiverso },
+  // Contratto
+  { idCampo: "dip-tipo-contratto",      campo: "tipo_contratto",      tipo: "scelta" },
+  { idCampo: "dip-data-fine-contratto", campo: "data_fine_contratto", tipo: "data", soloSe: dipDeterminato },
+  { idCampo: "dip-data-fine-prova",     campo: "data_fine_prova",     tipo: "data" },
+  { idCampo: "dip-qualifica",           campo: "qualifica",           tipo: "scelta" },
+  { idCampo: "dip-orario",              campo: "orario_tipo",         tipo: "scelta" },
+  { idCampo: "dip-ore",                 campo: "ore_settimanali",     tipo: "numero" },
+  { idCampo: "dip-sede",                campo: "sede_lavoro",         tipo: "testo" },
+  // Contatto di emergenza
+  { idCampo: "dip-emerg-nome",      campo: "emergenza_nome",      tipo: "testo" },
+  { idCampo: "dip-emerg-tel",       campo: "emergenza_telefono",  tipo: "testo" },
+  { idCampo: "dip-emerg-parentela", campo: "emergenza_parentela", tipo: "scelta" },
+  // Cessazione: si scrivono solo se la persona NON e' in forza.
+  { idCampo: "dip-data-cessazione",   campo: "data_cessazione",   tipo: "data",   soloSe: dipCessato },
+  { idCampo: "dip-motivo-cessazione", campo: "motivo_cessazione", tipo: "scelta", soloSe: dipCessato },
+];
+
+// IBAN e RAL non sono in questa tabella e non devono tornarci (voce 0.5): sono
+// dati del consulente del lavoro, l'app non li usa, e sono i due che fanno piu'
+// danno in caso di accesso indebito. Le colonne restano nel database e i valori
+// esistenti non vengono toccati: sbUpsert scrive solo le colonne che riceve.
+
+// Dal dipendente al form.
+function scriviCampiDipendente(d) {
+  for (const c of CAMPI_DIPENDENTE) {
+    if (c.scritturaAParte) continue;
+    const elemento = $(c.idCampo);
+    const v = d ? d[c.campo] : null;
+    if (c.tipo === "spunta") elemento.checked = !!v;
+    else if (c.tipo === "numero") elemento.value = v ?? "";
+    else elemento.value = v || "";
+  }
+}
+
+// Dal form al dipendente.
+function leggiCampiDipendente() {
+  const row = {};
+  for (const c of CAMPI_DIPENDENTE) {
+    const elemento = $(c.idCampo);
+    if (c.tipo === "spunta") { row[c.campo] = elemento.checked; continue; }
+    if (c.soloSe && !c.soloSe()) { row[c.campo] = null; continue; }
+    if (c.tipo === "numero") { row[c.campo] = elemento.value ? parseFloat(elemento.value) : null; continue; }
+    if (c.tipo === "data" || c.tipo === "scelta") { row[c.campo] = elemento.value || null; continue; }
+    let testo = elemento.value.trim();
+    if (c.maiuscolo) testo = testo.toUpperCase();
+    row[c.campo] = c.maiNull ? testo : (testo || null);
+  }
+  return row;
+}
+
+// ============================================================
+// 2.3 · Le cinque linguette della scheda dipendente.
+// Due mestieri distinti: renderDipTabs DISEGNA, mostraLinguetta SCEGLIE.
+// I contenitori si riconoscono da `data-dtab`, mai da un id composto a mano
+// ($("dip-tab-" + tab)): quello uscirebbe dal controllo di test-dom-ids, che
+// vede solo i letterali, ed e' l'unica rete sotto lo spostamento di questo HTML.
+// ============================================================
+function renderDipTabs() {
+  els("#modal-dip .dt-btn").forEach((b) => b.classList.toggle("active", b.dataset.dtab === state.dipTab));
+  els("#modal-dip .dip-tab-panel").forEach((p) => (p.hidden = p.dataset.dtab !== state.dipTab));
+}
+
+function mostraLinguetta(tab) {
+  state.dipTab = tab;
+  renderDipTabs();
+}
+
 function openDipModal(id) {
   const d = id ? dipById(id) : null;
   $("dip-title").textContent = d ? `${d.cognome} ${d.nome}` : "Nuovo dipendente";
   $("dip-id").value = d ? d.id : "";
-  $("dip-nome").value = d?.nome || "";
-  $("dip-cognome").value = d?.cognome || "";
-  $("dip-cf").value = d?.codice_fiscale || "";
-  $("dip-nascita").value = d?.data_nascita || "";
-  $("dip-assunzione").value = d?.data_assunzione || "";
+  // Riaprire una scheda deve mostrare sempre la stessa faccia.
+  mostraLinguetta("anagrafica");
+  // Le tendine dei lookup vanno riempite PRIMA di scriverci dentro un valore
+  // (idempotente: riscrivere le option e' ok).
   fillSelect($("dip-livello"), (window.LIVELLI_CCNL || []).map((l) => ({ id: l, nome: "Livello " + l })), { placeholder: "—" });
-  $("dip-livello").value = d?.livello_ccnl || "";
-  $("dip-email").value = d?.email || "";
-  $("dip-telefono").value = d?.telefono || "";
-  $("dip-attivo").checked = d ? d.attivo !== false : true;
-  $("dip-note").value = d?.note || "";
-
-  // ----- Anagrafica estesa (Iterazione A) -----
-  // Popolo i select dei lookup (idempotente — riscrivere le option è ok).
   fillSelect($("dip-sesso"), (window.SESSI || []).map((s) => ({ id: s.key, nome: s.label })), { placeholder: "—" });
   fillSelect($("dip-stato-civile"), (window.STATI_CIVILI || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
   fillSelect($("dip-tipo-contratto"), (window.TIPI_CONTRATTO || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
@@ -964,57 +1074,24 @@ function openDipModal(id) {
   fillSelect($("dip-emerg-parentela"), (window.PARENTELE || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
   fillSelect($("dip-motivo-cessazione"), (window.MOTIVI_CESSAZIONE || []).map((s) => ({ id: s, nome: s })), { placeholder: "—" });
 
-  // Dati personali estesi
-  $("dip-luogo-nascita").value = d?.luogo_nascita || "";
-  $("dip-sesso").value = d?.sesso || "";
-  $("dip-cittadinanza").value = d?.cittadinanza || "";
-  $("dip-stato-civile").value = d?.stato_civile || "";
-  $("dip-titolo-studio").value = d?.titolo_studio || "";
+  // 2.2 - Tutti i campi in una riga sola, dalla stessa tabella che legge saveDip.
+  scriviCampiDipendente(d);
+  // L'unica eccezione della tabella: una persona NUOVA nasce in forza.
+  $("dip-attivo").checked = d ? d.attivo !== false : true;
 
-  // Residenza
-  $("dip-res-indirizzo").value = d?.residenza_indirizzo || "";
-  $("dip-res-cap").value = d?.residenza_cap || "";
-  $("dip-res-citta").value = d?.residenza_citta || "";
-  $("dip-res-prov").value = d?.residenza_provincia || "";
-  $("dip-dom-diverso").checked = !!d?.domicilio_diverso;
+  // Blocchi che si mostrano o si nascondono a seconda dei valori appena scritti.
   $("dip-dom-block").hidden = !d?.domicilio_diverso;
-  $("dip-dom-indirizzo").value = d?.domicilio_indirizzo || "";
-  $("dip-dom-cap").value = d?.domicilio_cap || "";
-  $("dip-dom-citta").value = d?.domicilio_citta || "";
-  $("dip-dom-prov").value = d?.domicilio_provincia || "";
-
-  // Contratto
-  $("dip-tipo-contratto").value = d?.tipo_contratto || "";
-  $("dip-data-fine-contratto").value = d?.data_fine_contratto || "";
   $("dip-fine-contr-wrap").hidden = (d?.tipo_contratto || "") !== CONTRATTO_DETERMINATO;
-  $("dip-data-fine-prova").value = d?.data_fine_prova || "";
-  $("dip-qualifica").value = d?.qualifica || "";
-  $("dip-orario").value = d?.orario_tipo || "";
-  $("dip-ore").value = d?.ore_settimanali ?? "";
-  $("dip-sede").value = d?.sede_lavoro || "";
-  // IBAN e RAL non stanno piu' nella scheda (Fase 0.5): sono dati del consulente
-  // del lavoro, l'app non li usa e sono i due che fanno piu' danno se letti da
-  // chi non deve. Le colonne restano nel database e i valori esistenti non
-  // vengono toccati: sbUpsert scrive solo le colonne che gli passi.
+  $("dip-cessazione-section").hidden = !(d && d.attivo === false);
 
-  // Emergenza
-  $("dip-emerg-nome").value = d?.emergenza_nome || "";
-  $("dip-emerg-tel").value = d?.emergenza_telefono || "";
-  $("dip-emerg-parentela").value = d?.emergenza_parentela || "";
-
-  // Taglie DPI: popola i dropdown con le taglie disponibili dei tipi nel catalogo
-  // e pre-riempi coi valori salvati sul dipendente.
+  // Taglie DPI: quattro tendine che diventano UN SOLO oggetto JSON, e viceversa.
+  // Non e' una corrispondenza campo -> colonna, quindi resta fuori dalla tabella.
   populaTaglieDipDropdowns();
   const taglie = d?.taglie_dpi || {};
   $("dip-taglia-scarpe").value = taglie.scarpe || "";
   $("dip-taglia-tuta").value = taglie.tuta || "";
   $("dip-taglia-guanti").value = taglie.guanti || "";
   $("dip-taglia-maschera").value = taglie.maschera || "";
-
-  // Cessazione (visibile solo se NON attivo)
-  $("dip-cessazione-section").hidden = !(d && d.attivo === false);
-  $("dip-data-cessazione").value = d?.data_cessazione || "";
-  $("dip-motivo-cessazione").value = d?.motivo_cessazione || "";
 
   // Tutte le sezioni collassabili partono chiuse.
   els(".dip-section .dip-section-body").forEach((b) => (b.hidden = true));
@@ -1082,7 +1159,10 @@ function openDipModal(id) {
   if (d) {
     syncOnboardingProgressi(d.id).then(() => renderDipOnboarding(d.id));
   } else {
+    // Tutte e due, o "Nuovo dipendente" mostrerebbe la checklist di uscita di
+    // chi era aperto un momento prima.
     $("dip-onboard-section").hidden = true;
+    $("dip-uscita-section").hidden = true;
   }
 
   // DPI consegnati.
@@ -1294,10 +1374,9 @@ async function syncOnboardingProgressi(dipId) {
   const dip = dipById(dipId);
   if (!dip) return;
   const have = new Set(state.onboardProgressi.filter((p) => p.dipendente_id === dipId).map((p) => p.item_id));
-  const rows = state.onboardItems
-    // Le voci "crea_adempimento" non hanno un progresso proprio: il loro stato
-    // è derivato dall'adempimento in Scadenze (singola fonte di verità).
-    .filter((item) => !have.has(item.id) && item.tipo_workflow !== "crea_adempimento")
+  // 2.1 · Chi e' in forza riceve solo le voci d'ingresso, chi e' cessato (con la
+  // sua data) solo quelle d'uscita. La regola sta in common.js con i test.
+  const rows = itemsOnboardingDaSincronizzare({ dip, items: state.onboardItems, itemIdEsistenti: have })
     .map((item) => ({
       id: uid(),
       dipendente_id: dipId,
@@ -1320,20 +1399,45 @@ async function syncOnboardingProgressi(dipId) {
   renderAll();
 }
 
-function scadenzaOnboardingItem(dip, item) {
-  if (!dip?.data_assunzione || item.giorni_da_assunzione == null) return null;
-  return localISO(addDays(parseISO(dip.data_assunzione), item.giorni_da_assunzione));
-}
+// 2.1 · scadenzaOnboardingItem e' passata in common.js: la data di base non e'
+// piu' sempre l'assunzione (per le voci d'uscita e' la cessazione), ed e' una
+// regola su date, quindi vive dove ci sono i test.
 
 function renderDipOnboarding(dipId) {
   const dip = dipById(dipId);
-  const section = $("dip-onboard-section");
-  if (!dip) { section.hidden = true; return; }
+  const sezIngresso = $("dip-onboard-section");
+  const sezUscita = $("dip-uscita-section");
+  if (!dip) { sezIngresso.hidden = true; sezUscita.hidden = true; return; }
   const items = state.onboardItems.slice().sort((a, b) => (a.ordine ?? 100) - (b.ordine ?? 100));
-  if (!items.length) { section.hidden = true; return; }
   const progressiByItem = Object.fromEntries(
     state.onboardProgressi.filter((p) => p.dipendente_id === dipId).map((p) => [p.item_id, p])
   );
+  const perFase = (f) => items.filter((it) => (it.fase || "ingresso") === f);
+
+  disegnaChecklist({ dip, items: perFase("ingresso"), progressiByItem,
+    idSezione: "dip-onboard-section", idConteggio: "dip-onboard-count", idLista: "dip-onboard-list" });
+
+  // La checklist di uscita esiste solo per chi se ne e' andato, E solo se la sua
+  // data di cessazione c'e'. La condizione e' la STESSA di
+  // itemsOnboardingDaSincronizzare: senza la data quelle righe non vengono
+  // create, e disegnarle lo stesso darebbe sette voci con la spunta che non
+  // salva niente e nessun termine. A una persona in forza non si mostra vuota:
+  // non si mostra affatto.
+  if (dip.attivo === false && dip.data_cessazione) {
+    disegnaChecklist({ dip, items: perFase("uscita"), progressiByItem,
+      idSezione: "dip-uscita-section", idConteggio: "dip-uscita-count", idLista: "dip-uscita-list" });
+  } else {
+    sezUscita.hidden = true;
+  }
+}
+
+// Disegna UNA delle due checklist. Il corpo e' quello di sempre: separarlo per
+// fase avrebbe voluto dire due copie della stessa logica di stato, allegati e
+// click, cioe' il modo sicuro di farle divergere.
+function disegnaChecklist({ dip, items, progressiByItem, idSezione, idConteggio, idLista }) {
+  const dipId = dip.id;
+  const section = $(idSezione);
+  if (!items.length) { section.hidden = true; return; }
 
   // Calcolo lo stato di ogni voce: derivato dall'adempimento (per crea_adempimento)
   // o dal progresso (per gli altri).
@@ -1363,10 +1467,10 @@ function renderDipOnboarding(dipId) {
 
   const totale = rows.filter((r) => r.applicabile).length;
   const fatti = rows.filter((r) => r.applicabile && r.fatto).length;
-  $("dip-onboard-count").textContent = `${fatti}/${totale}`;
+  $(idConteggio).textContent = `${fatti}/${totale}`;
   section.hidden = false;
 
-  const host = $("dip-onboard-list");
+  const host = $(idLista);
   host.innerHTML = rows.map((r) => {
     const item = r.item;
     if (!r.applicabile) {
@@ -1825,12 +1929,20 @@ const WORKFLOW_ONBOARDING = {
   crea_adempimento:    { label: "Registra un adempimento", hint: "Alla compilazione crea/aggiorna l'adempimento di compliance scelto (visita medica, corso…)." },
 };
 
+// 2.1 · Le due checklist vivono nella stessa tabella, distinte da `fase`.
+// L'ordinamento e' per (fase, ordine) di proposito: mescolarle renderebbe
+// illeggibile l'elenco, perche' i due `ordine` partono entrambi da 10.
+const FASE_ONBOARDING = { ingresso: "Ingresso", uscita: "Uscita" };
+
 function renderOnboardingItemsTable() {
-  const rows = state.onboardItems.slice().sort((a, b) => (a.ordine ?? 100) - (b.ordine ?? 100));
+  const faseDi = (r) => (r.fase === "uscita" ? "uscita" : "ingresso");
+  const rows = state.onboardItems.slice().sort((a, b) =>
+    faseDi(a).localeCompare(faseDi(b)) || (a.ordine ?? 100) - (b.ordine ?? 100));
   $("onboard-items-table").innerHTML =
-    `<div class="cfg-row head cfg-cols-tipi"><div>Etichetta</div><div>Giorni</div><div>Workflow</div><div>Descrizione</div></div>` +
-    rows.map((r) => `<div class="cfg-row cfg-cols-tipi" data-id="${esc(r.id)}">
+    `<div class="cfg-row head cfg-cols-onb"><div>Etichetta</div><div>Fase</div><div>Giorni</div><div>Workflow</div><div>Descrizione</div></div>` +
+    rows.map((r) => `<div class="cfg-row cfg-cols-onb" data-id="${esc(r.id)}">
       <div><strong>${esc(r.label)}</strong></div>
+      <div>${esc(FASE_ONBOARDING[faseDi(r)])}</div>
       <div>${r.giorni_da_assunzione ?? 0}gg</div>
       <div class="muted">${esc(WORKFLOW_ONBOARDING[r.tipo_workflow]?.label || r.tipo_workflow || "Semplice")}</div>
       <div class="muted">${esc((r.descrizione || "").slice(0, 60))}${(r.descrizione || "").length > 60 ? "…" : ""}</div>
@@ -1846,12 +1958,22 @@ function aggiornaCampiWorkflowOnboarding() {
   $("onbi-workflow-hint").textContent = WORKFLOW_ONBOARDING[wf]?.hint || "";
 }
 
+// 2.1 · I giorni si contano da due date diverse a seconda della fase, e
+// l'etichetta deve dirlo: "30 giorni" da soli non vogliono dire niente.
+function aggiornaEtichettaGiorniOnboarding() {
+  $("onbi-giorni-label").textContent = $("onbi-fase").value === "uscita"
+    ? "Giorni dalla cessazione *"
+    : "Giorni dall'assunzione *";
+}
+
 function openOnboardItemModal(id) {
   const it = id ? state.onboardItems.find((x) => x.id === id) : null;
   $("onbi-title").textContent = it ? it.label : "Nuova voce template onboarding";
   $("onbi-id").value = it ? it.id : "";
   $("onbi-label").value = it?.label || "";
   $("onbi-descrizione").value = it?.descrizione || "";
+  $("onbi-fase").value = it?.fase === "uscita" ? "uscita" : "ingresso";
+  aggiornaEtichettaGiorniOnboarding();
   $("onbi-giorni").value = it?.giorni_da_assunzione ?? 0;
   $("onbi-ordine").value = it?.ordine ?? 100;
   $("onbi-workflow").value = it?.tipo_workflow || "semplice";
@@ -1884,6 +2006,7 @@ async function saveOnboardItem(e) {
     id,
     label: $("onbi-label").value.trim(),
     descrizione: $("onbi-descrizione").value.trim() || null,
+    fase: $("onbi-fase").value === "uscita" ? "uscita" : "ingresso",
     giorni_da_assunzione: parseInt($("onbi-giorni").value, 10) || 0,
     ordine: parseInt($("onbi-ordine").value, 10) || 100,
     tipo_workflow: wf,
@@ -2239,43 +2362,11 @@ async function saveDip(e) {
   if (esistente && !confermaCariche(id, esistente)) return;
   const row = {
     id,
-    nome: $("dip-nome").value.trim(),
-    cognome: $("dip-cognome").value.trim(),
-    codice_fiscale: $("dip-cf").value.trim() || null,
-    data_nascita: $("dip-nascita").value || null,
-    data_assunzione: $("dip-assunzione").value || null,
-    livello_ccnl: $("dip-livello").value || null,
-    email: $("dip-email").value.trim() || null,
-    telefono: $("dip-telefono").value.trim() || null,
-    attivo: $("dip-attivo").checked,
-    note: $("dip-note").value.trim() || null,
-    // Anagrafica estesa (Iterazione A)
-    luogo_nascita: $("dip-luogo-nascita").value.trim() || null,
-    sesso: $("dip-sesso").value || null,
-    cittadinanza: $("dip-cittadinanza").value.trim() || null,
-    stato_civile: $("dip-stato-civile").value || null,
-    titolo_studio: $("dip-titolo-studio").value.trim() || null,
-    residenza_indirizzo: $("dip-res-indirizzo").value.trim() || null,
-    residenza_cap: $("dip-res-cap").value.trim() || null,
-    residenza_citta: $("dip-res-citta").value.trim() || null,
-    residenza_provincia: ($("dip-res-prov").value.trim() || "").toUpperCase() || null,
-    domicilio_diverso: $("dip-dom-diverso").checked,
-    domicilio_indirizzo: $("dip-dom-diverso").checked ? ($("dip-dom-indirizzo").value.trim() || null) : null,
-    domicilio_cap: $("dip-dom-diverso").checked ? ($("dip-dom-cap").value.trim() || null) : null,
-    domicilio_citta: $("dip-dom-diverso").checked ? ($("dip-dom-citta").value.trim() || null) : null,
-    domicilio_provincia: $("dip-dom-diverso").checked ? (($("dip-dom-prov").value.trim() || "").toUpperCase() || null) : null,
-    tipo_contratto: $("dip-tipo-contratto").value || null,
-    data_fine_contratto: ($("dip-tipo-contratto").value === CONTRATTO_DETERMINATO) ? ($("dip-data-fine-contratto").value || null) : null,
-    data_fine_prova: $("dip-data-fine-prova").value || null,
-    qualifica: $("dip-qualifica").value || null,
-    orario_tipo: $("dip-orario").value || null,
-    ore_settimanali: $("dip-ore").value ? parseFloat($("dip-ore").value) : null,
-    sede_lavoro: $("dip-sede").value.trim() || null,
-    emergenza_nome: $("dip-emerg-nome").value.trim() || null,
-    emergenza_telefono: $("dip-emerg-tel").value.trim() || null,
-    emergenza_parentela: $("dip-emerg-parentela").value || null,
-    data_cessazione: $("dip-attivo").checked ? null : ($("dip-data-cessazione").value || null),
-    motivo_cessazione: $("dip-attivo").checked ? null : ($("dip-motivo-cessazione").value || null),
+    // 2.2 - I campi arrivano tutti dalla stessa tabella che ha riempito il form:
+    // se un campo si vede nella scheda, si salva; se non si salva, non si vede.
+    ...leggiCampiDipendente(),
+    // Le quattro taglie diventano un solo oggetto JSON, e null se sono vuote:
+    // non e' una corrispondenza campo -> colonna, quindi resta qui.
     taglie_dpi: (() => {
       const t = {
         scarpe:   $("dip-taglia-scarpe").value   || null,
@@ -2292,12 +2383,59 @@ async function saveDip(e) {
   // Sincronizza mansione e incarichi (1.5): revoca, non cancella.
   if (!await sincronizzaAssegnazioni(id)) return;   // l'errore e' gia' stato mostrato
 
+  // 2.1 · La persona esce dall'azienda proprio adesso: link del portale spento e
+  // incarichi da chiudere. Solo alla TRANSIZIONE in forza -> cessato: risalvare
+  // la scheda di un cessato non deve rifare niente.
+  // La condizione NON guarda la data di cessazione. Guardandola, chi togliesse la
+  // spunta senza compilare la data si terrebbe il link del portale vivo, e al
+  // salvataggio successivo (con la data) la transizione non varrebbe piu': quel
+  // link non verrebbe spento mai.
+  const esceOra = !!esistente && esistente.attivo !== false && !row.attivo;
+  if (esceOra) await gestisciCessazione(id, row.data_cessazione);
+
   // Genera adempimenti MANCANTI per i requisiti obbligatori dei ruoli attuali
   // (sia per nuovi dipendenti che per cambi ruolo su esistenti).
   await syncAdempimentiObbligatori(id);
 
   closeModal("modal-dip");
   renderAll();
+}
+
+// 2.1 · Le due cose che devono succedere quando qualcuno viene cessato.
+// La terza che il piano elenca — "checklist mostrata" — e' conseguenza: alla
+// riapertura della scheda syncOnboardingProgressi crea le voci d'uscita.
+async function gestisciCessazione(dipId, dataCessazione) {
+  // 1) Il link del portale muore con il rapporto di lavoro. Un token ancora
+  //    valido terrebbe in vita l'autorizzazione di caricamento sui file, e non
+  //    va perso in silenzio: e' esattamente cio' che si vuole spegnere.
+  const { error } = await sb.from("invite_tokens").delete().eq("dipendente_id", dipId);
+  if (error) {
+    console.warn("invite_tokens non cancellati:", error.message);
+    alert("Attenzione: il link del portale di questa persona NON e' stato disattivato.\n"
+      + "Riapri la scheda e rigenera il link, oppure riprova a salvare.\n\nDettaglio: " + error.message);
+  }
+
+  // 2) Gli INCARICHI aperti si chiudono alla data di cessazione, se l'HR vuole.
+  //    Non la mansione: e' `required` nella scheda e viene precompilata dalle
+  //    sole assegnazioni attive, quindi chiuderla renderebbe la scheda del
+  //    cessato non piu' salvabile, e l'unica via d'uscita sarebbe riscegliere
+  //    una mansione — che verrebbe scritta come riga NUOVA e attiva. La mansione
+  //    di un cessato resta aperta di proposito: dice che mestiere faceva.
+  //    Senza una data di cessazione non si propone niente: `al` sarebbe una data
+  //    inventata. La proposta torna appena l'HR scrive la data e risalva.
+  if (!dataCessazione) return;
+  const daChiudere = incarichiDaRevocare({ dipRuoli: state.dipRuoli, ruoli: state.ruoli, dipId });
+  if (!daChiudere.length) return;
+  const nomi = daChiudere.map((a) => "• " + (ruoloById(a.ruolo_id)?.nome || a.ruolo_id)).join(NL);
+  if (!confirm(`Questa persona ha ancora ${daChiudere.length === 1 ? "un incarico aperto" : "degli incarichi aperti"}:`
+    + NL + NL + nomi + NL + NL
+    + `Li chiudo alla data di cessazione (${fmtDate(dataCessazione)})?`)) return;
+  // Ci si ferma al primo errore: sbUpsert ha gia' avvisato, e tre alert in fila
+  // direbbero all'HR che qualcosa non va senza dirgli quali incarichi sono
+  // rimasti aperti.
+  for (const a of daChiudere) {
+    if (!await sbUpsert("dipendente_ruoli", { ...a, al: dataCessazione })) return;
+  }
 }
 
 // 1.5 · Mansione e incarichi dal form alla tabella. Togliere la spunta NON
@@ -3616,6 +3754,28 @@ function wireEvents() {
 
   // Modale dipendente.
   $("dip-form").addEventListener("submit", saveDip);
+  // 2.3 · Le linguette.
+  els("#modal-dip .dt-btn").forEach((b) => b.addEventListener("click", () => mostraLinguetta(b.dataset.dtab)));
+  // 2.3 · Un campo `required` dentro un contenitore nascosto blocca l'invio del
+  // form E il browser non riesce nemmeno a metterci il fuoco: il bottone Salva
+  // smetterebbe di funzionare senza dire niente (stessa trappola gia' pagata in
+  // openOnboardModal). Qui la linguetta del campo non valido si apre PRIMA che
+  // il browser provi a dargli il fuoco. L'evento `invalid` non fa bubbling:
+  // senza `true` (cattura) al form non arriverebbe mai.
+  // Conta SOLO il primo campo non valido: gli `invalid` di una stessa
+  // validazione arrivano tutti in fila, in ordine di documento, e il browser
+  // mette a fuoco il PRIMO. Ubbidendo all'ultimo, un dipendente nuovo con nome,
+  // cognome e mansione vuoti aprirebbe la linguetta Sicurezza mentre il browser
+  // cerca "dip-nome" nell'Anagrafica ormai nascosta: nessun messaggio, nessun
+  // campo evidenziato, e il Salva che sembra non funzionare.
+  let linguettaGiaScelta = false;
+  $("dip-form").addEventListener("invalid", (ev) => {
+    if (linguettaGiaScelta) return;
+    linguettaGiaScelta = true;
+    setTimeout(() => { linguettaGiaScelta = false; }, 0);   // fine di questa validazione
+    const panel = ev.target.closest(".dip-tab-panel");
+    if (panel && panel.dataset.dtab !== state.dipTab) mostraLinguetta(panel.dataset.dtab);
+  }, true);
   // 1.5 · Cambiare mansione apre una riga nuova: la sua data di ingresso e' oggi,
   // a meno che quella mansione fosse gia' attiva (allora si riprende la sua data).
   // Non si tocca mai il campo senza che l'utente abbia cambiato la tendina: e'
@@ -3660,6 +3820,7 @@ function wireEvents() {
   $("dip-modifiche-toggle").addEventListener("click", () => toggleSection("dip-modifiche-toggle", "dip-modifiche-list"));
   // Onboarding (scheda dipendente)
   $("dip-onboard-toggle").addEventListener("click", () => toggleSection("dip-onboard-toggle", "dip-onboard-list"));
+  $("dip-uscita-toggle").addEventListener("click", () => toggleSection("dip-uscita-toggle", "dip-uscita-list"));
   $("onboard-form").addEventListener("submit", saveOnboardProgresso);
   $("onboard-close").addEventListener("click", () => closeModal("modal-onboard"));
   $("onboard-cancel").addEventListener("click", () => closeModal("modal-onboard"));
@@ -3699,6 +3860,7 @@ function wireEvents() {
   $("add-onboard-item").addEventListener("click", () => openOnboardItemModal(null));
   $("onbi-form").addEventListener("submit", saveOnboardItem);
   $("onbi-workflow").addEventListener("change", aggiornaCampiWorkflowOnboarding);
+  $("onbi-fase").addEventListener("change", aggiornaEtichettaGiorniOnboarding);
   $("onbi-close").addEventListener("click", () => closeModal("modal-onboard-item"));
   $("onbi-cancel").addEventListener("click", () => closeModal("modal-onboard-item"));
   $("onbi-delete").addEventListener("click", deleteOnboardItem);
