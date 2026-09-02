@@ -2765,7 +2765,11 @@ const BACKUP_DOC_AVVISO_BYTE = 200 * 1024 * 1024;   // oltre 200 MB il browser p
 // 1000: si itera l'offset finche' la pagina e' piena, e le voci con id === null
 // sono cartelle da visitare (una per adempimento, piu' portal/{prefisso}/).
 async function elencaFileBucket(prefisso = "", profondita = 0) {
-  if (profondita > 5) return [];   // guardia: non puo' mai girare a vuoto
+  // Guardia contro una ricorsione senza fine. Si ferma con un errore invece di
+  // saltare i file in silenzio: un backup che tace su quello che non ha preso e'
+  // esattamente il contrario di quello che serve. Oggi la profondita' massima
+  // nel bucket e' 3 (portal/{prefisso}/{file}).
+  if (profondita > 5) throw new Error(`Archivio troppo profondo sotto "${prefisso}": interrotto per non saltare file in silenzio.`);
   const PAG = 1000;
   const trovati = [];
   for (let offset = 0; ; offset += PAG) {
@@ -2803,7 +2807,9 @@ function collegaDocumentiAiDati(prefissoDip) {
       a.corrente === false ? "archiviato" : "corrente");
     if (Array.isArray(a.history)) {
       for (const h of a.history) {
-        segna(h.documentoPath, dip, "Adempimento (archiviato)", nomeTipo, h.doneAt, "archiviato");
+        // `h.rilascio` e' la chiave delle voci history in formato vecchio: lo
+        // Storico le accetta gia' cosi', l'indice deve leggerle allo stesso modo.
+        segna(h.documentoPath, dip, "Adempimento (archiviato)", nomeTipo, h.doneAt || h.rilascio, "archiviato");
       }
     }
   }
