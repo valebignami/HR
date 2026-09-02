@@ -22,10 +22,14 @@ const state = {
   dpiTipi: [],            // catalogo DPI
   dpiConsegne: [],        // registro consegne DPI per dipendente
   storicoModifiche: [],   // audit trail scritto dal trigger, mai dall'app (1.6)
+  parametri: [],          // 3.1 · i numeri che cambiano con le norme, editabili dall'app
+  cedolini: [],           // 3.2 · cedolini caricati dall'HR, letti dal dipendente nel portale
+  scambiConsulente: [],   // 3.3 · registro degli scambi con il consulente del lavoro
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
   dipTab: "anagrafica",      // 2.3 · linguetta aperta nella scheda dipendente
+  scambiAnno: new Date().getFullYear(),   // 3.3 · anno mostrato nella vista Consulente
   search: "",
   compFilter: { dipendente: "", mansione: "", incarico: "", stato: "" },
   storicoFilter: { dipendente: "", tipo: "", categoria: "", anno: "", mese: "" },
@@ -33,7 +37,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -58,6 +62,13 @@ const STORE_BY_TABLE = {
   dpi_tipi: "dpiTipi",
   dpi_consegne: "dpiConsegne",
   storico_modifiche: "storicoModifiche",
+  // 3.1-3.3 · Le tre tabelle della Fase 3. Entrano in TABLES e qui, NON in
+  // REALTIME_TABLES: nessun altro le scrive mentre l'HR ha l'app aperta (il
+  // dipendente dal portale le legge soltanto). L'unica tabella nuova prevista in
+  // realtime da tutto il piano e' `eventi`, in Fase 4.
+  parametri: "parametri",
+  cedolini: "cedolini",
+  scambi_consulente: "scambiConsulente",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -67,9 +78,17 @@ const STORE_BY_TABLE = {
 // documenti diventa un mucchio di file anonimi.
 // NON entra in TABLES ne' in STORE_BY_TABLE: non va in `state` ne' in realtime.
 const TABELLE_BACKUP = TABLES.concat(["invite_tokens"]);
-// Colonna su cui ordinare per paginare in modo deterministico. Quasi tutte hanno
-// `id`; `invite_tokens` no, la sua chiave e' `token`.
-const CHIAVE_ORDINE_BACKUP = { invite_tokens: "token" };
+// La colonna che identifica una riga. Quasi tutte le tabelle hanno `id`, ma non
+// tutte: `invite_tokens` ha `token` e `parametri` (3.1) ha `chiave`.
+// UNA mappa sola per i due mestieri che ne hanno bisogno, perche' sono lo stesso
+// fatto: sbUpsert/sbDelete la usano per ritrovare la riga in `state`, e il backup
+// per ordinare le pagine.
+// Non e' un dettaglio: con `id` su `parametri`, sbUpsert confronterebbe
+// undefined con undefined e ritroverebbe SEMPRE la prima riga — salvando un
+// parametro ne sovrascriverebbe un altro in memoria — e il backup ordinerebbe per
+// una colonna che non esiste, fermandosi con un errore e non scaricando niente.
+const CHIAVE_TABELLA = { invite_tokens: "token", parametri: "chiave" };
+const chiaveDi = (tabella) => CHIAVE_TABELLA[tabella] || "id";
 
 // ---------- Helpers ----------
 // $, el, els, uid, esc, localISO, parseISO, fmtDate, addMonths, addDays, daysUntil,
@@ -283,15 +302,16 @@ async function sbLoadAll() {
 async function sbUpsert(table, row) {
   const store = STORE_BY_TABLE[table];
   const arr = state[store];
-  const idx = arr.findIndex((r) => r.id === row.id);
+  const k = chiaveDi(table);
+  const idx = arr.findIndex((r) => r[k] === row[k]);
   const prev = idx >= 0 ? arr[idx] : null;
   if (idx >= 0) arr[idx] = row; else arr.push(row);   // optimistic
   renderAll();
   const { error } = await sb.from(table).upsert(row);
   if (error) {
-    // Rollback safe contro realtime concorrente: ritrova la riga per id ORA,
+    // Rollback safe contro realtime concorrente: ritrova la riga per chiave ORA,
     // non riusare l'idx vecchio (potrebbe essere stale dopo eventi RT).
-    const now = arr.findIndex((r) => r.id === row.id);
+    const now = arr.findIndex((r) => r[k] === row[k]);
     if (prev) {
       if (now >= 0) arr[now] = prev;
       else arr.push(prev);
@@ -309,15 +329,16 @@ async function sbUpsert(table, row) {
 async function sbDelete(table, id) {
   const store = STORE_BY_TABLE[table];
   const arr = state[store];
-  const idx = arr.findIndex((r) => r.id === id);
+  const k = chiaveDi(table);
+  const idx = arr.findIndex((r) => r[k] === id);
   const prev = idx >= 0 ? arr[idx] : null;
   if (idx >= 0) arr.splice(idx, 1);                   // optimistic
   renderAll();
-  const { error } = await sb.from(table).delete().eq("id", id);
+  const { error } = await sb.from(table).delete().eq(k, id);
   if (error) {
     if (prev) {
       // Rollback safe contro realtime concorrente: ricontrolla ORA se la riga esiste.
-      const now = arr.findIndex((r) => r.id === id);
+      const now = arr.findIndex((r) => r[k] === id);
       if (now < 0) arr.push(prev);
       renderAll();
     }
@@ -433,6 +454,7 @@ function renderAll() {
   else if (state.view === "cariche") renderCariche();
   else if (state.view === "dipendenti") renderDipendenti();
   else if (state.view === "storico") renderStorico();
+  else if (state.view === "consulente") renderConsulente();
   else if (state.view === "config") renderConfig();
 }
 
@@ -446,6 +468,19 @@ function renderCounts() {
   $("count-cariche").textContent = sottoSoglia;
   // Storico: totale eventi (correnti + archiviati).
   $("count-storico").textContent = collectStoricoEvents().length;
+  // 3.2 · "Cedolini di luglio: 3/8" e i collegamenti da rinnovare.
+  const pagheMese = mesePaghe();
+  const quanti = conteggioCedoliniDelMese({
+    dipendenti: state.dipendenti, cedolini: state.cedolini,
+    anno: pagheMese.anno, mese: pagheMese.mese,
+  });
+  $("btn-cedolini-mese").textContent =
+    `🧾 Cedolini di ${nomeMese(pagheMese.mese)}: ${quanti.presenti}/${quanti.attesi}`;
+  // 3.3 · Le caselle che mancano allo studio, per l'anno in corso.
+  $("count-consulente").textContent = scambiMancanti(grigliaScambiAnno(new Date().getFullYear()));
+  const daRinnovare = cedoliniConLinkDaRinnovare().length;
+  $("count-link-cedolini").textContent = daRinnovare;
+  $("count-link-cedolini").hidden = daRinnovare === 0;
 }
 
 // Stato di ogni incarico aziendale con minimo > 0.
@@ -674,19 +709,76 @@ function renderCalendar(all) {
 function renderConfig() {
   els(".ct-btn").forEach((b) => b.classList.toggle("active", b.dataset.ctab === state.configTab));
   renderDatiDiProva();
+  // 3.2 · Il bottone compare solo quando c'e' qualcosa da rinnovare, e dice quanto.
+  const daRinnovareCfg = cedoliniConLinkDaRinnovare().length;
+  $("btn-rinnova-link-cedolini").hidden = daRinnovareCfg === 0;
+  $("btn-rinnova-link-cedolini").textContent =
+    `🔗 Rinnova i collegamenti dei cedolini (${daRinnovareCfg})`;
   $("cfg-ruoli").hidden = state.configTab !== "ruoli";
   $("cfg-categorie").hidden = state.configTab !== "categorie";
   $("cfg-tipi").hidden = state.configTab !== "tipi";
   $("cfg-matrice").hidden = state.configTab !== "matrice";
   $("cfg-onboarding").hidden = state.configTab !== "onboarding";
   $("cfg-modelli").hidden = state.configTab !== "modelli";
+  $("cfg-parametri").hidden = state.configTab !== "parametri";
   if (state.configTab === "ruoli") renderRuoliTable();
   else if (state.configTab === "categorie") renderCategorieTable();
   else if (state.configTab === "tipi") renderTipiTable();
   else if (state.configTab === "matrice") renderMatriceTable();
   else if (state.configTab === "onboarding") renderOnboardingItemsTable();
   else if (state.configTab === "modelli") renderModelliTable();
+  else if (state.configTab === "parametri") renderParametriTable();
 }
+
+// ============================================================
+// 3.1 · Parametri — i numeri che cambiano con le norme.
+// La chiave e' in SOLA LETTURA: i parametri li crea una migrazione, insieme al
+// codice che li legge. Una chiave inventata dall'HR non la leggerebbe nessuno, e
+// sembrerebbe una manopola collegata a niente.
+// ============================================================
+function renderParametriTable() {
+  const righe = state.parametri.slice().sort((x, y) => (x.chiave || "").localeCompare(y.chiave || ""));
+  $("parametri-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-param"><div>Parametro</div><div>Valore</div><div>A cosa serve</div></div>` +
+    (righe.length === 0
+      ? '<div class="muted" style="padding:14px">Nessun parametro configurato.</div>'
+      : righe.map((p) => `<div class="cfg-row cfg-cols-param" data-id="${esc(p.chiave)}">
+          <div><strong>${esc(p.chiave)}</strong></div>
+          <div>${esc(p.valore)}</div>
+          <div class="muted">${esc(p.descrizione || "—")}</div>
+        </div>`).join(""));
+  els("#parametri-table .cfg-row:not(.head)").forEach((el2) =>
+    el2.addEventListener("click", () => openParametroModal(el2.dataset.id)));
+}
+
+function openParametroModal(chiave) {
+  const p = state.parametri.find((x) => x.chiave === chiave);
+  if (!p) return;
+  $("param-title").textContent = p.chiave;
+  $("param-chiave").value = p.chiave;
+  $("param-valore").value = p.valore || "";
+  $("param-descrizione").value = p.descrizione || "";
+  openModal("modal-parametro");
+}
+
+async function saveParametro(e) {
+  e.preventDefault();
+  const chiave = $("param-chiave").value;
+  const prec = state.parametri.find((x) => x.chiave === chiave);
+  if (!prec) return;
+  const row = {
+    ...prec,
+    valore: $("param-valore").value.trim(),
+    descrizione: $("param-descrizione").value.trim() || null,
+    aggiornato_il: new Date().toISOString(),
+  };
+  if (!row.valore) { alert("Il valore non puo' restare vuoto."); return; }
+  if (await sbUpsert("parametri", row)) closeModal("modal-parametro");
+}
+
+// Quanti giorni vale il link del portale: dai parametri, con lo stesso ripiego
+// che applica il database in parametro_int.
+function giorniLinkPortale() { return parametroInt(state.parametri, "portale_giorni_link", 365); }
 
 // 1c · Bottone e didascalia dei dati di prova: esistono finche' esistono quelle
 // persone, e spariscono da soli quando non ce ne sono piu'. E' la guardia
@@ -1172,6 +1264,10 @@ function openDipModal(id) {
   // Provvedimenti disciplinari del dipendente.
   if (d) renderDipProvvedimenti(d.id);
   else $("dip-provv-section").hidden = true;
+
+  // 3.2 · Cedolini della persona.
+  if (d) renderDipCedolini(d.id);
+  else $("dip-cedolini-section").hidden = true;
 
   // Modifiche registrate dal database (1.6).
   if (d) renderDipModifiche(d.id);
@@ -2200,6 +2296,7 @@ const ETICHETTA_TABELLA = {
   requisiti_ruolo: "Matrice",
   ruoli: "Ruolo",
   tipi_requisito: "Tipo requisito",
+  cedolini: "Cedolino",
 };
 
 // Il valore com'e' scritto nel jsonb: null diventa un trattino, gli oggetti
@@ -2415,7 +2512,18 @@ async function gestisciCessazione(dipId, dataCessazione) {
       + "Riapri la scheda e rigenera il link, oppure riprova a salvare.\n\nDettaglio: " + error.message);
   }
 
-  // 2) Gli INCARICHI aperti si chiudono alla data di cessazione, se l'HR vuole.
+  // 2) 3.2 · I cedolini RESTANO — servono all'esportazione del fascicolo (6.1) —
+  //    ma il loro collegamento si spegne, come il link del portale e per la
+  //    stessa ragione: non dipende dalla data di cessazione, che potrebbe non
+  //    essere ancora stata scritta.
+  //    LIMITE DICHIARATO: un link firmato gia' aperto e' un JWT autonomo e resta
+  //    valido fino alla propria scadenza. Questo lo toglie dal portale, non dalle
+  //    mani di chi lo aveva gia' aperto. E' scritto nell'informativa privacy.
+  for (const c of state.cedolini.filter((x) => x.dipendente_id === dipId && (x.url_firmato || x.url_scade_il))) {
+    if (!await sbUpsert("cedolini", { ...c, url_firmato: null, url_scade_il: null })) return;
+  }
+
+  // 3) Gli INCARICHI aperti si chiudono alla data di cessazione, se l'HR vuole.
   //    Non la mansione: e' `required` nella scheda e viene precompilata dalle
   //    sole assegnazioni attive, quindi chiuderla renderebbe la scheda del
   //    cessato non piu' salvabile, e l'unica via d'uscita sarebbe riscegliere
@@ -2594,7 +2702,11 @@ async function inviaInvitoSelfService() {
     const link = `${base}me.html?token=${token}`;
     $("invite-target").textContent = `${d.cognome} ${d.nome}`;
     $("invite-link").value = link;
-    $("invite-status").textContent = "Il link scade dopo 30 giorni. Si può rigenerare in qualsiasi momento.";
+    // 3.1 · La durata non e' piu' cablata: la decide `parametri`.
+    const gg = giorniLinkPortale();
+    $("invite-status").textContent =
+      `Il link scade fra ${gg} giorni (${fmtDate(localISO(addDays(todayMid(), gg)))}). `
+      + "Rigenerandolo, quello di prima smette di funzionare all'istante.";
     openModal("modal-invite");
     setTimeout(() => $("invite-link").select(), 100);
   } catch (err) {
@@ -2636,6 +2748,9 @@ const TABELLE_FIGLIE_DIP = [
   { table: "onboarding_progressi",  store: "onboardProgressi", doc: "documento_path" },
   { table: "accettazioni",          store: "accettazioni",     doc: null },
   { table: "dpi_consegne",          store: "dpiConsegne",      doc: "modulo_path" },
+  // 3.2 · Senza questa riga deleteDip cancellerebbe le righe dei cedolini
+  // (per cascade) e lascerebbe i loro PDF nel bucket, orfani per sempre.
+  { table: "cedolini",              store: "cedolini",         doc: "path" },
 ];
 
 // Tutti i PDF di un dipendente: cicli correnti, storico archiviato, moduli DPI,
@@ -2729,6 +2844,464 @@ async function eliminaDatiDiProva() {
     if (!await eliminaDipendenteCompleto(d.id)) break;
   }
   renderAll();
+}
+
+// ============================================================
+// 3.2 · CEDOLINI
+// L'HR li carica un mese per volta; il dipendente li apre dal proprio portale.
+//
+// Come li legge il dipendente, e perche' cosi': dalla Fase 1b il ruolo `anon`
+// NON ha nessuna policy di lettura sullo storage, e non deve riaverla. Quindi al
+// caricamento l'HR — che e' autenticato — genera un link firmato di lunga durata
+// e lo salva nella riga; la RPC self_get_cedolini restituisce al portale le sole
+// righe di quella persona, con il loro link.
+//
+// ATTENZIONE, limite dichiarato: un link firmato di Supabase e' un JWT autonomo.
+// Resta valido fino alla propria scadenza QUALUNQUE cosa si scriva nella riga:
+// azzerare url_firmato toglie il cedolino dal portale, non dalle mani di chi
+// l'aveva gia' aperto. E' scritto nell'informativa privacy e nel manuale.
+// ============================================================
+
+const MESI_NOME = () => window.MESI || [];
+const nomeMese = (m) => MESI_NOME()[Number(m) - 1] || String(m);
+const tipoCedolino = (k) => (window.TIPI_CEDOLINO || []).find((t) => t.key === k) || { key: k, label: k };
+
+function etichettaPeriodoCedolino(c) {
+  if (!c) return "—";
+  if (c.tipo === "tredicesima") return `Tredicesima ${c.anno}`;
+  if (c.tipo === "cu") return `Certificazione Unica ${c.anno}`;
+  return `${nomeMese(c.mese)} ${c.anno}`;
+}
+
+// Il mese che il contatore in barra laterale sorveglia: quello PRECEDENTE.
+// I cedolini di luglio arrivano dal consulente in agosto: puntare al mese
+// corrente direbbe "0 su 15" per tutto il mese e non vorrebbe dire niente.
+function mesePaghe() {
+  const oggi = new Date();
+  const d = new Date(oggi.getFullYear(), oggi.getMonth() - 1, 1);
+  return { anno: d.getFullYear(), mese: d.getMonth() + 1 };
+}
+
+// Il link firmato che il dipendente usera'. La durata sta nei parametri, non
+// nel codice: 13 mesi di default, perche' deve coprire l'anno piu' il mese di
+// consegna.
+async function generaLinkCedolino(path) {
+  const giorni = parametroInt(state.parametri, "cedolino_giorni_link", 396);
+  const { data, error } = await sb.storage.from(STORAGE_BUCKET)
+    .createSignedUrl(path, giorni * 24 * 60 * 60);
+  if (error) throw error;
+  if (!data?.signedUrl) throw new Error("Supabase non ha restituito nessun link.");
+  return {
+    url_firmato: data.signedUrl,
+    url_scade_il: new Date(Date.now() + giorni * 86400000).toISOString(),
+  };
+}
+
+// ---------- I cedolini nella scheda della persona (linguetta Registro) ----------
+function renderDipCedolini(dipId) {
+  const section = $("dip-cedolini-section");
+  const list = $("dip-cedolini-list");
+  const righe = state.cedolini
+    .filter((c) => c.dipendente_id === dipId)
+    .sort((a, b) => (b.anno - a.anno) || (b.mese - a.mese) || (a.tipo || "").localeCompare(b.tipo || ""));
+  $("dip-cedolini-count").textContent = righe.length;
+  section.hidden = false;   // sempre visibile: dice anche "nessuno ancora"
+  list.hidden = true;
+  el(".history-arrow", $("dip-cedolini-toggle"))?.classList.remove("expanded");
+  $("dip-cedolini-toggle").setAttribute("aria-expanded", "false");
+
+  list.innerHTML = righe.length === 0
+    ? '<div class="muted" style="padding:8px 0">Nessun cedolino caricato. Si caricano dal bottone "Cedolini" nella barra a sinistra.</div>'
+    : righe.map((c) => `<div class="hist-row ced-row" data-id="${esc(c.id)}">
+        <div><strong>${esc(etichettaPeriodoCedolino(c))}</strong>
+          <div class="hist-note">caricato il ${esc(fmtDateTime(c.caricato_il))}${c.url_firmato ? "" : " · link da rigenerare"}</div></div>
+        <div class="row-actions">
+          <button type="button" class="icon-btn ced-doc-btn" data-path="${esc(c.path)}" title="Apri il cedolino">📎</button>
+          <button type="button" class="icon-btn ced-del-btn" data-id="${esc(c.id)}" title="Elimina questo cedolino">🗑</button>
+        </div>
+      </div>`).join("");
+
+  els(".ced-doc-btn", list).forEach((b) => b.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    // L'HR apre con un link firmato generato adesso (10 minuti), non con quello
+    // lungo salvato per il dipendente.
+    await openSignedDoc(b.dataset.path);
+  }));
+  els(".ced-del-btn", list).forEach((b) => b.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await eliminaCedolino(b.dataset.id, dipId);
+  }));
+}
+
+async function eliminaCedolino(id, dipId) {
+  const c = state.cedolini.find((x) => x.id === id);
+  if (!c) return;
+  if (!confirm(`Eliminare il cedolino "${etichettaPeriodoCedolino(c)}" e il file allegato?`
+    + NL + "Il dipendente non lo vedra' piu' nel suo portale.")) return;
+  // Prima la riga, poi il file: nell'ordine inverso un errore lascerebbe una
+  // riga che punta a un file che non c'e' piu'.
+  if (!await sbDelete("cedolini", id)) return;
+  await deleteDoc(c.path);
+  renderDipCedolini(dipId);
+}
+
+// ---------- Modale "Carica il mese" ----------
+// I file scelti non stanno negli <input>: stanno qui, per dipendente. Cosi' la
+// selezione multipla (abbinata per matricola) e la scelta riga per riga
+// scrivono nello stesso posto, e la riga mostra sempre quello che verra'
+// caricato davvero.
+let cedoliniPendenti = new Map();
+
+function openCedoliniModal() {
+  const { anno, mese } = mesePaghe();
+  $("ced-anno").value = anno;
+  fillSelect($("ced-mese"), (window.MESI || []).map((nome, i) => ({ id: String(i + 1), nome })));
+  $("ced-mese").value = String(mese);
+  fillSelect($("ced-tipo"), (window.TIPI_CEDOLINO || []).map((t) => ({ id: t.key, nome: t.label })));
+  $("ced-tipo").value = "mensile";
+  $("ced-multi-file").value = "";
+  $("ced-multi-hint").textContent = "";
+  $("ced-status").textContent = "";
+  $("ced-progress").hidden = true;
+  cedoliniPendenti = new Map();
+  aggiornaMeseCedolini();
+  renderRigheCedolini();
+  openModal("modal-cedolini");
+}
+
+// Tredicesima e CU non hanno un mese da scegliere: il mese lo decide il tipo
+// (13 e 0), ed e' la regola che rende vera l'unicita'.
+function aggiornaMeseCedolini() {
+  const t = tipoCedolino($("ced-tipo").value);
+  const mensile = t.key === "mensile";
+  $("ced-mese").disabled = !mensile;
+  $("ced-mese-wrap").classList.toggle("disattivato", !mensile);
+}
+
+function periodoCedoliniScelto() {
+  return normalizzaPeriodoCedolino({
+    anno: $("ced-anno").value,
+    mese: $("ced-mese").value,
+    tipo: $("ced-tipo").value,
+  });
+}
+
+function renderRigheCedolini() {
+  const p = periodoCedoliniScelto();
+  // Tredicesima e CU sono dell'ANNO, non di un mese: spettano anche a chi se n'e'
+  // andato a meta' anno, e questa modale e' l'unico posto da cui si caricano.
+  const persone = state.dipendenti
+    .filter((d) => (p.tipo === "mensile" ? inForzaNelMese(d, p.anno, p.mese) : inForzaNellAnno(d, p.anno)))
+    .sort((a, b) => (a.cognome || "").localeCompare(b.cognome || ""));
+  const host = $("ced-rows");
+  if (!persone.length) {
+    host.innerHTML = '<div class="muted" style="padding:10px 0">Nessuna persona era in forza in questo periodo.</div>';
+    return;
+  }
+  host.innerHTML = persone.map((d) => {
+    const gia = state.cedolini.find((c) => c.dipendente_id === d.id
+      && Number(c.anno) === p.anno && Number(c.mese) === p.mese && c.tipo === p.tipo);
+    const scelto = cedoliniPendenti.get(d.id);
+    const stato = scelto
+      ? `<span class="ced-scelto">📄 ${esc(scelto.name)}</span>`
+      : (gia ? '<span class="hist-late ontime">✓ già caricato</span>' : '<span class="muted">—</span>');
+    return `<div class="ced-riga" data-dip="${esc(d.id)}">
+      <div><strong>${esc(d.cognome)} ${esc(d.nome)}</strong>
+        <div class="hist-note">matricola ${esc(d.matricola || "—")}</div></div>
+      <div class="ced-stato">${stato}</div>
+      <label class="ced-file-label"><span>Scegli</span>
+        <input type="file" class="ced-file" accept=".pdf,image/*"></label>
+    </div>`;
+  }).join("");
+  els(".ced-file", host).forEach((inp) => inp.addEventListener("change", (e) => {
+    const dipId = e.currentTarget.closest(".ced-riga").dataset.dip;
+    const f = e.currentTarget.files?.[0] || null;
+    if (f) cedoliniPendenti.set(dipId, f); else cedoliniPendenti.delete(dipId);
+    renderRigheCedolini();
+  }));
+}
+
+// Selezione multipla: l'abbinamento per matricola e' un SUGGERIMENTO. Riempie le
+// righe, e l'HR vede nome, matricola e nome del file accanto a ciascuna prima di
+// confermare. Quello che non si abbina, o si abbina a due persone, resta scritto
+// sotto: un file assegnato di nascosto alla persona sbagliata e' il danno
+// peggiore che questa modale possa fare.
+function abbinaFileScelti(files) {
+  const perNome = new Map(files.map((f) => [f.name, f]));
+  const r = abbinaCedoliniPerMatricola(files.map((f) => f.name), state.dipendenti);
+  for (const { nomeFile, dipendenteId } of r.abbinati) {
+    cedoliniPendenti.set(dipendenteId, perNome.get(nomeFile));
+  }
+  const parti = [`${r.abbinati.length} file su ${files.length} abbinati dalla matricola nel nome.`];
+  if (r.ambigui.length) parti.push(`Ambigui (corrispondono a piu' persone, o piu' file alla stessa persona): ${r.ambigui.join(", ")}.`);
+  if (r.nonAbbinati.length) parti.push(`Nessuna matricola riconosciuta in: ${r.nonAbbinati.join(", ")}.`);
+  if (r.ambigui.length || r.nonAbbinati.length) parti.push("Questi assegnali a mano riga per riga.");
+  $("ced-multi-hint").textContent = parti.join(" ");
+  renderRigheCedolini();
+}
+
+async function caricaCedoliniDelMese(e) {
+  e.preventDefault();
+  const p = periodoCedoliniScelto();
+  if (!p.anno || (p.tipo === "mensile" && !(p.mese >= 1 && p.mese <= 12))) {
+    alert("Anno o mese non validi."); return;
+  }
+  if (!cedoliniPendenti.size) { alert("Non hai scelto nessun file."); return; }
+  const btn = bottoneOccupato("ced-salva", "⏳ Caricamento…");
+  $("ced-progress").hidden = false;
+  let fatti = 0;
+  try {
+    for (const [dipId, file] of cedoliniPendenti) {
+      const d = dipById(dipId);
+      btn.aggiorna(`⏳ ${d ? d.cognome : dipId}…`);
+      // Il percorso lo costruisce l'app dal dipendente_id della riga, MAI da un
+      // input libero: e' la guardia contro il cedolino leggibile dalla persona
+      // sbagliata.
+      const ext = (file.name.split(".").pop() || "pdf").toLowerCase();
+      const path = `cedolini/${dipId}/${p.anno}-${String(p.mese).padStart(2, "0")}-${p.tipo}-${Date.now()}.${ext}`;
+      const up = await sb.storage.from(STORAGE_BUCKET).upload(path, file, {
+        upsert: false, contentType: file.type || "application/octet-stream",
+      });
+      if (up.error) throw new Error(`${d ? d.cognome + " " + d.nome : dipId}: ${up.error.message}`);
+
+      let link;
+      try {
+        link = await generaLinkCedolino(path);
+      } catch (err) {
+        await deleteDoc(path);   // mai lasciare nel bucket un file che nessuna riga referenzia
+        throw err;
+      }
+
+      const esistente = state.cedolini.find((c) => c.dipendente_id === dipId
+        && Number(c.anno) === p.anno && Number(c.mese) === p.mese && c.tipo === p.tipo);
+      const row = {
+        ...(esistente || {}),
+        id: esistente?.id || uid(),
+        dipendente_id: dipId,
+        anno: p.anno, mese: p.mese, tipo: p.tipo,
+        path,
+        url_firmato: link.url_firmato,
+        url_scade_il: link.url_scade_il,
+        caricato_il: new Date().toISOString(),
+      };
+      if (!await sbUpsert("cedolini", row)) {
+        await deleteDoc(path);
+        $("ced-status").textContent = `✕ Interrotto dopo ${fatti} cedolini: salvataggio non riuscito.`;
+        return;
+      }
+      // Il file vecchio si cancella SOLO a salvataggio riuscito, mai prima.
+      if (esistente?.path && esistente.path !== path) await deleteDoc(esistente.path);
+      fatti++;
+    }
+    $("ced-status").textContent = `✓ ${fatti} cedolini caricati.`;
+    cedoliniPendenti = new Map();
+    $("ced-multi-file").value = "";
+    $("ced-multi-hint").textContent = "";
+    renderRigheCedolini();
+    renderAll();
+  } catch (err) {
+    // Ci si ferma al primo errore, come il backup: dire "fatto" a meta' su dei
+    // cedolini vorrebbe dire non sapere piu' chi ha ricevuto cosa.
+    $("ced-status").textContent = `✕ Interrotto dopo ${fatti} cedolini: ${err?.message || err}`;
+    renderAll();
+  } finally {
+    $("ced-progress").hidden = true;
+    btn.ripristina();
+  }
+}
+
+// ---------- Rinnovo dei link ----------
+function cedoliniConLinkDaRinnovare() {
+  return cedoliniDaRinnovare(state.cedolini,
+    parametroInt(state.parametri, "cedolino_giorni_preavviso", 30),
+    state.dipendenti);   // i cessati restano fuori: il loro collegamento e' spento apposta
+}
+
+async function rinnovaLinkCedolini() {
+  const daFare = cedoliniConLinkDaRinnovare();
+  if (!daFare.length) { alert("Nessun link da rinnovare."); return; }
+  if (!confirm(`Rigenerare il collegamento di ${daFare.length} ${daFare.length === 1 ? "cedolino" : "cedolini"}?`
+    + NL + "I dipendenti ritroveranno nel portale quelli che erano scaduti.")) return;
+  const btn = bottoneOccupato("btn-rinnova-link-cedolini", "⏳ Rinnovo…");
+  let fatti = 0;
+  try {
+    for (const c of daFare) {
+      btn.aggiorna(`⏳ ${fatti + 1}/${daFare.length}…`);
+      const link = await generaLinkCedolino(c.path);
+      if (!await sbUpsert("cedolini", { ...c, ...link })) return;
+      fatti++;
+    }
+    alert(`✓ ${fatti} collegamenti rinnovati.`);
+  } catch (err) {
+    alert(`Rinnovo interrotto dopo ${fatti} collegamenti: ${err?.message || err}`);
+  } finally {
+    btn.ripristina();
+    renderAll();
+  }
+}
+
+// ============================================================
+// 3.3 · SCAMBI CON IL CONSULENTE DEL LAVORO
+// Una tabella sola per le due direzioni, perche' la domanda dell'HR e' una:
+// "con lo studio, questo mese, sono a posto?". In entrata LUL, F24, Uniemens,
+// prospetti, CU, 770; in uscita il riepilogo delle variabili del mese, che dalla
+// Fase 4.4 si scrivera' da solo.
+// I tipi e la loro periodicita' stanno in data.js: sono nomi di documenti, non
+// numeri che cambiano con le norme.
+// ============================================================
+const tipiScambio = () => window.TIPI_SCAMBIO_CONSULENTE || [];
+const tipoScambio = (k) => tipiScambio().find((t) => t.key === k) || { key: k, label: k, direzione: "entrata" };
+
+const SIMBOLO_SCAMBIO = { presente: "✓", mancante: "!", futuro: "·" };
+
+function grigliaScambiAnno(anno) {
+  return grigliaScambi({ anno, tipi: tipiScambio(), righe: state.scambiConsulente });
+}
+
+function etichettaPeriodoScambio(mese, anno) {
+  return Number(mese) === 0 ? `anno ${anno}` : `${nomeMese(mese)} ${anno}`;
+}
+
+function renderConsulente() {
+  const anno = state.scambiAnno;
+  const corrente = new Date().getFullYear();
+  const anni = [];
+  for (let y = corrente + 1; y >= corrente - 4; y--) anni.push(y);
+  $("consulente-anno").innerHTML = anni.map((y) =>
+    `<option value="${y}"${y === anno ? " selected" : ""}>${y}</option>`).join("");
+
+  const griglia = grigliaScambiAnno(anno);
+  const mancanti = scambiMancanti(griglia);
+  $("consulente-mancanti").textContent = mancanti === 0
+    ? "Con lo studio sei a posto: non manca niente per quest'anno."
+    : `${mancanti} ${mancanti === 1 ? "casella manca" : "caselle mancano"}: ` + descriviMancanti(griglia);
+
+  const mensili = griglia.filter((r) => !r.annuale);
+  const annuali = griglia.filter((r) => r.annuale);
+
+  const intestazione = `<div class="sc-riga sc-testa">
+      <div>Documento</div>
+      ${(window.MESI || []).map((m) => `<div title="${esc(m)}">${esc(m.slice(0, 3))}</div>`).join("")}
+    </div>`;
+
+  const rigaHtml = (r) => `<div class="sc-riga">
+      <div class="sc-nome"><strong>${esc(r.label)}</strong>
+        <div class="hist-note">${r.direzione === "entrata" ? "dallo studio" : "allo studio"}</div></div>
+      ${r.celle.map((c) => `<button type="button" class="sc-cella ${c.stato}"
+          data-tipo="${esc(r.tipo)}" data-mese="${c.mese}"
+          title="${esc(r.label)} — ${esc(etichettaPeriodoScambio(c.mese, anno))}">${SIMBOLO_SCAMBIO[c.stato]}</button>`).join("")}
+    </div>`;
+
+  $("consulente-grid").innerHTML = intestazione + mensili.map(rigaHtml).join("");
+
+  $("consulente-annuali").innerHTML = annuali.length === 0 ? "" :
+    `<div class="sc-annuali-titolo">Una volta l'anno</div>` +
+    annuali.map((r) => `<div class="sc-annuale">
+        <span class="sc-nome"><strong>${esc(r.label)}</strong></span>
+        <button type="button" class="sc-cella ${r.celle[0].stato}"
+          data-tipo="${esc(r.tipo)}" data-mese="0"
+          title="${esc(r.label)} — anno ${anno}">${SIMBOLO_SCAMBIO[r.celle[0].stato]}</button>
+      </div>`).join("");
+
+  els(".sc-cella").forEach((b) => b.addEventListener("click", () =>
+    openScambioModal(b.dataset.tipo, Number(b.dataset.mese))));
+}
+
+// "manca il LUL di luglio": a parole, non con un numero soltanto. Al massimo
+// quattro, poi "e altri N": un elenco lungo trenta voci non lo legge nessuno.
+function descriviMancanti(griglia) {
+  const voci = [];
+  for (const r of griglia) {
+    for (const c of r.celle) {
+      if (c.stato === "mancante") voci.push(`${r.label} di ${etichettaPeriodoScambio(c.mese, state.scambiAnno)}`);
+    }
+  }
+  const primi = voci.slice(0, 4).join(", ");
+  return voci.length > 4 ? `${primi} e altri ${voci.length - 4}.` : `${primi}.`;
+}
+
+let pendingScambioFile = null;
+
+function openScambioModal(tipoKey, mese) {
+  const t = tipoScambio(tipoKey);
+  const anno = state.scambiAnno;
+  const riga = state.scambiConsulente.find((r) => Number(r.anno) === anno
+    && Number(r.mese) === Number(mese) && r.tipo === tipoKey && r.direzione === t.direzione) || null;
+  $("scambio-title").textContent = t.label;
+  $("scambio-id").value = riga?.id || "";
+  $("scambio-target").textContent =
+    `${t.label} — ${etichettaPeriodoScambio(mese, anno)} · ${t.direzione === "entrata" ? "ricevuto dallo studio" : "mandato allo studio"}`;
+  // Il periodo e il tipo NON si modificano dalla modale: si sceglie la casella.
+  $("scambio-tipo").value = tipoKey;
+  $("scambio-mese").value = String(mese);
+  $("scambio-data").value = riga?.data || localISO(new Date());
+  $("scambio-note").value = riga?.note || "";
+  $("scambio-delete").hidden = !riga;
+  pendingScambioFile = null;
+  $("scambio-doc-file").value = "";
+  $("scambio-doc-upload-label").textContent = "Carica un file";
+  $("scambio-doc-progress").hidden = true;
+  $("scambio-doc-current").hidden = !riga?.path;
+  if (riga?.path) $("scambio-doc-current-name").textContent = `${t.label} — ${etichettaPeriodoScambio(mese, anno)}`;
+  openModal("modal-scambio");
+}
+
+async function saveScambio(e) {
+  e.preventDefault();
+  const tipoKey = $("scambio-tipo").value;
+  const t = tipoScambio(tipoKey);
+  const mese = Number($("scambio-mese").value);
+  const anno = state.scambiAnno;
+  const id = $("scambio-id").value || uid();
+  const prec = state.scambiConsulente.find((r) => r.id === id) || null;
+
+  const oldPath = prec?.path || null;
+  let path = oldPath;
+  let caricato = null;
+  if (pendingScambioFile) {
+    $("scambio-doc-progress").hidden = false;
+    try {
+      const ext = (pendingScambioFile.name.split(".").pop() || "bin").toLowerCase();
+      const nuovo = `consulente/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(nuovo, pendingScambioFile, {
+        upsert: false, contentType: pendingScambioFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      caricato = nuovo;
+      path = nuovo;
+    } catch (err) {
+      $("scambio-doc-progress").hidden = true;
+      alert("Errore caricamento file: " + err.message);
+      return;
+    }
+    $("scambio-doc-progress").hidden = true;
+  }
+
+  const row = {
+    ...(prec || {}),
+    id, anno, mese, tipo: tipoKey, direzione: t.direzione,
+    data: $("scambio-data").value || null,
+    path,
+    note: $("scambio-note").value.trim() || null,
+  };
+  const ok = await sbUpsert("scambi_consulente", row);
+  if (!ok) { if (caricato) await deleteDoc(caricato); return; }
+  // Il file vecchio solo a salvataggio riuscito, mai prima.
+  if (caricato && oldPath && oldPath !== caricato) await deleteDoc(oldPath);
+  pendingScambioFile = null;
+  closeModal("modal-scambio");
+}
+
+async function deleteScambio() {
+  const id = $("scambio-id").value;
+  if (!id) return;
+  const prec = state.scambiConsulente.find((r) => r.id === id);
+  if (!confirm("Togliere questa casella dal registro degli scambi?"
+    + (prec?.path ? NL + "Anche il file allegato viene cancellato." : ""))) return;
+  // Prima la riga, poi il file.
+  if (!await sbDelete("scambi_consulente", id)) return;
+  if (prec?.path) await deleteDoc(prec.path);
+  closeModal("modal-scambio");
 }
 
 // ---------- Adempimento ----------
@@ -3383,7 +3956,7 @@ function appiattisciPerExcel(righe) {
 // L'ordinamento e' obbligatorio: senza, due pagine possono ripetere o saltare righe.
 const PAGINA_BACKUP = 1000;
 async function leggiTabellaIntera(tabella) {
-  const chiave = CHIAVE_ORDINE_BACKUP[tabella] || "id";
+  const chiave = chiaveDi(tabella);
   const righe = [];
   for (let da = 0; ; ) {
     const { data, error } = await sb.from(tabella).select("*")
@@ -3537,6 +4110,19 @@ function collegaDocumentiAiDati(prefissoDip) {
     const et = state.dpiTipi.find((t) => t.id === c.dpi_tipo_id)?.nome || c.dpi_tipo_id || "";
     segna(c.modulo_path, dipById(c.dipendente_id), "Consegna DPI", et, c.data_consegna, "corrente");
   }
+  // 3.2 · I cedolini sono documenti come gli altri: senza questa riga l'indice
+  // del backup li darebbe per "non collegati", cioe' file senza padrone.
+  for (const c of state.cedolini) {
+    segna(c.path, dipById(c.dipendente_id), "Cedolino", etichettaPeriodoCedolino(c),
+      (c.caricato_il || "").slice(0, 10), "corrente");
+  }
+  // 3.3 · Gli scambi con il consulente non sono di NESSUNA persona: la colonna
+  // Dipendente resta vuota di proposito. Senza questo ciclo finirebbero
+  // nell'indice come "non collegati", cioe' file senza padrone.
+  for (const s of state.scambiConsulente) {
+    segna(s.path, null, "Scambio consulente",
+      `${tipoScambio(s.tipo).label} ${etichettaPeriodoScambio(s.mese, s.anno)}`, s.data, "corrente");
+  }
 
   // Fallback per i file del portale: portal/{prefisso}/... . Serve ai documenti
   // caricati dal dipendente e non ancora validati dall'HR, che non sono
@@ -3639,13 +4225,16 @@ function setView(v) {
   $("view-cariche").hidden = v !== "cariche";
   $("view-dipendenti").hidden = v !== "dipendenti";
   $("view-storico").hidden = v !== "storico";
+  $("view-consulente").hidden = v !== "consulente";
   $("view-config").hidden = v !== "config";
   // Topbar contestuale: toggle Lista/Calendario solo nel tab Scadenze (ex-Compliance).
   $("comp-view-toggle").hidden = v !== "compliance";
   const addBtn = $("btn-add");
   if (v === "dipendenti") { addBtn.hidden = false; addBtn.textContent = "+ Nuovo dipendente"; }
   else { addBtn.hidden = true; }
-  $("search-wrap").style.display = v === "config" ? "none" : "";
+  // La ricerca non ha niente da cercare in Configurazione ne' nella griglia del
+  // consulente: un campo che non fa niente e' peggio di un campo assente.
+  $("search-wrap").style.display = (v === "config" || v === "consulente") ? "none" : "";
   closeDrawer();
   renderAll();
 }
@@ -3704,6 +4293,43 @@ function wireEvents() {
   $("btn-backup-documenti").addEventListener("click", backupDocumenti);
   $("btn-scarica-config").addEventListener("click", scaricaConfigurazione);
   $("btn-elimina-dati-prova").addEventListener("click", eliminaDatiDiProva);
+  // 3.2 · Cedolini.
+  $("btn-cedolini-mese").addEventListener("click", openCedoliniModal);
+  $("btn-rinnova-link-cedolini").addEventListener("click", rinnovaLinkCedolini);
+  $("ced-form").addEventListener("submit", caricaCedoliniDelMese);
+  $("ced-close").addEventListener("click", () => closeModal("modal-cedolini"));
+  $("ced-cancel").addEventListener("click", () => closeModal("modal-cedolini"));
+  // Cambiare periodo azzera i file gia' scelti: un file scelto per luglio che
+  // restasse selezionato passando ad agosto verrebbe caricato come cedolino di
+  // agosto, e nessuno se ne accorgerebbe.
+  const cambiaPeriodo = () => { cedoliniPendenti = new Map(); $("ced-multi-hint").textContent = ""; renderRigheCedolini(); };
+  $("ced-anno").addEventListener("change", cambiaPeriodo);
+  $("ced-mese").addEventListener("change", cambiaPeriodo);
+  $("ced-tipo").addEventListener("change", () => { aggiornaMeseCedolini(); cambiaPeriodo(); });
+  $("ced-multi-file").addEventListener("change", (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length) abbinaFileScelti(files);
+  });
+  $("dip-cedolini-toggle").addEventListener("click", () => toggleSection("dip-cedolini-toggle", "dip-cedolini-list"));
+
+  // 3.3 · Scambi con il consulente.
+  $("consulente-anno").addEventListener("change", (e) => {
+    state.scambiAnno = Number(e.target.value);
+    renderConsulente();
+  });
+  $("scambio-form").addEventListener("submit", saveScambio);
+  $("scambio-close").addEventListener("click", () => closeModal("modal-scambio"));
+  $("scambio-cancel").addEventListener("click", () => closeModal("modal-scambio"));
+  $("scambio-delete").addEventListener("click", deleteScambio);
+  $("scambio-doc-file").addEventListener("change", (e) => {
+    const file = e.target.files?.[0] || null;
+    pendingScambioFile = file;
+    $("scambio-doc-upload-label").textContent = file ? `📄 ${file.name} (salva per caricare)` : "Carica un file";
+  });
+  $("scambio-doc-open").addEventListener("click", async () => {
+    const r = state.scambiConsulente.find((x) => x.id === $("scambio-id").value);
+    await openSignedDoc(r?.path);
+  });
 
   $("btn-add").addEventListener("click", () => {
     if (state.view === "dipendenti") openDipModal(null);
@@ -3745,6 +4371,11 @@ function wireEvents() {
   $("add-categoria").addEventListener("click", () => openCategoriaModal(null));
   $("add-tipo").addEventListener("click", () => openTipoModal(null));
   $("add-requisito").addEventListener("click", () => openReqModal(null));
+
+  // Modale parametro (3.1).
+  $("param-form").addEventListener("submit", saveParametro);
+  $("param-close").addEventListener("click", () => closeModal("modal-parametro"));
+  $("param-cancel").addEventListener("click", () => closeModal("modal-parametro"));
 
   // Modale categoria.
   $("cat-form").addEventListener("submit", saveCategoria);
@@ -3815,6 +4446,11 @@ function wireEvents() {
   $("invite-close").addEventListener("click", () => closeModal("modal-invite"));
   $("invite-done").addEventListener("click", () => closeModal("modal-invite"));
   $("invite-copy").addEventListener("click", copyInviteLink);
+  // 3.1 · "Rigenera link" chiama LA STESSA funzione del bottone della scheda:
+  // create_invite_token cancella gia' il token precedente, quindi "genera" e
+  // "rigenera" sono la stessa azione. Il bottone qui evita di dover chiudere e
+  // riaprire la scheda per rifarlo.
+  $("invite-rigenera").addEventListener("click", inviaInvitoSelfService);
   $("invite-link").addEventListener("focus", (e) => e.target.select());
   $("dip-history-toggle").addEventListener("click", () => toggleSection("dip-history-toggle", "dip-history-list"));
   $("dip-modifiche-toggle").addEventListener("click", () => toggleSection("dip-modifiche-toggle", "dip-modifiche-list"));

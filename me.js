@@ -1,17 +1,18 @@
 // ============================================================
-// HR Overland — Portale self-service (me.html) — versione c4
+// HR Overland — Portale self-service (me.html) — versione c5
 // Auth basata su TOKEN passato nell'URL (?token=xxx). Niente login email.
 // L'HR genera il token, manda il link come vuole (WhatsApp/Outlook/SMS).
 // Tutte le operazioni passano da RPC SECURITY DEFINER che validano il token.
 // ============================================================
-console.log("[me.js] versione c4 caricata");
+console.log("[me.js] versione c5 caricata");
 
 const state = {
   token: null,
   dipendente: null,
-  tipiDoc: [],
+  tipi: [],           // 3.4 · tutto il catalogo dei tipi di requisito (prima del blocco B: solo i documenti)
   adempimenti: [],
   onboardItems: [],   // voci che il dipendente deve gestire dal portale
+  cedolini: [],       // 3.2 · i cedolini della persona, con il loro collegamento firmato
   uploadPrefix: null, // prefisso casuale dell'invito: i file vivono sotto portal/{prefisso}/
 };
 
@@ -92,7 +93,7 @@ async function loadMyData() {
   setLoadingStep("Carico i tuoi documenti…");
   const rTipi = await rpcT("self_get_tipi_documenti", { t: state.token }, 4000, "self_get_tipi_documenti");
   if (rTipi.error) console.warn("tipi_documenti skipped:", rTipi.error.message);
-  state.tipiDoc = rTipi.data || [];
+  state.tipi = rTipi.data || [];
 
   const rAd = await rpcT("self_get_adempimenti", { t: state.token }, 4000, "self_get_adempimenti");
   if (rAd.error) console.warn("adempimenti skipped:", rAd.error.message);
@@ -103,11 +104,22 @@ async function loadMyData() {
     populateLookups();
     renderForm();
     renderDocs();
+    renderAttestati();
   } catch (err) {
     console.error("Errore nel rendering iniziale:", err);
   } finally {
     showApp();   // anagrafica + documenti identificativi visibili comunque
   }
+
+  // 3.2 · Cedolini. Opzionale come le altre: se la RPC non c'e' ancora (portale
+  // aperto fra migrazione e deploy) la sezione resta nascosta e il resto funziona.
+  const rCed = await rpcT("self_get_cedolini", { t: state.token }, 4000, "self_get_cedolini");
+  if (rCed.error) console.warn("cedolini skipped:", rCed.error.message);
+  state.cedolini = rCed.data || [];
+  // Il render va DOPO la risposta, non prima: la chiamata sta qui, sotto
+  // showApp(), per non rallentare la prima schermata, e disegnare la sezione
+  // insieme alle altre la lascerebbe vuota e quindi nascosta per sempre.
+  renderCedolini();
 
   // OPZIONALE — Onboarding self-service (richiede iter_b1_accettazioni.sql).
   // Se non disponibile, le 2 sezioni nuove restano nascoste, il resto funziona.
@@ -217,13 +229,22 @@ async function saveMyData(e) {
 // ============================================================
 // DOCUMENTI IDENTIFICATIVI
 // ============================================================
+// I DOCUMENTI D'IDENTITA' sono i tipi di categoria "documenti": sono gli unici
+// che il dipendente carica dal portale. Il filtro sta qui e non nella RPC perche'
+// dalla Fase 3.4 la RPC deve restituire tutto il catalogo, per dare un nome agli
+// attestati nella sezione piu' sotto.
+function tipiIdentificativi() {
+  return state.tipi.filter((t) => t.categoria === "documenti");
+}
+
 function renderDocs() {
   const host = $("me-docs-list");
-  if (!state.tipiDoc.length) {
+  const tipiDoc = tipiIdentificativi();
+  if (!tipiDoc.length) {
     host.innerHTML = '<div class="muted">Nessun tipo di documento configurato.</div>';
     return;
   }
-  host.innerHTML = state.tipiDoc.map((t) => {
+  host.innerHTML = tipiDoc.map((t) => {
     const mio = state.adempimenti.find((a) => a.tipo_requisito_id === t.id);
     let stato;
     if (mio?.data_rilascio) stato = mio.data_scadenza ? `✅ Verificato — scade il ${fmtDate(mio.data_scadenza)}` : "✅ Verificato";
@@ -314,6 +335,120 @@ async function saveDoc(e, row) {
     data_rilascio: null, data_scadenza: null, documento_path, done: false, history: [], note: null,
   });
   renderDocs();   // subito: niente finestra da 1200ms per il doppio click
+}
+
+// ============================================================
+// 3.2 · I MIEI CEDOLINI
+// Le righe arrivano dalla RPC self_get_cedolini, che restituisce solo quelle
+// della persona del token e non restituisce il percorso del file: il portale non
+// tocca lo storage, apre il collegamento firmato che l'HR ha generato quando ha
+// caricato il cedolino. Dalla Fase 1b il ruolo anon non ha nessuna policy di
+// lettura sul bucket, e non deve riaverla.
+// ============================================================
+function nomePeriodoCedolino(c) {
+  const mesi = window.MESI || [];
+  if (c.tipo === "tredicesima") return `Tredicesima ${c.anno}`;
+  if (c.tipo === "cu") return `Certificazione Unica ${c.anno}`;
+  return `${mesi[Number(c.mese) - 1] || c.mese} ${c.anno}`;
+}
+
+function renderCedolini() {
+  const section = $("me-cedolini-section");
+  const host = $("me-cedolini-list");
+  if (!section || !host) return;   // HTML vecchio in cache: esco in silenzio
+  if (!state.cedolini.length) { section.hidden = true; return; }
+  section.hidden = false;
+
+  // Raggruppati per anno, l'anno piu' recente in cima: e' come li cerca chi li
+  // apre ("il cedolino di marzo"), non come li ha caricati l'ufficio.
+  const perAnno = new Map();
+  for (const c of state.cedolini) {
+    const lista = perAnno.get(c.anno) || [];
+    lista.push(c);
+    perAnno.set(c.anno, lista);
+  }
+  const anni = [...perAnno.keys()].sort((a, b) => b - a);
+
+  host.innerHTML = anni.map((anno) => {
+    const righe = perAnno.get(anno).slice().sort((a, b) => b.mese - a.mese);
+    return `<div class="me-anno">
+      <div class="me-anno-titolo">${esc(anno)}</div>
+      ${righe.map((c) => {
+        // Un collegamento SCADUTO e' un collegamento che non c'e': presentarlo
+        // come "pronto da aprire" farebbe cliccare il dipendente per ricevere un
+        // errore dallo storage. linkCedolinoDaRinnovare con preavviso 0 e'
+        // esattamente questa domanda, ed e' gia' coperta dai test di common.js.
+        const apribile = !linkCedolinoDaRinnovare(c, 0);
+        return `<div class="me-doc-row">
+        <div class="me-doc-head">
+          <div>
+            <div class="me-doc-nome">🧾 ${esc(nomePeriodoCedolino(c))}</div>
+            <div class="me-doc-stato">${apribile
+              ? "Caricato il " + esc(fmtDate(String(c.caricato_il || "").slice(0, 10)))
+              : "Non disponibile: chiedi all'ufficio del personale di rifare il collegamento"}</div>
+          </div>
+          ${apribile
+            ? `<a class="ghost-btn" href="${esc(c.url_firmato)}" target="_blank" rel="noopener">📄 Apri</a>`
+            : ""}
+        </div>
+      </div>`;
+      }).join("")}
+    </div>`;
+  }).join("");
+}
+
+// ============================================================
+// 3.4 · I MIEI ATTESTATI E IDONEITA'
+// Il dipendente vede quando gli scade il carrello, senza telefonare all'ufficio.
+// Sola lettura: nessun bottone. Le date le registra l'HR quando valida.
+//
+// Il semaforo e' `classificaStato` di common.js, LA STESSA che disegna il
+// cruscotto dell'HR. Una seconda regola qui vorrebbe dire che un giorno il
+// portale dice "in regola" e l'app dice "scaduto" per la stessa riga.
+//
+// Prima del blocco B della migrazione la RPC restituisce solo i tipi di
+// documento d'identita': gli attestati non hanno un nome da mostrare, la lista
+// resta vuota e la sezione non compare. E' il degrado voluto, non un errore.
+// ============================================================
+const SEMAFORO = {
+  ok:          { icona: "✅", testo: "In regola" },
+  in_scadenza: { icona: "🟠", testo: "In scadenza" },
+  scaduto:     { icona: "🔴", testo: "Scaduto" },
+};
+
+function renderAttestati() {
+  const section = $("me-attestati-section");
+  const host = $("me-attestati-list");
+  if (!section || !host) return;   // HTML vecchio in cache: esco in silenzio
+
+  const identificativi = new Set(tipiIdentificativi().map((t) => t.id));
+  const righe = state.adempimenti
+    // corrente === false = ciclo superato, tenuto come prova storica: nel portale
+    // non ci va, o un attestato del 2016 sembrerebbe quello valido.
+    .filter((a) => a.corrente !== false && !identificativi.has(a.tipo_requisito_id))
+    .map((a) => ({ a, tipo: state.tipi.find((t) => t.id === a.tipo_requisito_id) }))
+    .filter((r) => r.tipo)
+    .sort((x, y) => (x.a.data_scadenza || "9999-99-99").localeCompare(y.a.data_scadenza || "9999-99-99"));
+
+  if (!righe.length) { section.hidden = true; return; }
+  section.hidden = false;
+
+  host.innerHTML = righe.map(({ a, tipo }) => {
+    const stato = classificaStato(!!a.data_rilascio, a.data_scadenza || null);
+    const s = SEMAFORO[stato] || SEMAFORO.scaduto;
+    let quando;
+    if (!a.data_rilascio) quando = "Non ancora registrato dall'ufficio del personale";
+    else if (a.data_scadenza) quando = `Scade il ${fmtDate(a.data_scadenza)}`;
+    else quando = "Non scade";
+    return `<div class="me-doc-row">
+      <div class="me-doc-head">
+        <div>
+          <div class="me-doc-nome">${esc(tipo.icon || "📘")} ${esc(tipo.nome)}</div>
+          <div class="me-doc-stato">${esc(s.icona)} ${esc(s.testo)} · ${esc(quando)}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
 }
 
 // ============================================================

@@ -693,6 +693,113 @@ body {
 /* 2.1 · Voci di checklist: una colonna in piu' (Fase) rispetto a cfg-cols-tipi.
    Riusare cfg-cols-tipi, che ha quattro colonne, manderebbe a capo la quinta. */
 .cfg-cols-onb     { grid-template-columns: minmax(180px,2fr) 90px 90px 130px minmax(140px,1.4fr); }
+/* 3.1 · Parametri: nome, valore, a cosa serve. */
+.cfg-cols-param   { grid-template-columns: minmax(200px,1.4fr) 120px minmax(200px,2fr); }
+
+/* ---------- 3.2 · Cedolini ---------- */
+/* Il bottone e il pallino dei collegamenti da rinnovare stanno affiancati: il
+   pallino NON puo' stare dentro al bottone, perche' renderCounts ne riscrive
+   l'etichetta a ogni giro e lo cancellerebbe. */
+.sidebar-cedolini { display: flex; align-items: center; gap: 6px; }
+.sidebar-cedolini .ghost-btn { flex: 1; }
+.sidebar-cedolini .mod-count { background: var(--red); color: #fff; }
+
+.ced-elenco {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.ced-riga {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.6fr) minmax(140px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--line);
+}
+.ced-riga:first-child { border-top: 0; }
+.ced-scelto { font-size: 12px; color: var(--brand-ink); word-break: break-all; }
+.ced-file-label { margin: 0; }
+.ced-file-label > span { font-size: 11px; color: var(--ink-soft); }
+.ced-file-label input[type=file] { max-width: 190px; }
+/* Mese spento quando il tipo lo decide da solo (tredicesima, CU). */
+label.disattivato { opacity: .45; }
+
+/* ---------- 3.3 · Griglia degli scambi con il consulente ---------- */
+.sc-anno-label { display: flex; align-items: center; gap: 8px; margin: 0; }
+.sc-anno-label > span { font-size: 12px; color: var(--ink-soft); }
+.sc-mancanti { font-weight: 600; }
+.sc-griglia {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow-x: auto;
+}
+.sc-riga {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(12, minmax(34px, 1fr));
+  align-items: center;
+  gap: 4px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--line);
+  min-width: 640px;
+}
+.sc-riga:first-child { border-top: 0; }
+.sc-testa {
+  background: #fafbfd;
+  font-size: 11px;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.sc-testa > div { text-align: center; }
+.sc-testa > div:first-child { text-align: left; }
+.sc-nome { font-size: 13px; }
+.sc-cella {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  padding: 5px 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+.sc-cella:hover { outline: 2px solid var(--brand-soft); }
+.sc-cella.presente { background: #dcfce7; border-color: #86efac; color: #166534; }
+.sc-cella.mancante { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.sc-cella.futuro   { background: #f8fafc; color: #94a3b8; }
+.sc-annuali { margin-top: 14px; }
+.sc-annuali-titolo {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+}
+.sc-annuale {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 6px;
+}
+.sc-annuale .sc-cella { min-width: 44px; }
+.sc-annuale .sc-nome { flex: 1; }
+
+/* 3.2 · Portale: i cedolini raggruppati per anno. */
+.me-anno + .me-anno { margin-top: 14px; }
+.me-anno-titolo {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  letter-spacing: .04em;
+  margin: 0 0 6px;
+}
 
 /* ---------- Modal ---------- */
 .modal {
@@ -1390,6 +1497,10 @@ body.self-service { background: var(--bg); }
   .cfg-cols-tipi > *:nth-child(3), .cfg-cols-tipi > *:nth-child(4) { display: none; }
   .cfg-cols-ruoli { grid-template-columns: 1fr auto; }
   .cfg-cols-ruoli > *:nth-child(3) { display: none; }
+  .ced-riga { grid-template-columns: 1fr; gap: 4px; }
+  .ced-file-label input[type=file] { max-width: 100%; }
+  .cfg-cols-param { grid-template-columns: 1fr auto; }
+  .cfg-cols-param > *:nth-child(3) { display: none; }
   .cfg-cols-onb { grid-template-columns: 1fr auto; }
   .cfg-cols-onb > *:nth-child(3), .cfg-cols-onb > *:nth-child(4),
   .cfg-cols-onb > *:nth-child(5) { display: none; }

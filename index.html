@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HR Overland — Compliance personale</title>
-<link rel="stylesheet" href="style.css?v=b7">
+<link rel="stylesheet" href="style.css?v=b8">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous" defer></script>
 </head>
@@ -73,6 +73,10 @@
         <span class="mod-ico">📜</span><span>Storico</span>
         <span class="mod-count" id="count-storico">0</span>
       </button>
+      <button class="module-btn" data-view="consulente">
+        <span class="mod-ico">🧮</span><span>Consulente</span>
+        <span class="mod-count" id="count-consulente">0</span>
+      </button>
       <button class="module-btn" data-view="config">
         <span class="mod-ico">⚙️</span><span>Configurazione</span>
       </button>
@@ -80,6 +84,10 @@
 
     <div class="sidebar-foot">
       <button class="ghost-btn" id="btn-export">⬇ Export Excel</button>
+      <div class="sidebar-cedolini">
+        <button class="ghost-btn" id="btn-cedolini-mese" title="Carica i cedolini di un mese: una riga per dipendente, un file per riga.">🧾 Cedolini</button>
+        <span class="mod-count" id="count-link-cedolini" title="Collegamenti dei cedolini scaduti o in scadenza: rinnovali da Configurazione." hidden>0</span>
+      </div>
       <button class="ghost-btn" id="btn-backup-dati" title="Tutti i dati dell'app in Excel + JSON. Salvalo nella cartella Backup app dell'archivio.">💾 Backup dati</button>
       <button class="ghost-btn" id="btn-backup-documenti" title="Tutti i documenti caricati nell'app, con l'indice di chi e cosa. Salvalo nella cartella Backup app dell'archivio.">📦 Backup documenti</button>
       <div class="sidebar-user">
@@ -242,6 +250,20 @@
       </section>
     </section>
 
+    <!-- ============ VISTA CONSULENTE (3.3) ============ -->
+    <section class="view" id="view-consulente" hidden>
+      <div class="config-toolbar">
+        <h3>Scambi con il consulente del lavoro</h3>
+        <label class="sc-anno-label"><span>Anno</span><select id="consulente-anno"></select></label>
+      </div>
+      <p class="cfg-hint">Una casella per ogni documento e per ogni mese.
+        <strong>✓</strong> c'è, <strong>!</strong> manca, <strong>·</strong> il mese non è ancora finito.
+        Clicca una casella per segnare la data, allegare il file o togliere la spunta.</p>
+      <p class="cfg-hint sc-mancanti" id="consulente-mancanti">—</p>
+      <div class="sc-griglia" id="consulente-grid"></div>
+      <div class="sc-annuali" id="consulente-annuali"></div>
+    </section>
+
     <!-- ============ VISTA CONFIGURAZIONE ============ -->
     <section class="view" id="view-config" hidden>
       <div class="config-tabs">
@@ -251,12 +273,14 @@
         <button class="ct-btn" data-ctab="matrice">🔗 Matrice ruolo → requisiti</button>
         <button class="ct-btn" data-ctab="onboarding">✅ Onboarding</button>
         <button class="ct-btn" data-ctab="modelli">📄 Modelli documento</button>
+        <button class="ct-btn" data-ctab="parametri">🎚 Parametri</button>
       </div>
 
       <div class="config-toolbar">
         <h3>Configurazione</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="ghost-btn" id="btn-scarica-config" title="Scarica ruoli, tipi di requisito, matrice, categorie, voci di onboarding, modelli e DPI in un file JSON. Fallo prima di ogni modifica.">⬇ Scarica configurazione</button>
+          <button class="ghost-btn" id="btn-rinnova-link-cedolini" hidden title="I collegamenti che il dipendente usa per aprire i suoi cedolini scadono: questo li rifa'.">🔗 Rinnova i collegamenti dei cedolini</button>
           <button class="ghost-btn danger" id="btn-elimina-dati-prova" hidden title="Cancella le persone finte caricate per esercitarsi, con tutti i loro dati e documenti.">🧹 Elimina i dati di prova</button>
         </div>
       </div>
@@ -303,6 +327,17 @@
         </div>
         <p class="cfg-hint">Queste voci vengono assegnate automaticamente a ogni nuovo dipendente. La data di scadenza si calcola sommando i giorni indicati alla sua data di assunzione.</p>
         <div class="cfg-table" id="onboard-items-table"></div>
+      </div>
+
+      <div class="config-panel" id="cfg-parametri" hidden>
+        <div class="config-toolbar">
+          <h3>Parametri</h3>
+        </div>
+        <p class="cfg-hint">I numeri che cambiano con le norme o con le scelte aziendali:
+          quanto dura il link del portale, quanto durano i collegamenti ai cedolini.
+          Cambiarli qui <strong>non richiede di toccare il programma</strong>.
+          Il nome del parametro non si modifica: lo conosce il programma che lo legge.</p>
+        <div class="cfg-table" id="parametri-table"></div>
       </div>
 
       <div class="config-panel" id="cfg-matrice" hidden>
@@ -539,6 +574,15 @@
           <button type="button" class="ghost-btn" id="dip-provv-add" style="margin-left:8px">+ Nuovo</button>
         </button>
         <div id="dip-provv-list" hidden></div>
+      </div>
+
+      <div id="dip-cedolini-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-cedolini-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>🧾 Cedolini</span>
+          <span class="history-count" id="dip-cedolini-count">0</span>
+        </button>
+        <div id="dip-cedolini-list" hidden></div>
       </div>
 
       </div><!-- /registro -->
@@ -933,10 +977,107 @@
       <p class="cfg-hint" id="invite-status"></p>
       <div class="modal-foot">
         <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="invite-rigenera" title="Ne crea uno nuovo: quello di adesso smette subito di funzionare">🔄 Rigenera link</button>
         <button type="button" class="ghost-btn" id="invite-copy">📋 Copia link</button>
         <button type="button" class="primary-btn" id="invite-done">Chiudi</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ============ MODALE SCAMBIO CON IL CONSULENTE (3.3) ============ -->
+<div id="modal-scambio" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><h2 id="scambio-title">Scambio</h2><button class="icon-btn" id="scambio-close">✕</button></div>
+    <form id="scambio-form" class="modal-body">
+      <input type="hidden" id="scambio-id">
+      <input type="hidden" id="scambio-tipo">
+      <input type="hidden" id="scambio-mese">
+      <div class="done-target" id="scambio-target">—</div>
+      <label><span>Data</span><input type="date" id="scambio-data"></label>
+      <fieldset class="recur doc-block">
+        <legend>Documento (facoltativo)</legend>
+        <div id="scambio-doc-current" class="doc-current" hidden>
+          <span id="scambio-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="scambio-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="scambio-doc-upload-label">Carica un file</span>
+          <input type="file" id="scambio-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="scambio-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <label><span>Note</span><textarea id="scambio-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="scambio-delete" hidden>🗑 Togli la spunta</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="scambio-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE CARICA I CEDOLINI DEL MESE (3.2) ============ -->
+<div id="modal-cedolini" class="modal" hidden>
+  <div class="modal-card" style="max-width:860px">
+    <div class="modal-head">
+      <h2>🧾 Carica i cedolini del mese</h2>
+      <button class="icon-btn" id="ced-close">✕</button>
+    </div>
+    <form id="ced-form" class="modal-body">
+      <div class="row">
+        <label><span>Anno *</span><input type="number" id="ced-anno" min="2000" max="2100" step="1" required></label>
+        <label id="ced-mese-wrap"><span>Mese *</span><select id="ced-mese"></select></label>
+        <label><span>Tipo *</span><select id="ced-tipo"></select></label>
+      </div>
+      <p class="cfg-hint">La tredicesima e la Certificazione Unica non hanno un mese da scegliere:
+        vale l'anno.</p>
+
+      <fieldset class="recur doc-block">
+        <legend>Scegli tutti i file insieme (facoltativo)</legend>
+        <p class="cfg-hint">Se i file hanno la <strong>matricola nel nome</strong>
+          (per esempio <code>004_luglio.pdf</code>), selezionandoli tutti insieme
+          l'app li mette da sola sulla riga giusta. Controlla comunque riga per riga
+          prima di salvare: quello che non riconosce te lo scrive qui sotto.</p>
+        <label class="doc-upload">
+          <span>Scegli piu' file</span>
+          <input type="file" id="ced-multi-file" accept=".pdf,image/*" multiple>
+        </label>
+        <p class="cfg-hint" id="ced-multi-hint"></p>
+      </fieldset>
+
+      <div class="ced-elenco" id="ced-rows"></div>
+      <div id="ced-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      <p class="cfg-hint" id="ced-status"></p>
+
+      <div class="modal-foot">
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="ced-cancel">Chiudi</button>
+        <button type="submit" class="primary-btn" id="ced-salva">Carica i cedolini scelti</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE PARAMETRO (3.1) ============ -->
+<div id="modal-parametro" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head"><h2 id="param-title">Parametro</h2><button class="icon-btn" id="param-close">✕</button></div>
+    <form id="param-form" class="modal-body">
+      <label><span>Nome del parametro</span><input type="text" id="param-chiave" readonly></label>
+      <label><span>Valore *</span><input type="text" id="param-valore" required></label>
+      <label><span>A cosa serve</span><textarea id="param-descrizione" rows="3"></textarea></label>
+      <p class="cfg-hint">I valori sono <strong>numeri interi</strong> (giorni). Se scrivi
+        qualcos'altro, il programma torna al suo valore di sicurezza invece di sbagliare i conti.</p>
+      <div class="modal-foot">
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="param-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1005,8 +1146,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
-<script src="data.js?v=c2"></script>
-<script src="common.js?v=c7"></script>
-<script src="app.js?v=c9"></script>
+<script src="data.js?v=c3"></script>
+<script src="common.js?v=c8"></script>
+<script src="app.js?v=c10"></script>
 </body>
 </html>
