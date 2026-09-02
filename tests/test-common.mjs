@@ -24,6 +24,8 @@ const { classificaStato, calcolaGap, avvisoScadenza,
         normalizzaPeriodoCedolino, linkCedolinoDaRinnovare, cedoliniDaRinnovare,
         contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, inForzaNellAnno, conteggioCedoliniDelMese,
         grigliaScambi, scambiMancanti,
+        giorniDiEvento, contaGiorniEvento, eventiDelMese, richiesteDaApprovare,
+        promemoriaInail, validaRichiesta, conteggioComporto, saldoDichiarato,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -751,5 +753,154 @@ assert.equal(grBis[0].celle[1].stato, "futuro");
 assert.deepEqual(grigliaScambi({ anno: 2026, tipi: [], righe: [], oggiISO: "2026-07-15" }), []);
 assert.equal(scambiMancanti([]), 0);
 assert.equal(scambiMancanti(null), 0);
+
+// ============================================================
+// 4.1-4.5 · Eventi del mese.
+// Ogni numero qui sotto finisce o sul file che va al consulente del lavoro, o
+// nella riga del comporto che l'HR guarda prima di una decisione grave. Nessuno
+// di questi errori darebbe un messaggio: darebbe un numero sbagliato.
+// ============================================================
+
+// --- giorniDiEvento: `al` vuoto = UN GIORNO SOLO, non "ancora in corso" ---
+assert.deepEqual(giorniDiEvento({ dal: "2026-07-10" }), ["2026-07-10"]);
+assert.deepEqual(giorniDiEvento({ dal: "2026-07-10", al: null }), ["2026-07-10"]);
+assert.deepEqual(giorniDiEvento({ dal: "2026-07-10", al: "2026-07-12" }),
+  ["2026-07-10", "2026-07-11", "2026-07-12"]);
+// Estremi COMPRESI: una settimana lunedi'-domenica vale 7 giorni di calendario.
+assert.equal(contaGiorniEvento({ dal: "2026-07-06", al: "2026-07-12" }), 7);
+// Attraversa il mese e l'anno, e il 29 febbraio esiste.
+assert.equal(contaGiorniEvento({ dal: "2026-12-30", al: "2027-01-02" }), 4);
+assert.equal(contaGiorniEvento({ dal: "2024-02-28", al: "2024-03-01" }), 3);
+// Riga incoerente (al prima di dal): nessun giorno, non un ciclo infinito.
+assert.deepEqual(giorniDiEvento({ dal: "2026-07-10", al: "2026-07-01" }), []);
+assert.deepEqual(giorniDiEvento(null), []);
+assert.deepEqual(giorniDiEvento({ dal: null }), []);
+// La finestra taglia, non sposta: e' quello che fanno il calendario, l'export e
+// il comporto, e i tre devono dare lo stesso numero.
+assert.equal(contaGiorniEvento({ dal: "2026-06-28", al: "2026-07-04" }, "2026-07-01", "2026-07-31"), 4);
+assert.equal(contaGiorniEvento({ dal: "2026-06-28", al: "2026-07-04" }, "2026-06-01", "2026-06-30"), 3);
+// Evento tutto fuori dalla finestra.
+assert.deepEqual(giorniDiEvento({ dal: "2026-05-01", al: "2026-05-03" }, "2026-07-01", "2026-07-31"), []);
+// Un anno sbagliato non blocca la pagina: il ciclo ha un tetto.
+assert.ok(giorniDiEvento({ dal: "2026-01-01", al: "2999-12-31" }).length <= 1100);
+
+// --- eventiDelMese: TOCCANO il mese, non ci cominciano ---
+const evMese = [
+  { id: "a", dal: "2026-06-28", al: "2026-07-04" },   // a cavallo: dentro
+  { id: "b", dal: "2026-07-15", al: null },           // un giorno solo: dentro
+  { id: "c", dal: "2026-08-01", al: "2026-08-03" },   // mese dopo: fuori
+  { id: "d", dal: "2026-05-01", al: "2026-06-30" },   // finisce il giorno prima: fuori
+  { id: "e", dal: "2026-07-31", al: "2026-08-10" },   // comincia l'ultimo giorno: dentro
+];
+assert.deepEqual(eventiDelMese(evMese, 2026, 7).map((e) => e.id), ["a", "b", "e"]);
+assert.deepEqual(eventiDelMese(evMese, 2026, 13), []);   // mese finto: niente
+assert.deepEqual(eventiDelMese(evMese, 2026, 0), []);
+assert.deepEqual(eventiDelMese(null, 2026, 7), []);
+// Febbraio bisestile: l'ultimo giorno del mese e' dentro.
+assert.equal(eventiDelMese([{ id: "f", dal: "2024-02-29" }], 2024, 2).length, 1);
+
+// --- richiesteDaApprovare: una lista sola per il contatore e per l'elenco ---
+const evStati = [{ stato: "richiesto" }, { stato: "approvato" }, { stato: "richiesto" }, { stato: "rifiutato" }];
+assert.equal(richiesteDaApprovare(evStati).length, 2);
+assert.equal(richiesteDaApprovare([]).length, 0);
+assert.equal(richiesteDaApprovare(null).length, 0);
+
+// --- promemoriaInail: l'allegato lo spegne, e resta spento per sempre ---
+assert.equal(promemoriaInail({ tipo: "ferie", dal: iso(-1) }, 2), null);
+assert.equal(promemoriaInail(null, 2), null);
+const inailIeri = promemoriaInail({ tipo: "infortunio", dal: iso(-10) }, 2);
+assert.equal(inailIeri.scadenza, iso(-8));
+assert.equal(inailIeri.stato, "scaduto");                       // termine passato, niente scheda
+const inailFatto = promemoriaInail({ tipo: "infortunio", dal: iso(-10), documento_path: "eventi/x/1.pdf" }, 2);
+assert.equal(inailFatto.stato, "ok");                           // allegata DOPO il termine: ok lo stesso
+// La trappola che questo test esiste per impedire: con classificaStato(true, ...)
+// e la soglia a 60 giorni, "ok" non sarebbe mai uscito.
+assert.notEqual(inailFatto.stato, classificaStato(true, inailFatto.scadenza));
+const inailOggi = promemoriaInail({ tipo: "infortunio", dal: iso(0) }, 2);
+assert.equal(inailOggi.stato, "in_scadenza");                   // termine non ancora passato
+assert.equal(promemoriaInail({ tipo: "infortunio", dal: iso(0) }, null).scadenza, iso(2)); // ripiego 2
+
+// --- validaRichiesta: la stessa regola della RPC, dal lato di chi scrive ---
+const CONSENTITI = ["ferie", "permesso"];
+const vr = (o) => validaRichiesta({ tipiConsentiti: CONSENTITI, giorniIndietro: 30, oggiISO: "2026-07-15", ...o });
+assert.equal(vr({ tipo: "ferie", dal: "2026-07-20", al: "2026-07-24" }), null);
+assert.equal(vr({ tipo: "ferie", dal: "2026-07-20" }), null);                    // al vuoto: un giorno
+assert.ok(vr({ tipo: "malattia", dal: "2026-07-20" }));                          // tipo non consentito
+assert.ok(vr({ tipo: "", dal: "2026-07-20" }));
+assert.ok(vr({ tipo: "ferie", dal: "" }));                                       // manca il primo giorno
+assert.ok(vr({ tipo: "ferie", dal: "2026-07-24", al: "2026-07-20" }));           // al prima di dal
+assert.ok(vr({ tipo: "ferie", dal: "2026-06-14" }));                             // 31 giorni indietro: no
+assert.equal(vr({ tipo: "ferie", dal: "2026-06-15" }), null);                    // 30 esatti: si'
+assert.ok(vr({ tipo: "ferie", dal: "2026-07-20", al: "2027-08-01" }));           // periodo troppo lungo
+// Senza il limite (non ancora arrivato da self_get) la regola non inventa numeri.
+assert.equal(validaRichiesta({ tipo: "ferie", dal: "2020-01-01", tipiConsentiti: CONSENTITI,
+  giorniIndietro: null, oggiISO: "2026-07-15" }), null);
+
+// --- conteggioComporto: giorni nella finestra mobile, senza doppioni ---
+const comporto = (eventi, o = {}) => conteggioComporto({
+  eventiDellaPersona: eventi, finestraMesi: 12, soglia: 180, percentuale: 80,
+  oggiISO: "2026-07-15", ...o,
+});
+assert.equal(comporto([]).giorni, 0);
+assert.equal(comporto([]).stato, "ok");
+assert.equal(comporto([{ tipo: "malattia", stato: "approvato", dal: "2026-07-01", al: "2026-07-05" }]).giorni, 5);
+// Solo malattia, solo approvata.
+assert.equal(comporto([{ tipo: "ferie", stato: "approvato", dal: "2026-07-01", al: "2026-07-05" }]).giorni, 0);
+assert.equal(comporto([{ tipo: "malattia", stato: "richiesto", dal: "2026-07-01", al: "2026-07-05" }]).giorni, 0);
+// A cavallo dell'inizio della finestra: contano solo i giorni dentro.
+// Finestra: dal 2025-07-15 al 2026-07-15.
+assert.equal(comporto([{ tipo: "malattia", stato: "approvato", dal: "2025-07-10", al: "2025-07-20" }]).giorni, 6);
+// Tutta prima della finestra: zero.
+assert.equal(comporto([{ tipo: "malattia", stato: "approvato", dal: "2025-01-01", al: "2025-01-31" }]).giorni, 0);
+// Due malattie sovrapposte non contano due volte lo stesso giorno.
+assert.equal(comporto([
+  { tipo: "malattia", stato: "approvato", dal: "2026-07-01", al: "2026-07-05" },
+  { tipo: "malattia", stato: "approvato", dal: "2026-07-03", al: "2026-07-07" },
+]).giorni, 7);
+// Un giorno solo con `al` vuoto.
+assert.equal(comporto([{ tipo: "malattia", stato: "approvato", dal: "2026-07-02" }]).giorni, 1);
+// Le tre soglie: 143 = ok, 144 = avviso (80% di 180), 180 = superato.
+const malattiaDi = (n) => [{ tipo: "malattia", stato: "approvato", dal: "2026-07-15", al: localISO(addDays(parseISO("2026-07-15"), n - 1)) }];
+const finestraLunga = { finestraMesi: 12, oggiISO: "2027-07-14" };
+assert.equal(comporto(malattiaDi(143), finestraLunga).giorni, 143);
+assert.equal(comporto(malattiaDi(143), finestraLunga).stato, "ok");
+assert.equal(comporto(malattiaDi(144), finestraLunga).stato, "avviso");
+assert.equal(comporto(malattiaDi(180), finestraLunga).stato, "superato");
+// Senza soglia non si inventa uno stato.
+assert.equal(comporto(malattiaDi(10), { soglia: null }).stato, "ok");
+// La finestra dichiara i propri estremi (servono all'etichetta della scheda).
+assert.equal(comporto([]).dal, "2025-07-15");
+assert.equal(comporto([]).al, "2026-07-15");
+assert.equal(comporto([], { finestraMesi: null }).dal, "2025-07-15");   // ripiego 12 mesi
+
+// --- saldoDichiarato: due numeri accanto, MAI sommati ---
+const dipSaldo = { id: "d1", saldo_ferie: 12.5, saldo_par: 8, saldo_al: "2026-06-30" };
+assert.equal(saldoDichiarato({ dip: { id: "d1" }, eventiDellaPersona: [] }), null);   // senza data: niente
+assert.equal(saldoDichiarato({ dip: null, eventiDellaPersona: [] }), null);
+const s1 = saldoDichiarato({
+  dip: dipSaldo,
+  eventiDellaPersona: [
+    { tipo: "ferie", stato: "approvato", dal: "2026-07-06", al: "2026-07-10" },   // dopo: 5 giorni
+    { tipo: "ferie", stato: "approvato", dal: "2026-06-01", al: "2026-06-05" },   // prima: non conta
+    { tipo: "ferie", stato: "richiesto", dal: "2026-07-20", al: "2026-07-24" },   // non approvata
+    { tipo: "permesso", stato: "approvato", dal: "2026-07-08", ore: 4 },          // dopo: 4 ore
+    { tipo: "permesso", stato: "approvato", dal: "2026-07-09", ore: null },       // ore mancanti: 0
+    { tipo: "malattia", stato: "approvato", dal: "2026-07-11", al: "2026-07-13" },// non e' ferie
+  ],
+});
+assert.equal(s1.al, "2026-06-30");
+assert.equal(s1.ferie, 12.5);
+assert.equal(s1.par, 8);
+assert.equal(s1.ferieDopo, 5);
+assert.equal(s1.oreDopo, 4);
+// Un evento che comincia ESATTAMENTE il giorno del saldo e' gia' compreso nel saldo.
+assert.equal(saldoDichiarato({ dip: dipSaldo,
+  eventiDellaPersona: [{ tipo: "ferie", stato: "approvato", dal: "2026-06-30" }] }).ferieDopo, 0);
+// La data c'e' ma i numeri no: si mostra comunque cosa e' successo dopo.
+const s2 = saldoDichiarato({ dip: { id: "d1", saldo_al: "2026-06-30" },
+  eventiDellaPersona: [{ tipo: "ferie", stato: "approvato", dal: "2026-07-01", al: "2026-07-02" }] });
+assert.equal(s2.ferie, null);
+assert.equal(s2.par, null);
+assert.equal(s2.ferieDopo, 2);
 
 console.log("OK tutti i test common.js");

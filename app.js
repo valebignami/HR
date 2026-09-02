@@ -25,11 +25,15 @@ const state = {
   parametri: [],          // 3.1 · i numeri che cambiano con le norme, editabili dall'app
   cedolini: [],           // 3.2 · cedolini caricati dall'HR, letti dal dipendente nel portale
   scambiConsulente: [],   // 3.3 · registro degli scambi con il consulente del lavoro
+  eventi: [],             // 4.1 · ferie, permessi, malattie, infortuni, straordinari
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
   dipTab: "anagrafica",      // 2.3 · linguetta aperta nella scheda dipendente
   scambiAnno: new Date().getFullYear(),   // 3.3 · anno mostrato nella vista Consulente
+  eventiAnno: new Date().getFullYear(),   // 4.2 · mese mostrato nella vista Eventi
+  eventiMese: new Date().getMonth() + 1,
+  eventiFilter: { dipendente: "", tipo: "" },
   search: "",
   compFilter: { dipendente: "", mansione: "", incarico: "", stato: "" },
   storicoFilter: { dipendente: "", tipo: "", categoria: "", anno: "", mese: "" },
@@ -37,7 +41,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -45,7 +49,11 @@ const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipe
 // nuova entra in TABLES e NON qui, se non per una decisione motivata.
 // storico_modifiche non c'e': e' un registro, non una vista, e ogni salvataggio
 // ne produrrebbe una riga e un render in piu'.
-const REALTIME_TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne"];
+// `eventi` (4.1) SI', ed e' l'unica eccezione che tutto il piano prevede (§4
+// punto 2): e' l'unica tabella in cui scrive qualcun ALTRO — il dipendente, dal
+// portale — mentre l'HR ha l'app aperta, e il contatore delle richieste deve
+// muoversi senza ricaricare la pagina.
+const REALTIME_TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "eventi"];
 const STORE_BY_TABLE = {
   categorie: "categorie",
   ruoli: "ruoli",
@@ -69,6 +77,8 @@ const STORE_BY_TABLE = {
   parametri: "parametri",
   cedolini: "cedolini",
   scambi_consulente: "scambiConsulente",
+  // 4.1 · L'unica tabella nuova che entra ANCHE in REALTIME_TABLES, qui sopra.
+  eventi: "eventi",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -2751,6 +2761,10 @@ const TABELLE_FIGLIE_DIP = [
   // 3.2 · Senza questa riga deleteDip cancellerebbe le righe dei cedolini
   // (per cascade) e lascerebbe i loro PDF nel bucket, orfani per sempre.
   { table: "cedolini",              store: "cedolini",         doc: "path" },
+  // 4.1 · Come sopra: la foreign key cancella la RIGA dell'evento, non il file.
+  // Senza questa riga la scheda di un infortunio resterebbe nel bucket per
+  // sempre, senza padrone — un dato sanitario orfano.
+  { table: "eventi",                store: "eventi",           doc: "documento_path" },
 ];
 
 // Tutti i PDF di un dipendente: cicli correnti, storico archiviato, moduli DPI,
@@ -4122,6 +4136,12 @@ function collegaDocumentiAiDati(prefissoDip) {
   for (const s of state.scambiConsulente) {
     segna(s.path, null, "Scambio consulente",
       `${tipoScambio(s.tipo).label} ${etichettaPeriodoScambio(s.mese, s.anno)}`, s.data, "corrente");
+  }
+  // 4.1 · Le schede infortunio e i certificati allegati agli eventi. Senza
+  // questo ciclo l'indice del backup li darebbe per "non collegati".
+  for (const ev of state.eventi) {
+    segna(ev.documento_path, dipById(ev.dipendente_id), "Evento",
+      `${tipoEvento(ev.tipo).label} del ${fmtDate(ev.dal)}`, ev.dal, "corrente");
   }
 
   // Fallback per i file del portale: portal/{prefisso}/... . Serve ai documenti
