@@ -255,8 +255,12 @@
 
       <div class="config-toolbar">
         <h3>Configurazione</h3>
-        <button class="ghost-btn" id="btn-scarica-config" title="Scarica ruoli, tipi di requisito, matrice, categorie, voci di onboarding, modelli e DPI in un file JSON. Fallo prima di ogni modifica.">⬇ Scarica configurazione</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="ghost-btn" id="btn-scarica-config" title="Scarica ruoli, tipi di requisito, matrice, categorie, voci di onboarding, modelli e DPI in un file JSON. Fallo prima di ogni modifica.">⬇ Scarica configurazione</button>
+          <button class="ghost-btn danger" id="btn-elimina-dati-prova" hidden title="Cancella le persone finte caricate per esercitarsi, con tutti i loro dati e documenti.">🧹 Elimina i dati di prova</button>
+        </div>
       </div>
+      <p class="cfg-hint" id="dati-prova-hint" hidden></p>
 
       <div class="config-panel" id="cfg-ruoli">
         <div class="config-toolbar">
@@ -961,7 +965,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
 <script src="data.js?v=c2"></script>
-<script src="common.js?v=c5"></script>
-<script src="app.js?v=c7"></script>
+<script src="common.js?v=c6"></script>
+<script src="app.js?v=c8"></script>
 </body>
 </html>

@@ -672,6 +672,7 @@ function renderCalendar(all) {
 // ---------- Config ----------
 function renderConfig() {
   els(".ct-btn").forEach((b) => b.classList.toggle("active", b.dataset.ctab === state.configTab));
+  renderDatiDiProva();
   $("cfg-ruoli").hidden = state.configTab !== "ruoli";
   $("cfg-categorie").hidden = state.configTab !== "categorie";
   $("cfg-tipi").hidden = state.configTab !== "tipi";
@@ -684,6 +685,24 @@ function renderConfig() {
   else if (state.configTab === "matrice") renderMatriceTable();
   else if (state.configTab === "onboarding") renderOnboardingItemsTable();
   else if (state.configTab === "modelli") renderModelliTable();
+}
+
+// 1c · Bottone e didascalia dei dati di prova: esistono finche' esistono quelle
+// persone, e spariscono da soli quando non ce ne sono piu'. E' la guardia
+// contro il rischio vero della fase — dati finti dimenticati in mezzo a quelli
+// veri: finche' il bottone e' li' con un numero sopra, non si puo' non vederlo.
+function renderDatiDiProva() {
+  const n = daEliminareComeProva().length;
+  const btn = $("btn-elimina-dati-prova");
+  const hint = $("dati-prova-hint");
+  btn.hidden = n === 0;
+  hint.hidden = n === 0;
+  if (!n) return;
+  btn.textContent = `🧹 Elimina i dati di prova (${n})`;
+  hint.textContent =
+    `Nell'app ci sono ${n} persone finte, con il cognome che inizia per "Prova": servono a esercitarsi ` +
+    "e non sono dipendenti veri. Premi questo bottone PRIMA di inserire la prima persona vera. " +
+    "Vengono cancellati anche i documenti che hai caricato su di loro; il dipendente di collaudo non viene toccato.";
 }
 
 function renderCategorieTable() {
@@ -2463,10 +2482,15 @@ async function copyInviteLink() {
 }
 
 // Tabelle figlie di un dipendente, con lo store locale e la colonna che
-// contiene l'eventuale PDF. In produzione NON esistono foreign key verso
-// dipendenti (deriva di schema: dipendenti.id e' bigint, le figlie hanno
-// dipendente_id text), quindi il cascade va fatto esplicitamente qui:
-// senza, le righe restano orfane e i loro file restano nel bucket.
+// contiene l'eventuale PDF.
+// Dal 2026-09-02 le foreign key verso `dipendenti` esistono davvero, tutte con
+// `on delete cascade` (prima non potevano esistere: la colonna id era bigint e
+// le figlie avevano dipendente_id text). La cancellazione esplicita che segue
+// NON e' quindi ridondante, per due ragioni che restano valide:
+//   - i FILE dello Storage non seguono nessun cascade, e per rimuoverli bisogna
+//     leggere i loro percorsi PRIMA di cancellare le righe che li nominano;
+//   - setup.sql non sa ricreare quelle foreign key, quindi il codice non deve
+//     dipendere dalla loro presenza.
 const TABELLE_FIGLIE_DIP = [
   { table: "dipendente_ruoli",      store: "dipRuoli",         doc: "documento_path" },
   { table: "adempimenti",           store: "adempimenti",      doc: "documento_path" },
@@ -2495,11 +2519,14 @@ function tuttiIDocumentiDi(dipId) {
   return [...new Set(paths)];
 }
 
-async function deleteDip() {
-  const id = $("dip-id").value;
-  if (!id) return;
-  if (!confirm("Eliminare il dipendente con tutti i suoi dati (adempimenti, provvedimenti, DPI, onboarding) e i PDF associati?")) return;
-
+// Cancellazione completa di una persona: righe figlie, inviti, riga dipendente,
+// e SOLO ALLA FINE i file. Ritorna true se e' andata a buon fine.
+// Estratta da deleteDip nella Fase 1c: il bottone "Elimina i dati di prova"
+// deve fare esattamente questo, otto volte. Duplicare la sequenza sarebbe il
+// modo sicuro di sbagliarla — l'ordine dei passi qui non e' arbitrario, e
+// dimenticare la raccolta dei path lascerebbe i PDF orfani nel bucket.
+// Non tocca la modale e non chiama renderAll(): lo fa chi la chiama.
+async function eliminaDipendenteCompleto(id) {
   // I path vanno raccolti PRIMA di cancellare le righe che li referenziano.
   const paths = tuttiIDocumentiDi(id);
 
@@ -2510,14 +2537,14 @@ async function deleteDip() {
     if (error) {
       if (isAuthError(error)) showLogin("Sessione scaduta. Rientra.");
       else alert(`Errore eliminando ${table}: ${error.message}\nIl dipendente NON e' stato eliminato.`);
-      return;
+      return false;
     }
   }
   // Gli inviti self-service: un token ancora valido terrebbe in vita
-  // l'autorizzazione di lettura sui file del portale.
+  // l'autorizzazione di caricamento sui file del portale.
   await sb.from("invite_tokens").delete().eq("dipendente_id", id);
 
-  if (!await sbDelete("dipendenti", id)) return;
+  if (!await sbDelete("dipendenti", id)) return false;
 
   for (const { store } of TABELLE_FIGLIE_DIP) {
     state[store] = state[store].filter((r) => r.dipendente_id !== id);
@@ -2526,7 +2553,54 @@ async function deleteDip() {
     const { error } = await sb.storage.from(STORAGE_BUCKET).remove(paths);
     if (error) console.warn("PDF non rimossi dal bucket:", error.message);
   }
+  return true;
+}
+
+async function deleteDip() {
+  const id = $("dip-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare il dipendente con tutti i suoi dati (adempimenti, provvedimenti, DPI, onboarding) e i PDF associati?")) return;
+  // In caso di errore la modale resta aperta sulla persona non cancellata,
+  // com'era prima dell'estrazione.
+  if (!await eliminaDipendenteCompleto(id)) return;
   closeModal("modal-dip");
+  renderAll();
+}
+
+// ============================================================
+// 1c · I dati di prova, e il bottone che li toglie di mezzo.
+// Otto persone finte caricate da sql/fase_1c_2026-09-02_dati_prova.sql perche'
+// l'HR possa esercitarsi prima di inserire le quindici vere. Chi e' finto lo
+// decide isDatoDiProva in common.js (nota esatta oppure id dip-prova-*).
+// ============================================================
+
+// Il dipendente di collaudo della procedura non e' un dato di prova e non deve
+// mai finire in questo mucchio. Oggi non ci finirebbe comunque (nota diversa,
+// id uuid), ma un bottone che cancella otto persone in un colpo deve dire per
+// iscritto chi non tocca, invece di fidarsi di una differenza.
+function isDipendenteDiCollaudo(dip) {
+  const note = String(dip?.note || "").toLowerCase();
+  return note.includes("collaudo") || note.includes("fac-simile");
+}
+
+function daEliminareComeProva() {
+  return dipendentiDiProva(state.dipendenti).filter((d) => !isDipendenteDiCollaudo(d));
+}
+
+async function eliminaDatiDiProva() {
+  const persone = daEliminareComeProva();
+  if (!persone.length) return;
+  const elenco = persone.map((d) => d.cognome).join(", ");
+  if (!confirm(
+    `Eliminare le ${persone.length} persone di prova (${elenco}) con tutti i loro dati e i documenti che hai caricato su di loro?\n\n` +
+    "Il dipendente di collaudo e le persone vere non vengono toccati.\nL'operazione non si puo' annullare."
+  )) return;
+
+  for (const d of persone) {
+    // eliminaDipendenteCompleto avvisa gia' l'utente dell'errore: qui basta
+    // fermarsi, senza cancellare a meta' e senza un secondo avviso.
+    if (!await eliminaDipendenteCompleto(d.id)) break;
+  }
   renderAll();
 }
 
@@ -3502,6 +3576,7 @@ function wireEvents() {
   $("btn-backup-dati").addEventListener("click", backupDati);
   $("btn-backup-documenti").addEventListener("click", backupDocumenti);
   $("btn-scarica-config").addEventListener("click", scaricaConfigurazione);
+  $("btn-elimina-dati-prova").addEventListener("click", eliminaDatiDiProva);
 
   $("btn-add").addEventListener("click", () => {
     if (state.view === "dipendenti") openDipModal(null);

@@ -221,6 +221,38 @@ function righeContrattuali(dip, giorniSoglia = GG_SCAD) {
 }
 
 // ============================================================
+// 1c · Chi e' un dato di prova, e chi no.
+// Otto persone finte caricate per far esercitare l'HR prima dei dati veri
+// (sql/fase_1c_2026-09-02_dati_prova.sql). Il bottone "Elimina i dati di prova"
+// in Configurazione le cancella tutte insieme, quindi la domanda "questa e'
+// finta?" e' una regola su stati come le altre: sta qui, con un test.
+//
+// Due chiavi, e non una per sfizio:
+//   - la NOTA e' il criterio dichiarato dal piano, confrontato in modo ESATTO.
+//     Non "contiene": una persona vera la cui nota citasse per caso quelle
+//     parole non deve finire nel mucchio, e il dipendente di collaudo (nota
+//     "FAC-SIMILE di collaudo: ...") non deve mai essere toccato.
+//   - l'ID e' la cintura. La nota e' un campo della scheda che saveDip
+//     riscrive a ogni salvataggio, e queste persone esistono APPOSTA perche'
+//     l'HR ci si eserciti sopra: basterebbe scrivere "visita prenotata" nella
+//     nota di una di loro perche' smetta di essere riconosciuta, sparisca dal
+//     conteggio del bottone e resti in mezzo alle persone vere, in silenzio.
+//     L'id non e' modificabile da nessuna vista, e nessuna persona vera puo'
+//     averlo: chi nasce dall'app prende un uuid casuale.
+// ============================================================
+const NOTA_DATI_PROVA = "DATI DI PROVA";
+const PREFISSO_ID_PROVA = "dip-prova-";
+
+function isDatoDiProva(dip) {
+  if (!dip) return false;
+  return String(dip.id || "").startsWith(PREFISSO_ID_PROVA) || dip.note === NOTA_DATI_PROVA;
+}
+
+function dipendentiDiProva(dipendenti) {
+  return (dipendenti || []).filter(isDatoDiProva);
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -276,5 +308,7 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza,
-    assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
+    assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
+    isDatoDiProva, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
+    daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }
