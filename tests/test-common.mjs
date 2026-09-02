@@ -21,6 +21,8 @@ const { classificaStato, calcolaGap, avvisoScadenza,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
         scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,
         parametroInt,
+        normalizzaPeriodoCedolino, linkCedolinoDaRinnovare, cedoliniDaRinnovare,
+        contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, conteggioCedoliniDelMese,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -517,5 +519,134 @@ assert.equal(parametroInt(par, "nullo", 30), 30);
 assert.equal(parametroInt([], "portale_giorni_link", 30), 30);
 assert.equal(parametroInt(null, "portale_giorni_link", 30), 30);
 assert.equal(parametroInt(undefined, "x", 365), 365);
+
+// ============================================================
+// 3.2 · Cedolini.
+// ============================================================
+
+// --- normalizzaPeriodoCedolino: il mese non e' libero ---
+assert.deepEqual(normalizzaPeriodoCedolino({ anno: 2026, mese: 7, tipo: "mensile" }),
+  { anno: 2026, mese: 7, tipo: "mensile" });
+// La tredicesima e' SEMPRE il mese 13, qualunque cosa arrivi dalla tendina:
+// senza, esisterebbero una "tredicesima di marzo" e una "tredicesima di dicembre"
+// per la stessa persona, e l'unicita' non se ne accorgerebbe.
+assert.deepEqual(normalizzaPeriodoCedolino({ anno: 2026, mese: 3, tipo: "tredicesima" }),
+  { anno: 2026, mese: 13, tipo: "tredicesima" });
+assert.deepEqual(normalizzaPeriodoCedolino({ anno: 2026, mese: 9, tipo: "cu" }),
+  { anno: 2026, mese: 0, tipo: "cu" });
+// anno e mese arrivano da <input>/<select>: sono stringhe, devono uscire numeri.
+assert.deepEqual(normalizzaPeriodoCedolino({ anno: "2026", mese: "7", tipo: "mensile" }),
+  { anno: 2026, mese: 7, tipo: "mensile" });
+assert.deepEqual(normalizzaPeriodoCedolino({ anno: 2026, mese: 5 }),
+  { anno: 2026, mese: 5, tipo: "mensile" });
+
+// --- linkCedolinoDaRinnovare ---
+const fraGiorniLink = (n) => localISO(addDays(new Date(), n)) + "T10:00:00+00:00";
+assert.equal(linkCedolinoDaRinnovare({ url_firmato: "https://x", url_scade_il: fraGiorniLink(200) }, 30), false);
+assert.equal(linkCedolinoDaRinnovare({ url_firmato: "https://x", url_scade_il: fraGiorniLink(31) }, 30), false);
+assert.equal(linkCedolinoDaRinnovare({ url_firmato: "https://x", url_scade_il: fraGiorniLink(30) }, 30), true);  // alla soglia: dentro
+assert.equal(linkCedolinoDaRinnovare({ url_firmato: "https://x", url_scade_il: fraGiorniLink(-1) }, 30), true);  // gia' scaduto
+// Senza link, o senza sapere quando scade: da rinnovare. Una riga che non si sa
+// se funziona non e' una riga a posto.
+assert.equal(linkCedolinoDaRinnovare({ url_firmato: null, url_scade_il: fraGiorniLink(200) }, 30), true);
+assert.equal(linkCedolinoDaRinnovare({ url_firmato: "https://x", url_scade_il: null }, 30), true);
+assert.equal(linkCedolinoDaRinnovare({ url_firmato: "https://x", url_scade_il: "non-una-data" }, 30), true);
+assert.equal(linkCedolinoDaRinnovare(null, 30), false);
+
+// --- cedoliniDaRinnovare: il numero sul bottone E l'elenco che si rinnova ---
+const cedRinnovo = [
+  { id: "c1", url_firmato: "https://x", url_scade_il: fraGiorniLink(200) },
+  { id: "c2", url_firmato: "https://x", url_scade_il: fraGiorniLink(5) },
+  { id: "c3", url_firmato: null,        url_scade_il: null },
+];
+assert.deepEqual(cedoliniDaRinnovare(cedRinnovo, 30).map((c) => c.id), ["c2", "c3"]);
+assert.deepEqual(cedoliniDaRinnovare([], 30), []);
+assert.deepEqual(cedoliniDaRinnovare(null, 30), []);
+
+// --- contieneDelimitato: la regola sotto l'abbinamento ---
+assert.equal(contieneDelimitato("004_2026-07.pdf", "004"), true);
+assert.equal(contieneDelimitato("cedolino-004.pdf", "004"), true);
+assert.equal(contieneDelimitato("004", "004"), true);
+// I due casi che il piano teme: una matricola corta che pesca dentro un numero piu' lungo.
+assert.equal(contieneDelimitato("1004_2026-07.pdf", "004"), false);
+assert.equal(contieneDelimitato("PROVA-01_luglio.pdf", "1"), false);
+assert.equal(contieneDelimitato("PROVA-012_luglio.pdf", "PROVA-01"), false);
+// Il trattino e' un delimitatore, quindi "01" dentro "PROVA-01" corrisponde: e'
+// voluto, ed e' la ragione per cui due persone che corrispondono allo stesso
+// file rendono il file ambiguo invece di sceglierne una.
+assert.equal(contieneDelimitato("PROVA-01_luglio.pdf", "01"), true);
+assert.equal(contieneDelimitato("prova-01.pdf", "PROVA-01"), true);   // maiuscole/minuscole indifferenti
+assert.equal(contieneDelimitato("qualsiasi.pdf", ""), false);
+
+// --- abbinaCedoliniPerMatricola ---
+const personeMatricola = [
+  { id: "d1", matricola: "001" },
+  { id: "d2", matricola: "002" },
+  { id: "d3", matricola: "PROVA-01" },
+  { id: "d4", matricola: "   " },   // matricola vuota: non abbina mai
+  { id: "d5" },                     // senza matricola
+];
+let abb = abbinaCedoliniPerMatricola(["001_luglio.pdf", "002_luglio.pdf", "sconosciuto.pdf"], personeMatricola);
+assert.deepEqual(abb.abbinati, [
+  { nomeFile: "001_luglio.pdf", dipendenteId: "d1" },
+  { nomeFile: "002_luglio.pdf", dipendenteId: "d2" },
+]);
+assert.deepEqual(abb.ambigui, []);
+assert.deepEqual(abb.nonAbbinati, ["sconosciuto.pdf"]);
+
+// Un file che corrisponde a DUE persone non si assegna a nessuna.
+abb = abbinaCedoliniPerMatricola(["001-002-insieme.pdf"], personeMatricola);
+assert.deepEqual(abb.abbinati, []);
+assert.deepEqual(abb.ambigui, ["001-002-insieme.pdf"]);
+
+// DUE file per la stessa persona: ambigui TUTTI E DUE, non "vince l'ultimo".
+// E' il caso che consegnerebbe in silenzio il cedolino sbagliato.
+abb = abbinaCedoliniPerMatricola(["001_luglio.pdf", "001_agosto.pdf", "002_luglio.pdf"], personeMatricola);
+assert.deepEqual(abb.abbinati, [{ nomeFile: "002_luglio.pdf", dipendenteId: "d2" }]);
+assert.deepEqual(abb.ambigui.slice().sort(), ["001_agosto.pdf", "001_luglio.pdf"]);
+
+assert.deepEqual(abbinaCedoliniPerMatricola([], personeMatricola), { abbinati: [], ambigui: [], nonAbbinati: [] });
+assert.deepEqual(abbinaCedoliniPerMatricola(null, null), { abbinati: [], ambigui: [], nonAbbinati: [] });
+
+// --- inForzaNelMese: chi conta nel denominatore ---
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2020-01-01" }, 2026, 7), true);
+// Assunto DOPO la fine del mese: quel mese non gli spetta.
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2026-08-01" }, 2026, 7), false);
+// Assunto l'ultimo giorno del mese: un giorno basta.
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2026-07-31" }, 2026, 7), true);
+// Cessato in agosto: il cedolino di luglio gli spetta ancora. E' il caso per cui
+// "chi e' in forza oggi" sarebbe la regola sbagliata.
+assert.equal(inForzaNelMese({ attivo: false, data_cessazione: "2026-08-15" }, 2026, 7), true);
+assert.equal(inForzaNelMese({ attivo: false, data_cessazione: "2026-07-01" }, 2026, 7), true);
+assert.equal(inForzaNelMese({ attivo: false, data_cessazione: "2026-06-30" }, 2026, 7), false);
+// Cessato senza data: non si sa quando, non si conta (o il contatore non si spegne piu').
+assert.equal(inForzaNelMese({ attivo: false }, 2026, 7), false);
+// Febbraio bisestile: l'ultimo giorno e' il 29, non il 28.
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2024-02-29" }, 2024, 2), true);
+assert.equal(inForzaNelMese({ attivo: true, data_assunzione: "2023-03-01" }, 2023, 2), false);
+assert.equal(inForzaNelMese(null, 2026, 7), false);
+
+// --- conteggioCedoliniDelMese ---
+const dipCedolini = [
+  { id: "d1", attivo: true,  data_assunzione: "2020-01-01" },
+  { id: "d2", attivo: true,  data_assunzione: "2020-01-01" },
+  { id: "d3", attivo: false, data_cessazione: "2026-08-15" },   // esce ad agosto: luglio gli spetta
+  { id: "d4", attivo: true,  data_assunzione: "2026-09-01" },   // assunto dopo: non conta
+];
+const cedCedolini = [
+  { dipendente_id: "d1", anno: 2026, mese: 7,  tipo: "mensile" },
+  { dipendente_id: "d3", anno: 2026, mese: 7,  tipo: "mensile" },
+  { dipendente_id: "d2", anno: 2026, mese: 6,  tipo: "mensile" },      // mese diverso
+  { dipendente_id: "d2", anno: 2026, mese: 13, tipo: "tredicesima" },  // tipo diverso
+];
+assert.deepEqual(conteggioCedoliniDelMese({ dipendenti: dipCedolini, cedolini: cedCedolini, anno: 2026, mese: 7 }),
+  { presenti: 2, attesi: 3 });
+assert.deepEqual(conteggioCedoliniDelMese({ dipendenti: dipCedolini, cedolini: cedCedolini, anno: 2026, mese: 6 }),
+  { presenti: 1, attesi: 3 });
+// Anche i numeri che arrivano come stringhe dai select devono contare.
+assert.deepEqual(conteggioCedoliniDelMese({ dipendenti: dipCedolini, cedolini: cedCedolini, anno: "2026", mese: "7" }),
+  { presenti: 2, attesi: 3 });
+assert.deepEqual(conteggioCedoliniDelMese({ dipendenti: [], cedolini: [], anno: 2026, mese: 7 }),
+  { presenti: 0, attesi: 0 });
 
 console.log("OK tutti i test common.js");

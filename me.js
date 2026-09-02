@@ -1,10 +1,10 @@
 // ============================================================
-// HR Overland — Portale self-service (me.html) — versione c4
+// HR Overland — Portale self-service (me.html) — versione c5
 // Auth basata su TOKEN passato nell'URL (?token=xxx). Niente login email.
 // L'HR genera il token, manda il link come vuole (WhatsApp/Outlook/SMS).
 // Tutte le operazioni passano da RPC SECURITY DEFINER che validano il token.
 // ============================================================
-console.log("[me.js] versione c4 caricata");
+console.log("[me.js] versione c5 caricata");
 
 const state = {
   token: null,
@@ -12,6 +12,7 @@ const state = {
   tipiDoc: [],
   adempimenti: [],
   onboardItems: [],   // voci che il dipendente deve gestire dal portale
+  cedolini: [],       // 3.2 · i cedolini della persona, con il loro collegamento firmato
   uploadPrefix: null, // prefisso casuale dell'invito: i file vivono sotto portal/{prefisso}/
 };
 
@@ -103,11 +104,18 @@ async function loadMyData() {
     populateLookups();
     renderForm();
     renderDocs();
+    renderCedolini();
   } catch (err) {
     console.error("Errore nel rendering iniziale:", err);
   } finally {
     showApp();   // anagrafica + documenti identificativi visibili comunque
   }
+
+  // 3.2 · Cedolini. Opzionale come le altre: se la RPC non c'e' ancora (portale
+  // aperto fra migrazione e deploy) la sezione resta nascosta e il resto funziona.
+  const rCed = await rpcT("self_get_cedolini", { t: state.token }, 4000, "self_get_cedolini");
+  if (rCed.error) console.warn("cedolini skipped:", rCed.error.message);
+  state.cedolini = rCed.data || [];
 
   // OPZIONALE — Onboarding self-service (richiede iter_b1_accettazioni.sql).
   // Se non disponibile, le 2 sezioni nuove restano nascoste, il resto funziona.
@@ -314,6 +322,59 @@ async function saveDoc(e, row) {
     data_rilascio: null, data_scadenza: null, documento_path, done: false, history: [], note: null,
   });
   renderDocs();   // subito: niente finestra da 1200ms per il doppio click
+}
+
+// ============================================================
+// 3.2 · I MIEI CEDOLINI
+// Le righe arrivano dalla RPC self_get_cedolini, che restituisce solo quelle
+// della persona del token e non restituisce il percorso del file: il portale non
+// tocca lo storage, apre il collegamento firmato che l'HR ha generato quando ha
+// caricato il cedolino. Dalla Fase 1b il ruolo anon non ha nessuna policy di
+// lettura sul bucket, e non deve riaverla.
+// ============================================================
+function nomePeriodoCedolino(c) {
+  const mesi = window.MESI || [];
+  if (c.tipo === "tredicesima") return `Tredicesima ${c.anno}`;
+  if (c.tipo === "cu") return `Certificazione Unica ${c.anno}`;
+  return `${mesi[Number(c.mese) - 1] || c.mese} ${c.anno}`;
+}
+
+function renderCedolini() {
+  const section = $("me-cedolini-section");
+  const host = $("me-cedolini-list");
+  if (!section || !host) return;   // HTML vecchio in cache: esco in silenzio
+  if (!state.cedolini.length) { section.hidden = true; return; }
+  section.hidden = false;
+
+  // Raggruppati per anno, l'anno piu' recente in cima: e' come li cerca chi li
+  // apre ("il cedolino di marzo"), non come li ha caricati l'ufficio.
+  const perAnno = new Map();
+  for (const c of state.cedolini) {
+    const lista = perAnno.get(c.anno) || [];
+    lista.push(c);
+    perAnno.set(c.anno, lista);
+  }
+  const anni = [...perAnno.keys()].sort((a, b) => b - a);
+
+  host.innerHTML = anni.map((anno) => {
+    const righe = perAnno.get(anno).slice().sort((a, b) => b.mese - a.mese);
+    return `<div class="me-anno">
+      <div class="me-anno-titolo">${esc(anno)}</div>
+      ${righe.map((c) => `<div class="me-doc-row">
+        <div class="me-doc-head">
+          <div>
+            <div class="me-doc-nome">🧾 ${esc(nomePeriodoCedolino(c))}</div>
+            <div class="me-doc-stato">${c.url_firmato
+              ? "Pronto da aprire"
+              : "Non disponibile: chiedi all'ufficio del personale di rifare il collegamento"}</div>
+          </div>
+          ${c.url_firmato
+            ? `<a class="ghost-btn" href="${esc(c.url_firmato)}" target="_blank" rel="noopener">📄 Apri</a>`
+            : ""}
+        </div>
+      </div>`).join("")}
+    </div>`;
+  }).join("");
 }
 
 // ============================================================

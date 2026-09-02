@@ -80,6 +80,10 @@
 
     <div class="sidebar-foot">
       <button class="ghost-btn" id="btn-export">⬇ Export Excel</button>
+      <div class="sidebar-cedolini">
+        <button class="ghost-btn" id="btn-cedolini-mese" title="Carica i cedolini di un mese: una riga per dipendente, un file per riga.">🧾 Cedolini</button>
+        <span class="mod-count" id="count-link-cedolini" title="Collegamenti dei cedolini scaduti o in scadenza: rinnovali da Configurazione." hidden>0</span>
+      </div>
       <button class="ghost-btn" id="btn-backup-dati" title="Tutti i dati dell'app in Excel + JSON. Salvalo nella cartella Backup app dell'archivio.">💾 Backup dati</button>
       <button class="ghost-btn" id="btn-backup-documenti" title="Tutti i documenti caricati nell'app, con l'indice di chi e cosa. Salvalo nella cartella Backup app dell'archivio.">📦 Backup documenti</button>
       <div class="sidebar-user">
@@ -258,6 +262,7 @@
         <h3>Configurazione</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="ghost-btn" id="btn-scarica-config" title="Scarica ruoli, tipi di requisito, matrice, categorie, voci di onboarding, modelli e DPI in un file JSON. Fallo prima di ogni modifica.">⬇ Scarica configurazione</button>
+          <button class="ghost-btn" id="btn-rinnova-link-cedolini" hidden title="I collegamenti che il dipendente usa per aprire i suoi cedolini scadono: questo li rifa'.">🔗 Rinnova i collegamenti dei cedolini</button>
           <button class="ghost-btn danger" id="btn-elimina-dati-prova" hidden title="Cancella le persone finte caricate per esercitarsi, con tutti i loro dati e documenti.">🧹 Elimina i dati di prova</button>
         </div>
       </div>
@@ -551,6 +556,15 @@
           <button type="button" class="ghost-btn" id="dip-provv-add" style="margin-left:8px">+ Nuovo</button>
         </button>
         <div id="dip-provv-list" hidden></div>
+      </div>
+
+      <div id="dip-cedolini-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-cedolini-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>🧾 Cedolini</span>
+          <span class="history-count" id="dip-cedolini-count">0</span>
+        </button>
+        <div id="dip-cedolini-list" hidden></div>
       </div>
 
       </div><!-- /registro -->
@@ -953,6 +967,48 @@
   </div>
 </div>
 
+<!-- ============ MODALE CARICA I CEDOLINI DEL MESE (3.2) ============ -->
+<div id="modal-cedolini" class="modal" hidden>
+  <div class="modal-card" style="max-width:860px">
+    <div class="modal-head">
+      <h2>🧾 Carica i cedolini del mese</h2>
+      <button class="icon-btn" id="ced-close">✕</button>
+    </div>
+    <form id="ced-form" class="modal-body">
+      <div class="row">
+        <label><span>Anno *</span><input type="number" id="ced-anno" min="2000" max="2100" step="1" required></label>
+        <label id="ced-mese-wrap"><span>Mese *</span><select id="ced-mese"></select></label>
+        <label><span>Tipo *</span><select id="ced-tipo"></select></label>
+      </div>
+      <p class="cfg-hint">La tredicesima e la Certificazione Unica non hanno un mese da scegliere:
+        vale l'anno.</p>
+
+      <fieldset class="recur doc-block">
+        <legend>Scegli tutti i file insieme (facoltativo)</legend>
+        <p class="cfg-hint">Se i file hanno la <strong>matricola nel nome</strong>
+          (per esempio <code>004_luglio.pdf</code>), selezionandoli tutti insieme
+          l'app li mette da sola sulla riga giusta. Controlla comunque riga per riga
+          prima di salvare: quello che non riconosce te lo scrive qui sotto.</p>
+        <label class="doc-upload">
+          <span>Scegli piu' file</span>
+          <input type="file" id="ced-multi-file" accept=".pdf,image/*" multiple>
+        </label>
+        <p class="cfg-hint" id="ced-multi-hint"></p>
+      </fieldset>
+
+      <div class="ced-elenco" id="ced-rows"></div>
+      <div id="ced-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      <p class="cfg-hint" id="ced-status"></p>
+
+      <div class="modal-foot">
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="ced-cancel">Chiudi</button>
+        <button type="submit" class="primary-btn" id="ced-salva">Carica i cedolini scelti</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ============ MODALE PARAMETRO (3.1) ============ -->
 <div id="modal-parametro" class="modal" hidden>
   <div class="modal-card small">
@@ -1037,7 +1093,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
-<script src="data.js?v=c2"></script>
+<script src="data.js?v=c3"></script>
 <script src="common.js?v=c8"></script>
 <script src="app.js?v=c10"></script>
 </body>

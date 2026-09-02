@@ -362,6 +362,138 @@ function parametroInt(parametri, chiave, valoreDiRipiego) {
 }
 
 // ============================================================
+// 3.2 · Cedolini — le cinque regole che non si vedono sbagliare.
+// Nessuna di queste da' un errore quando e' sbagliata: da' un cedolino
+// consegnato alla persona sbagliata, un link scaduto senza che nessuno se ne
+// accorga, o un contatore che dice "tutti fatti" mentre ne manca uno. Per questo
+// stanno qui, con i loro test, e non dentro una modale.
+// ============================================================
+
+// Il MESE non e' libero: 1-12 e' un cedolino mensile, 13 e' la tredicesima, 0 e'
+// la Certificazione Unica. Il piano lo impone per una ragione precisa: con
+// `mese null` l'unicita' (persona, anno, mese, tipo) non scatterebbe MAI, perche'
+// in Postgres null non e' uguale a null, e la stessa CU si potrebbe caricare
+// dieci volte. Il database ha lo stesso vincolo come `check`: questa funzione
+// serve a non farlo scattare, non a sostituirlo.
+const MESE_TREDICESIMA = 13;
+const MESE_CU = 0;
+
+function normalizzaPeriodoCedolino({ anno, mese, tipo }) {
+  const t = String(tipo || "mensile");
+  const a = Number(anno);
+  if (t === "tredicesima") return { anno: a, mese: MESE_TREDICESIMA, tipo: t };
+  if (t === "cu") return { anno: a, mese: MESE_CU, tipo: t };
+  return { anno: a, mese: Number(mese), tipo: "mensile" };
+}
+
+// Un link firmato va rinnovato se non c'e', se non si sa quando scade, o se
+// scade entro N giorni. "Non si sa quando scade" conta come da rinnovare: una
+// riga senza scadenza nota non e' una riga a posto.
+// La data si confronta al giorno: url_scade_il e' un timestamptz, e per una
+// scadenza a tredici mesi un giorno in piu' o in meno non cambia niente.
+function linkCedolinoDaRinnovare(ced, giorniPreavviso) {
+  if (!ced) return false;
+  if (!ced.url_firmato || !ced.url_scade_il) return true;
+  const gg = daysUntil(String(ced.url_scade_il).slice(0, 10));
+  if (gg == null) return true;
+  return gg <= Number(giorniPreavviso);
+}
+
+// L'elenco per il bottone "Rinnova i link" e per il contatore in barra laterale.
+// UNA lista sola, come dipendentiDiProva: se il numero mostrato e l'elenco
+// rigenerato venissero da due filtri diversi, il bottone direbbe un numero e ne
+// rinnoverebbe un altro.
+function cedoliniDaRinnovare(cedolini, giorniPreavviso) {
+  return (cedolini || []).filter((c) => linkCedolinoDaRinnovare(c, giorniPreavviso));
+}
+
+// "Questo nome di file contiene questa matricola, delimitata?"
+// Delimitata = all'inizio o alla fine del nome, oppure fra caratteri non
+// alfanumerici. E' la regola che impedisce a "1" di pescare "PROVA-01" e a "004"
+// di pescare "1004". Scritta a mano invece che con un'espressione regolare
+// perche' una matricola puo' contenere qualunque carattere, e costruire un
+// pattern a partire da un dato dell'utente vuol dire ricordarsi di neutralizzarlo
+// ogni volta.
+function contieneDelimitato(testo, ago) {
+  const t = String(testo).toUpperCase();
+  const a = String(ago).toUpperCase();
+  if (!a) return false;
+  const alfanumerico = (ch) => !!ch && ((ch >= "0" && ch <= "9") || (ch >= "A" && ch <= "Z"));
+  for (let i = t.indexOf(a); i !== -1; i = t.indexOf(a, i + 1)) {
+    const prima = i === 0 ? "" : t[i - 1];
+    const dopo = i + a.length >= t.length ? "" : t[i + a.length];
+    if (!alfanumerico(prima) && !alfanumerico(dopo)) return true;
+  }
+  return false;
+}
+
+// Quale file va a quale persona, guardando la matricola nel nome del file.
+// E' un SUGGERIMENTO: riempie le righe della modale, poi l'HR vede nome,
+// matricola e nome del file accanto a ciascuna e conferma.
+//
+// Tre regole, e la terza e' quella che conta:
+//   - la matricola deve comparire delimitata (vedi contieneDelimitato);
+//   - un file che corrisponde a due persone e' AMBIGUO e non si assegna;
+//   - due file che corrispondono alla stessa persona sono AMBIGUI TUTTI E DUE.
+//     "L'ultimo vince" qui vorrebbe dire consegnare in silenzio il cedolino
+//     sbagliato, che e' il danno peggiore che questa fase possa fare.
+function abbinaCedoliniPerMatricola(nomiFile, dipendenti) {
+  const persone = (dipendenti || []).filter((d) => d && String(d.matricola || "").trim() !== "");
+  const perFile = new Map();       // nome del file -> id delle persone che corrispondono
+  const nonAbbinati = [];
+  for (const nome of nomiFile || []) {
+    const trovate = persone
+      .filter((d) => contieneDelimitato(nome, String(d.matricola).trim()))
+      .map((d) => d.id);
+    if (!trovate.length) { nonAbbinati.push(nome); continue; }
+    perFile.set(nome, trovate);
+  }
+
+  const ambigui = [];
+  const candidati = new Map();      // id persona -> nomi dei file che le corrispondono
+  for (const [nome, ids] of perFile) {
+    if (ids.length > 1) { ambigui.push(nome); continue; }
+    const lista = candidati.get(ids[0]) || [];
+    lista.push(nome);
+    candidati.set(ids[0], lista);
+  }
+
+  const abbinati = [];
+  for (const [dipendenteId, nomi] of candidati) {
+    if (nomi.length > 1) { ambigui.push(...nomi); continue; }
+    abbinati.push({ nomeFile: nomi[0], dipendenteId });
+  }
+  return { abbinati, ambigui, nonAbbinati };
+}
+
+// "Cedolini di luglio: 12/15". Chi entra nel denominatore: chi e' stato in forza
+// ALMENO UN GIORNO del mese, non "chi e' in forza oggi". Chi cessa in agosto
+// riceve il cedolino di luglio e quello finale: con "in forza oggi" il suo
+// cedolino mancante sparirebbe dal conteggio proprio nel mese in cui e' piu'
+// facile dimenticarlo.
+// Un cessato SENZA data di cessazione non si conta: non si sa quando se ne sia
+// andato, e contarlo per sempre terrebbe acceso un contatore che non si spegne.
+function inForzaNelMese(dip, anno, mese) {
+  if (!dip) return false;
+  const ultimo = new Date(Number(anno), Number(mese), 0).getDate();
+  const mm = String(mese).padStart(2, "0");
+  const inizio = `${anno}-${mm}-01`;
+  const fine = `${anno}-${mm}-${String(ultimo).padStart(2, "0")}`;
+  if (dip.data_assunzione && String(dip.data_assunzione).slice(0, 10) > fine) return false;
+  if (dip.attivo === false && !dip.data_cessazione) return false;
+  if (dip.data_cessazione && String(dip.data_cessazione).slice(0, 10) < inizio) return false;
+  return true;
+}
+
+function conteggioCedoliniDelMese({ dipendenti, cedolini, anno, mese, tipo = "mensile" }) {
+  const attesi = (dipendenti || []).filter((d) => inForzaNelMese(d, anno, mese));
+  const hanno = new Set((cedolini || [])
+    .filter((c) => c && Number(c.anno) === Number(anno) && Number(c.mese) === Number(mese) && c.tipo === tipo)
+    .map((c) => c.dipendente_id));
+  return { presenti: attesi.filter((d) => hanno.has(d.id)).length, attesi: attesi.length };
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -421,5 +553,8 @@ if (typeof module !== "undefined" && module.exports) {
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,
     parametroInt,
+    normalizzaPeriodoCedolino, linkCedolinoDaRinnovare, cedoliniDaRinnovare,
+    contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, conteggioCedoliniDelMese,
+    MESE_TREDICESIMA, MESE_CU,
     daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }
