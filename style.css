@@ -1699,3 +1699,50 @@ body.self-service { background: var(--bg); }
    senza, il display:flex del pannello vincerebbe sull'attributo hidden e si
    vedrebbero tutti e cinque insieme. */
 .dip-tab-panel[hidden] { display: none; }
+
+/* ---------- 4.1-4.5 · Eventi del mese ----------
+   La vista riusa .comp-row e .list del tab Scadenze: sono le stesse righe
+   cliccabili, e due tabelle che si somigliano ma non si comportano uguale
+   costerebbero piu' di quello che valgono. Qui ci sono solo le colonne. */
+.ev-barra {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.comp-head.ev-cols-req, .comp-row.ev-cols-req {
+  grid-template-columns: minmax(150px, 1.6fr) minmax(120px, 1.2fr) minmax(150px, 1.4fr) minmax(120px, 1.6fr) 210px;
+}
+.comp-row.ev-cols {
+  grid-template-columns: minmax(120px, 1.2fr) minmax(150px, 1.4fr) minmax(140px, 1.2fr) 140px minmax(100px, 1.4fr);
+}
+/* Il raggruppamento per persona della vista Eventi (che e' anche la vista
+   "Variabili del mese" della 4.4: le stesse righe che finiscono nell'Excel). */
+.ev-persona { border-top: 1px solid var(--line); }
+.ev-persona:first-child { border-top: 0; }
+.ev-persona-testa {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 16px 4px;
+  background: var(--gray-soft);
+}
+.ev-azioni { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.ev-azioni .ghost-btn { padding: 5px 10px; font-size: 12px; }
+/* Il promemoria della denuncia INAIL: una riga sotto l'infortunio, non una
+   riga come le altre — non si apre e non e' un evento. */
+.comp-row.ev-inail {
+  grid-template-columns: 1fr 140px;
+  background: #fffbeb;
+  cursor: default;
+}
+.comp-row.ev-inail:hover { background: #fff7db; }
+.ev-inail-testo { font-size: 12.5px; color: #92400e; }
+/* Ferie e permessi approvati nel calendario delle scadenze. Colore diverso da
+   tutte le categorie di requisito: non e' una scadenza, e' un'assenza. */
+.leg-chip.evento, .cal-event.evento {
+  background: #ccfbf1;
+  color: #115e59;
+  border-left-color: #0f766e;
+}
+.ev-row .hist-note .stato { font-size: 11px; }
