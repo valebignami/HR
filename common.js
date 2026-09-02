@@ -190,6 +190,37 @@ function ricalcolaScadenze(righe) {
 }
 
 // ============================================================
+// 1.7 · Scadenze contrattuali.
+// Fine periodo di prova e fine contratto erano solo campi del form: non
+// comparivano in NESSUNA vista. Un contratto a termine che scade inosservato si
+// trasforma per legge; una prova che scade senza decisione conferma l'assunzione.
+// Stesso semaforo del resto dell'app: classificaStato con hasRilascio = true,
+// perche' la data c'e' ed e' certa — non e' un adempimento da registrare.
+// (Il permesso di soggiorno NON sta qui: e' un tipo di requisito e passa dal
+// motore gap come tutti gli altri.)
+// ============================================================
+const CAMPI_CONTRATTUALI = [
+  { campo: "data_fine_prova", etichetta: "Fine periodo di prova" },
+  { campo: "data_fine_contratto", etichetta: "Fine contratto" },
+];
+
+function righeContrattuali(dip, giorniSoglia = GG_SCAD) {
+  if (!dip || dip.attivo === false) return [];   // di un cessato non importa piu'
+  const out = [];
+  for (const { campo, etichetta } of CAMPI_CONTRATTUALI) {
+    const data = dip[campo] || null;
+    if (!data) continue;
+    const gg = daysUntil(data);
+    // Futura, o passata da non piu' di `giorniSoglia` giorni: piu' indietro di
+    // cosi' la decisione e' stata presa (o il danno e' fatto) e la riga sarebbe
+    // solo rumore permanente.
+    if (gg == null || gg < -giorniSoglia) continue;
+    out.push({ dip, campo, etichetta, data, stato: classificaStato(true, data) });
+  }
+  return out;
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -245,5 +276,5 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza,
-    assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
+    assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }

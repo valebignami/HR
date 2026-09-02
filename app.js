@@ -483,6 +483,34 @@ function matchSearch(text) {
   return text.toLowerCase().includes(state.search.toLowerCase());
 }
 
+// Filtri della barra Scadenze, in un punto solo: li usano sia le righe di
+// sicurezza sia il blocco Contratti (1.7).
+function passaFiltriCompliance(dip, stato, testo) {
+  const f = state.compFilter;
+  if (f.stato && stato !== f.stato) return false;
+  if (f.dipendente && dip.id !== f.dipendente) return false;
+  const ruoli = ruoliOfDip(dip.id);
+  if (f.mansione && !ruoli.some((x) => x.id === f.mansione)) return false;
+  if (f.incarico && !ruoli.some((x) => x.id === f.incarico)) return false;
+  return matchSearch(dip.nome + " " + dip.cognome + " " + (testo || ""));
+}
+
+// 1.7 · Il blocco Contratti. Non c'e' un "Fatto": una scadenza contrattuale si
+// risolve modificando la scheda (proroga, conferma, trasformazione), e il
+// trigger dello storico conserva la data precedente.
+function renderContratti(righe) {
+  $("contratti-count").textContent = righe.length;
+  $("contratti-wrap").hidden = righe.length === 0;
+  $("contratti-rows").innerHTML = righe.map((r) => `<div class="comp-row contratti-cols" data-dip="${esc(r.dip.id)}">
+      <div><strong>${esc(r.dip.cognome)} ${esc(r.dip.nome)}</strong></div>
+      <div>${esc(r.etichetta)}</div>
+      <div>${fmtDate(r.data)}</div>
+      <div><span class="stato ${r.stato}">${STATO_INFO[r.stato].label}</span></div>
+    </div>`).join("");
+  els(".comp-row", $("contratti-rows")).forEach((el2) =>
+    el2.addEventListener("click", () => openDipModal(el2.dataset.dip)));
+}
+
 function renderCompliance() {
   let rows = gapRows();
 
@@ -494,32 +522,34 @@ function renderCompliance() {
   $("kpi-ok").textContent = counts.ok;
   els('#view-compliance .kpi').forEach((k) => k.classList.toggle("active", k.dataset.cstatus === (state.compFilter.stato || "all")));
 
-  // Filtri.
-  const f = state.compFilter;
-  rows = rows.filter((r) => {
-    if (f.stato && r.stato !== f.stato) return false;
-    if (f.dipendente && r.dip.id !== f.dipendente) return false;
-    const ruoli = ruoliOfDip(r.dip.id);
-    if (f.mansione && !ruoli.some((x) => x.id === f.mansione)) return false;
-    if (f.incarico && !ruoli.some((x) => x.id === f.incarico)) return false;
-    const hay = r.dip.nome + " " + r.dip.cognome + " " + (r.tipo.nome || "");
-    if (!matchSearch(hay)) return false;
-    return true;
-  });
+  // Filtri. Gli stessi valgono per le righe di sicurezza e per quelle
+  // contrattuali (1.7): filtrare "Rossi" deve nascondere entrambe.
+  rows = rows.filter((r) => passaFiltriCompliance(r.dip, r.stato, r.tipo.nome));
 
-  // Modalità Calendario: nasconde la lista e disegna il mese con gli stessi eventi.
+  // 1.7 · Righe contrattuali: fine prova e fine contratto dei soli dipendenti in
+  // forza. NON entrano nei KPI di sicurezza, che restano quelli degli adempimenti.
+  const contratti = state.dipendenti
+    .flatMap((d) => righeContrattuali(d))
+    .filter((r) => passaFiltriCompliance(r.dip, r.stato, r.etichetta))
+    .sort((a, b) => (a.data || "").localeCompare(b.data || ""));
+
+  // Modalità Calendario: nasconde le liste e disegna il mese con gli stessi eventi.
   if (state.compView === "calendar") {
     $("comp-wrap").hidden = true;
+    $("contratti-wrap").hidden = true;
     $("comp-cal-wrap").hidden = false;
-    // Eventi calendario = righe con una data di scadenza utile.
+    // Eventi calendario = righe con una data di scadenza utile, piu' i contratti.
     const events = rows.filter((r) => r.scadenza).map((r) => ({
       a: r.adempimento, tipo: r.tipo, dip: r.dip, scadenza: r.scadenza,
-    }));
+    })).concat(contratti.map((r) => ({
+      kind: "contratto", dip: r.dip, scadenza: r.data, etichetta: r.etichetta,
+    })));
     renderCalendar(events);
     return;
   }
   $("comp-wrap").hidden = false;
   $("comp-cal-wrap").hidden = true;
+  renderContratti(contratti);
 
   const host = $("comp-rows");
   $("comp-empty").hidden = rows.length > 0;
@@ -620,8 +650,11 @@ function renderCalendar(all) {
     const other = d.getMonth() !== m;
     const evs = byDay[iso] || [];
     const shown = evs.slice(0, 3);
-    const evHtml = shown.map((x) =>
-      `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a?.id || ""}" data-tipo="${x.tipo.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`
+    const evHtml = shown.map((x) => x.kind === "contratto"
+      // 1.7 · Un contratto non si "fa": cliccandolo si apre la scheda, dove si
+      // proroga, si conferma o si trasforma.
+      ? `<div class="cal-event contratto" data-dipcard="${esc(x.dip.id)}" title="${esc(x.etichetta)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.etichetta)}</div>`
+      : `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a?.id || ""}" data-tipo="${x.tipo.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`
     ).join("");
     const more = evs.length > 3 ? `<div class="cal-more">+${evs.length - 3} altri</div>` : "";
     html += `<div class="cal-day ${other ? "other-month" : ""} ${iso === todayISO ? "today" : ""}">
@@ -630,7 +663,8 @@ function renderCalendar(all) {
   grid.innerHTML = html;
   els(".cal-event", grid).forEach((ev) => ev.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (ev.dataset.ad) openAdmModal(ev.dataset.dip, ev.dataset.ad);
+    if (ev.dataset.dipcard) openDipModal(ev.dataset.dipcard);
+    else if (ev.dataset.ad) openAdmModal(ev.dataset.dip, ev.dataset.ad);
     else openAdmModal(ev.dataset.dip, null, ev.dataset.tipo);
   }));
 }

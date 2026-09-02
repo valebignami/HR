@@ -17,6 +17,7 @@ globalThis.document = { addEventListener: () => {} };
 
 const { classificaStato, calcolaGap, avvisoScadenza,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
+        righeContrattuali,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -191,6 +192,44 @@ assert.equal(ricalcolaScadenze(null).length, 0);
 ric = ricalcolaScadenze([{ id: "a2", data_rilascio: "2026-01-31", data_scadenza: "2026-02-28",
                            validitaVecchia: 1, validitaNuova: 2 }]);
 assert.equal(ric[0].data_scadenza, "2026-03-31");
+
+// ============================================================
+// righeContrattuali (1.7) — fine prova e fine contratto non comparivano in
+// nessuna vista. Un contratto a termine che scade inosservato si trasforma per
+// legge, e una prova che scade senza decisione conferma l'assunzione.
+// ============================================================
+const dipC = (o = {}) => ({ id: "dc", nome: "Ada", cognome: "Bianchi", attivo: true, ...o });
+
+// Nessuna data: nessuna riga.
+assert.equal(righeContrattuali(dipC()).length, 0);
+assert.equal(righeContrattuali(null).length, 0);
+
+// Solo la fine prova.
+let rc = righeContrattuali(dipC({ data_fine_prova: iso(20) }));
+assert.equal(rc.length, 1);
+assert.equal(rc[0].campo, "data_fine_prova");
+assert.equal(rc[0].etichetta, "Fine periodo di prova");
+assert.equal(rc[0].stato, "in_scadenza");        // entro GG_SCAD
+
+// Solo la fine contratto, lontana: compare, ma in regola.
+rc = righeContrattuali(dipC({ data_fine_contratto: iso(200) }));
+assert.equal(rc.length, 1);
+assert.equal(rc[0].stato, "ok");
+
+// Tutte e due.
+assert.equal(righeContrattuali(dipC({ data_fine_prova: iso(5), data_fine_contratto: iso(300) })).length, 2);
+
+// Scaduta da poco: si vede ancora, ed e' rossa.
+rc = righeContrattuali(dipC({ data_fine_contratto: iso(-10) }));
+assert.equal(rc.length, 1);
+assert.equal(rc[0].stato, "scaduto");
+
+// Il confine esatto e' incluso, un giorno oltre no.
+assert.equal(righeContrattuali(dipC({ data_fine_contratto: iso(-GG_SCAD) })).length, 1);
+assert.equal(righeContrattuali(dipC({ data_fine_contratto: iso(-GG_SCAD - 1) })).length, 0);
+
+// Un cessato non ha piu' scadenze contrattuali da sorvegliare.
+assert.equal(righeContrattuali(dipC({ attivo: false, data_fine_contratto: iso(10) })).length, 0);
 
 // ============================================================
 // calcolaGap — il nucleo: cosa deve avere una persona e come sta messa.
