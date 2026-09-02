@@ -18,6 +18,7 @@ globalThis.document = { addEventListener: () => {} };
 const { classificaStato, calcolaGap, avvisoScadenza,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
+        isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -307,5 +308,65 @@ assert.equal(gap({ requisiti: [req(), req({ tipo_requisito_id: "t-idon", validit
 // Gli adempimenti di un'altra persona non contano.
 r = gap({ adempimenti: [adm({ dipendente_id: "d2", data_rilascio: iso(-10), data_scadenza: iso(900) })] });
 assert.equal(r[0].stato, "scaduto");
+
+// ============================================================
+// 1c · isDatoDiProva / dipendentiDiProva
+// Questo test protegge una cosa sola, ma grossa: il bottone "Elimina i dati di
+// prova" cancella otto persone in un colpo, con tutti i loro documenti. Se il
+// riconoscimento fosse largo, cancellerebbe una persona vera.
+// ============================================================
+const NOTA_COLLAUDO = "FAC-SIMILE di collaudo: stessa persona di esempio dell'archivio 11_Personale.";
+
+// Riconosciuti: la nota esatta, oppure l'id che lo script assegna.
+assert.equal(isDatoDiProva({ id: "dip-prova-01", note: NOTA_DATI_PROVA }), true);
+assert.equal(isDatoDiProva({ id: "9e1c-uuid-vero", note: NOTA_DATI_PROVA }), true);
+// Il caso per cui l'id esiste: l'HR si esercita sulla scheda e riscrive la nota.
+assert.equal(isDatoDiProva({ id: "dip-prova-01", note: "visita prenotata per lunedi" }), true);
+assert.equal(isDatoDiProva({ id: "dip-prova-08", note: null }), true);
+
+// NON riconosciuti. Il dipendente di collaudo per primo: e' l'unica persona che
+// il bottone non deve toccare mai.
+assert.equal(isDatoDiProva({ id: "71cf86f3-3c44-4f87", note: NOTA_COLLAUDO }), false);
+// "Contiene" non basta: il confronto sulla nota e' esatto.
+assert.equal(isDatoDiProva({ id: "u1", note: "attenzione: DATI DI PROVA vecchi da rivedere" }), false);
+assert.equal(isDatoDiProva({ id: "u1", note: "dati di prova" }), false);   // minuscolo: altra cosa
+assert.equal(isDatoDiProva({ id: "u1", note: " DATI DI PROVA" }), false);  // spazio davanti: altra cosa
+// Un uuid vero non assomiglia mai al prefisso, comunque lo si guardi.
+assert.equal(isDatoDiProva({ id: "dipendente-prova-01", note: null }), false);
+assert.equal(isDatoDiProva({ id: "71cf86f3-3c44-4f87-892b-7c2e28f63f9b", note: null }), false);
+// Input degeneri: non deve esplodere e non deve dire di si'.
+assert.equal(isDatoDiProva({ id: "u1" }), false);
+assert.equal(isDatoDiProva({ note: null, id: null }), false);
+assert.equal(isDatoDiProva({}), false);
+assert.equal(isDatoDiProva(null), false);
+assert.equal(isDatoDiProva(undefined), false);
+
+// isDipendenteDiCollaudo — la persona che il bottone non deve toccare mai.
+// Qui il confronto e' "contiene", perche' la nota vera e' una frase intera.
+assert.equal(isDipendenteDiCollaudo({ note: NOTA_COLLAUDO }), true);
+assert.equal(isDipendenteDiCollaudo({ note: "dipendente di COLLAUDO, non cancellare" }), true);
+assert.equal(isDipendenteDiCollaudo({ note: "Fac-Simile" }), true);        // maiuscole indifferenti
+assert.equal(isDipendenteDiCollaudo({ note: NOTA_DATI_PROVA }), false);
+assert.equal(isDipendenteDiCollaudo({ note: "Assunto tramite agenzia" }), false);
+assert.equal(isDipendenteDiCollaudo({ note: null }), false);
+assert.equal(isDipendenteDiCollaudo({}), false);
+assert.equal(isDipendenteDiCollaudo(null), false);
+
+// dipendentiDiProva: le finte MENO quella di collaudo, e su niente non esplode.
+const misti = [
+  { id: "dip-prova-01", note: NOTA_DATI_PROVA },
+  { id: "71cf86f3", note: NOTA_COLLAUDO },
+  { id: "abc", note: "Assunto tramite agenzia" },
+  { id: "dip-prova-05", note: "nota riscritta dall'HR" },
+];
+assert.deepEqual(dipendentiDiProva(misti).map((d) => d.id), ["dip-prova-01", "dip-prova-05"]);
+// Le due guardie insieme: anche se qualcuno scrivesse la nota dei dati di prova
+// sulla scheda del dipendente di collaudo, o gli desse un id dip-prova-*, il
+// bottone continuerebbe a saltarlo. E' l'unico caso in cui vince il "contiene".
+assert.deepEqual(dipendentiDiProva([{ id: "71cf86f3", note: NOTA_DATI_PROVA + " (collaudo)" }]), []);
+assert.deepEqual(dipendentiDiProva([{ id: "dip-prova-01", note: "FAC-SIMILE di collaudo" }]), []);
+assert.deepEqual(dipendentiDiProva([]), []);
+assert.deepEqual(dipendentiDiProva(undefined), []);
+assert.deepEqual(dipendentiDiProva(null), []);
 
 console.log("OK tutti i test common.js");
