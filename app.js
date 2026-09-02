@@ -1159,7 +1159,10 @@ function openDipModal(id) {
   if (d) {
     syncOnboardingProgressi(d.id).then(() => renderDipOnboarding(d.id));
   } else {
+    // Tutte e due, o "Nuovo dipendente" mostrerebbe la checklist di uscita di
+    // chi era aperto un momento prima.
     $("dip-onboard-section").hidden = true;
+    $("dip-uscita-section").hidden = true;
   }
 
   // DPI consegnati.
@@ -1414,9 +1417,13 @@ function renderDipOnboarding(dipId) {
   disegnaChecklist({ dip, items: perFase("ingresso"), progressiByItem,
     idSezione: "dip-onboard-section", idConteggio: "dip-onboard-count", idLista: "dip-onboard-list" });
 
-  // La checklist di uscita esiste solo per chi se ne e' andato: a una persona in
-  // forza non si mostra vuota, non si mostra affatto.
-  if (dip.attivo === false) {
+  // La checklist di uscita esiste solo per chi se ne e' andato, E solo se la sua
+  // data di cessazione c'e'. La condizione e' la STESSA di
+  // itemsOnboardingDaSincronizzare: senza la data quelle righe non vengono
+  // create, e disegnarle lo stesso darebbe sette voci con la spunta che non
+  // salva niente e nessun termine. A una persona in forza non si mostra vuota:
+  // non si mostra affatto.
+  if (dip.attivo === false && dip.data_cessazione) {
     disegnaChecklist({ dip, items: perFase("uscita"), progressiByItem,
       idSezione: "dip-uscita-section", idConteggio: "dip-uscita-count", idLista: "dip-uscita-list" });
   } else {

@@ -1579,6 +1579,12 @@ body.self-service { background: var(--bg); }
 .dt-btn:hover { background: var(--gray-soft); color: var(--ink); }
 .dt-btn.active { background: var(--brand-soft); color: var(--brand-ink); border-color: rgba(47,87,217,.25); }
 
-/* Scritto per esteso come .config-panel[hidden]: senza, basterebbe una regola di
-   layout su questo contenitore per far ricomparire tutti e cinque i pannelli. */
+/* I campi erano figli diretti di .modal-body, che li distanzia con `gap: 14px`.
+   Infilandoli dentro un contenitore quel gap si sarebbe fermato al contenitore,
+   e dentro le linguette i campi si sarebbero toccati: il pannello ripete la
+   stessa colonna con lo stesso passo. */
+.dip-tab-panel { display: flex; flex-direction: column; gap: 14px; }
+/* Scritto per esteso come .config-panel[hidden], e DOPO la regola qui sopra:
+   senza, il display:flex del pannello vincerebbe sull'attributo hidden e si
+   vedrebbero tutti e cinque insieme. */
 .dip-tab-panel[hidden] { display: none; }
