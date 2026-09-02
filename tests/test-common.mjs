@@ -15,8 +15,8 @@ globalThis.window = {
 };
 globalThis.document = { addEventListener: () => {} };
 
-const { classificaStato, calcolaGap, parseISO, fmtDate, localISO, fmtDateTime, daysUntil,
-        addDays, addMonths, GG_SCAD, GG_ONBOARD } =
+const { classificaStato, calcolaGap, avvisoScadenza, parseISO, fmtDate, localISO, fmtDateTime,
+        daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
 
 // GG_SCAD deve corrispondere al valore reale iniettato sopra (data.js), non al fallback Node.
@@ -55,6 +55,28 @@ assert.equal(addMonths("2026-05-15", 24), "2028-05-15"); // preposto, biennale
 assert.equal(addMonths("2026-05-15", 0), "2026-05-15");
 assert.equal(addMonths("2026-05-15", null), null);       // regola senza validita'
 assert.equal(addMonths(null, 12), null);
+
+// ============================================================
+// avvisoScadenza (1.1) — la scadenza si corregge a mano, ma l'app deve dire
+// quando la correzione si allontana dalla regola. Il medico competente decide
+// la periodicita' della visita: l'avviso informa, non impedisce.
+// ============================================================
+// Coincide con la regola: nessun avviso.
+assert.equal(avvisoScadenza("2026-05-15", 12, "2027-05-15"), null);
+// Diversa: avviso che nomina i mesi della regola e la data attesa in italiano.
+let av = avvisoScadenza("2026-05-15", 12, "2026-11-15");
+assert.ok(av && av.includes("12 mesi") && av.includes("15/05/2027"), av);
+// Regola senza validita' ("non scade"): non c'e' niente da confrontare.
+assert.equal(avvisoScadenza("2026-05-15", null, "2027-05-15"), null);
+assert.equal(avvisoScadenza("2026-05-15", undefined, "2027-05-15"), null);
+assert.equal(avvisoScadenza("2026-05-15", Infinity, "2027-05-15"), null);
+// Campi mancanti: l'obbligatorieta' e' una guardia del form, non di qui.
+assert.equal(avvisoScadenza("2026-05-15", 12, ""), null);
+assert.equal(avvisoScadenza("", 12, "2027-05-15"), null);
+// Il clamp di fine mese vale anche qui: 31/01 + 1 mese = 28/02, non 03/03.
+// Se l'avviso non usasse addMonths, contraddirebbe la scadenza che l'app scrive.
+assert.equal(avvisoScadenza("2026-01-31", 1, "2026-02-28"), null);
+assert.ok(avvisoScadenza("2026-01-31", 1, "2026-03-03"));
 
 // ============================================================
 // calcolaGap — il nucleo: cosa deve avere una persona e come sta messa.

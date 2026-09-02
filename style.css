@@ -1446,3 +1446,13 @@ body.self-service { background: var(--bg); }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* 1.1 · Avviso "scadenza diversa dalla regola": informa, non impedisce. */
+.avviso-scadenza {
+  color: var(--orange);
+  background: var(--orange-soft);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin: -4px 0 4px;
+}
+.avviso-scadenza[hidden] { display: none; }

@@ -554,6 +554,9 @@
       <div class="done-target" id="fatto-target">—</div>
       <label><span>Data dell'evento (visita, corso, ecc.)</span>
         <input type="date" id="fatto-data" required></label>
+      <label><span>Scadenza</span>
+        <input type="date" id="fatto-scadenza"></label>
+      <p class="cfg-hint avviso-scadenza" id="fatto-scadenza-avviso" hidden></p>
       <label><span>Nuovo PDF (opzionale, sostituisce quello attuale che resta nello storico)</span>
         <input type="file" id="fatto-file" accept=".pdf,image/*"></label>
       <div id="fatto-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
@@ -700,15 +703,17 @@
                 <option value="non_idoneo">❌ Non idoneo</option>
               </select>
             </label>
-            <label><span>Prossima scadenza calcolata</span><input type="date" id="onboard-adm-scadenza" disabled></label>
+            <label><span>Prossima scadenza</span><input type="date" id="onboard-adm-scadenza"></label>
           </div>
+          <p class="cfg-hint avviso-scadenza" id="onboard-adm-scadenza-avviso" hidden></p>
           <label><span>Prescrizioni / limitazioni (opzionale)</span><textarea id="onboard-adm-prescrizioni" rows="2"></textarea></label>
         </div>
         <div id="onboard-adm-formazione-wrap" hidden>
           <div class="row">
             <label><span>Ore effettive</span><input type="number" id="onboard-adm-ore" min="0" step="0.5" placeholder="Es. 4 / 12"></label>
-            <label><span>Prossima scadenza calcolata</span><input type="date" id="onboard-adm-scadenza-form" disabled></label>
+            <label><span>Prossima scadenza</span><input type="date" id="onboard-adm-scadenza-form"></label>
           </div>
+          <p class="cfg-hint avviso-scadenza" id="onboard-adm-scadenza-form-avviso" hidden></p>
         </div>
       </fieldset>
 

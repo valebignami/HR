@@ -104,6 +104,20 @@ function classificaStato(hasRilascio, scadenza) {
   return "ok";
 }
 
+// 1.1 · Confronta la scadenza scritta a mano con quella che la regola calcolerebbe.
+// Nasce da un difetto vero: il catalogo dice che la periodicita' della visita la
+// decide il medico competente, ma l'app scriveva sempre quella della matrice, con
+// l'aria di avere ragione. Ora la data si corregge, e questa funzione dice quando
+// la correzione si allontana dalla regola — senza impedirla.
+// null = nessun avviso da mostrare.
+function avvisoScadenza(dataRilascio, validitaMesi, scadenzaInserita) {
+  if (validitaMesi == null || !Number.isFinite(Number(validitaMesi))) return null;
+  if (!dataRilascio || !scadenzaInserita) return null;
+  const attesa = addMonths(dataRilascio, Number(validitaMesi));
+  if (!attesa || attesa === scadenzaInserita) return null;
+  return `Diversa dalla regola (${validitaMesi} mesi → ${fmtDate(attesa)}).`;
+}
+
 // ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
@@ -159,5 +173,5 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { classificaStato, calcolaGap, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
+  module.exports = { classificaStato, calcolaGap, avvisoScadenza, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }

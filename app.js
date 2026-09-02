@@ -1305,6 +1305,14 @@ function renderDipOnboarding(dipId) {
 
 let pendingOnboardFile = null;
 
+// 1.1 · Nel flusso onboarding le due scadenze (visita / formazione) stanno in
+// due blocchi che si escludono a vicenda: qui si prende quella visibile.
+function campoScadenzaOnboard(isVisita) {
+  return isVisita
+    ? { input: $("onboard-adm-scadenza"), avviso: $("onboard-adm-scadenza-avviso") }
+    : { input: $("onboard-adm-scadenza-form"), avviso: $("onboard-adm-scadenza-form-avviso") };
+}
+
 function openOnboardModal(dipId, itemId) {
   const dip = dipById(dipId);
   const item = state.onboardItems.find((i) => i.id === itemId);
@@ -1347,15 +1355,32 @@ function openOnboardModal(dipId, itemId) {
     $("onboard-adm-hint").textContent =
       tipoReq ? `Verrà creato/aggiornato l'adempimento "${tipoReq.nome}" con la data indicata. La scadenza si calcola dalla matrice ruoli del dipendente.`
               : "Tipo di requisito non trovato.";
-    // Aggiorna le scadenze calcolate al cambio data.
-    const aggiornaScadenza = () => {
-      const d = $("onboard-adm-data").value;
-      const s = d ? calcScadenza(d, tipoReqId, dipId) : null;
-      $("onboard-adm-scadenza").value = s || "";
-      $("onboard-adm-scadenza-form").value = s || "";
+    // 1.1 · La scadenza e' precompilata dalla matrice ma MODIFICABILE: fino alla
+    // Fase 1 il campo era `disabled` e la data del medico si perdeva.
+    const v = validitaMesiForTipo(tipoReqId, dipId);
+    const { input: campoScad, avviso: campoAvviso } = campoScadenzaOnboard(isVisita);
+    const aggiornaAvviso = () => {
+      const msg = avvisoScadenza($("onboard-adm-data").value,
+                                 scadenzaRichiesta(v) ? v : null, campoScad.value);
+      campoAvviso.textContent = msg || "";
+      campoAvviso.hidden = !msg;
     };
-    aggiornaScadenza();
-    $("onboard-adm-data").onchange = aggiornaScadenza;
+    const precompila = () => {
+      const d = $("onboard-adm-data").value;
+      const scad = d ? (calcScadenza(d, tipoReqId, dipId) || "") : "";
+      // Scrive su entrambi i campi: solo uno e' visibile, ma il salvataggio
+      // legge quello attivo e i due non devono divergere.
+      $("onboard-adm-scadenza").value = scad;
+      $("onboard-adm-scadenza-form").value = scad;
+      aggiornaAvviso();
+    };
+    campoScad.required = scadenzaRichiesta(v) && !!$("onboard-adm-data").value;
+    precompila();
+    $("onboard-adm-data").onchange = () => {
+      campoScad.required = scadenzaRichiesta(v) && !!$("onboard-adm-data").value;
+      precompila();
+    };
+    campoScad.oninput = aggiornaAvviso;
   } else {
     wfGenera.hidden = true;
     wfAdm.hidden = true;
@@ -1426,7 +1451,15 @@ async function saveOnboardProgresso(e) {
     };
     // Se ho data evento + tipo requisito → creo/aggiorno l'adempimento.
     if (dataEvento && tipoReqId) {
-      const scadenza = calcScadenza(dataEvento, tipoReqId, dipId);
+      // 1.1 · La scadenza e' quella scritta nel campo, non piu' quella calcolata.
+      const scadenza = campoScadenzaOnboard(isVisita).input.value || null;
+      const vReq = validitaMesiForTipo(tipoReqId, dipId);
+      if (scadenzaRichiesta(vReq) && !scadenza) {
+        if (uploadedPath) await deleteDoc(uploadedPath);
+        alert(`La regola prevede una validità di ${vReq} mesi: la scadenza è obbligatoria. `
+              + 'Lasciandola vuota, questo obbligo risulterebbe "non scade" per sempre.');
+        return;
+      }
       const existing = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId && a.corrente !== false);
       const admRow = {
         id: existing?.id || uid(),
@@ -2310,6 +2343,50 @@ function calcScadenza(rilascio, tipoId, dipId) {
 // Conferma → archivia il ciclo corrente in history + calcola la nuova scadenza
 // dalla regola in matrice + salva atomicamente sul DB. Niente PDF / nota qui:
 // l'utente li carica/scrive dalla modale principale dopo, se vuole.
+// 1.1 · Dipendente, tipo e validita' in gioco nella modale Fatto. Li legge come
+// fa applyFatto: dall'adempimento se esiste, altrimenti dalla modale adempimento
+// sottostante (caso "prima registrazione", admId vuoto).
+function contestoFatto() {
+  const admId = $("fatto-adm-id").value;
+  const a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
+  const dipId = a?.dipendente_id || $("adm-dip-id").value;
+  const tipoId = a?.tipo_requisito_id || $("adm-tipo").value;
+  const validita = (dipId && tipoId) ? validitaMesiForTipo(tipoId, dipId) : undefined;
+  return { a, dipId, tipoId, validita };
+}
+
+// La scadenza e' OBBLIGATORIA quando la regola prevede una validita': lasciarla
+// vuota renderebbe l'obbligo "non scade" per sempre, cioe' verde per sempre.
+// undefined = il tipo non e' nei requisiti della persona; Infinity = non scade.
+const scadenzaRichiesta = (v) => v !== undefined && v !== Infinity;
+
+function aggiornaHintFatto() {
+  const { validita: v } = contestoFatto();
+  const data = $("fatto-data").value;
+  if (v === undefined) {
+    $("fatto-hint").textContent = "Questo tipo non è fra i requisiti del dipendente: la scadenza, se ne ha una, scrivila tu.";
+  } else if (v === Infinity) {
+    $("fatto-hint").textContent = "Questo requisito non scade: la scadenza può restare vuota.";
+  } else {
+    $("fatto-hint").textContent = `Validità da regola: ${v} mesi${data ? " → " + fmtDate(addMonths(data, v)) : ""}.`;
+  }
+  $("fatto-scadenza").required = scadenzaRichiesta(v);
+  // L'avviso confronta con la regola SOLO se una regola c'e'.
+  const avviso = avvisoScadenza(data, scadenzaRichiesta(v) ? v : null, $("fatto-scadenza").value);
+  $("fatto-scadenza-avviso").textContent = avviso || "";
+  $("fatto-scadenza-avviso").hidden = !avviso;
+}
+
+// Riporta la scadenza al valore della regola. Si chiama all'apertura e a ogni
+// cambio della data dell'evento: una correzione a mano fatta prima di cambiare
+// la data viene sostituita, ed e' giusto cosi' (la data e' il presupposto).
+function precompilaScadenzaFatto() {
+  const { validita: v } = contestoFatto();
+  const data = $("fatto-data").value;
+  $("fatto-scadenza").value = (scadenzaRichiesta(v) && data) ? (addMonths(data, v) || "") : "";
+  aggiornaHintFatto();
+}
+
 function openFattoModal(admId, dipIdFallback, tipoIdFallback) {
   // Caso 1: rinnovo di adempimento esistente. Caso 2: prima registrazione (admId vuoto).
   let a = admId ? state.adempimenti.find((x) => x.id === admId) : null;
@@ -2324,14 +2401,7 @@ function openFattoModal(admId, dipIdFallback, tipoIdFallback) {
   $("fatto-data").value = today;
   $("fatto-file").value = "";
   $("fatto-progress").hidden = true;
-  const v = validitaMesiForTipo(tipoId, dipId);
-  if (v === undefined) {
-    $("fatto-hint").textContent = "Questo tipo non è nei requisiti del dipendente: nuova scadenza non calcolabile in automatico.";
-  } else if (v === Infinity) {
-    $("fatto-hint").textContent = "Questo requisito non scade: verrà archiviato il ciclo precedente, nuova scadenza vuota.";
-  } else {
-    $("fatto-hint").textContent = `Validità ${v} mesi → nuova scadenza ${fmtDate(addMonths(today, v))}.`;
-  }
+  precompilaScadenzaFatto();
   openModal("modal-fatto");
 }
 
@@ -2380,10 +2450,16 @@ async function applyFatto(e) {
     });
   }
 
-  // Calcolo nuova scadenza dalla regola in matrice.
+  // 1.1 · La scadenza la decide l'HR: precompilata dalla regola, correggibile.
+  // Il medico competente scrive "prossima visita fra 6 mesi" e l'app deve
+  // registrare quello, non i 12 mesi della matrice.
   const v = validitaMesiForTipo(tipoId, dipId);
-  let newScadenza = null;
-  if (v !== undefined && v !== Infinity) newScadenza = addMonths(dataEvento, v);
+  const newScadenza = $("fatto-scadenza").value || null;
+  if (scadenzaRichiesta(v) && !newScadenza) {
+    alert(`La regola prevede una validità di ${v} mesi: la scadenza è obbligatoria. `
+          + 'Lasciandola vuota, questo obbligo risulterebbe "non scade" per sempre.');
+    return;
+  }
 
   const row = a
     ? { ...a, corrente: true, data_rilascio: dataEvento, data_scadenza: newScadenza,
@@ -3202,17 +3278,10 @@ function wireEvents() {
   $("fatto-form").addEventListener("submit", applyFatto);
   $("fatto-close").addEventListener("click", () => closeModal("modal-fatto"));
   $("fatto-cancel").addEventListener("click", () => closeModal("modal-fatto"));
-  $("fatto-data").addEventListener("change", () => {
-    // Ricalcola hint con la nuova scadenza al cambio data.
-    const admId = $("fatto-adm-id").value;
-    const a = state.adempimenti.find((x) => x.id === admId);
-    if (!a) return;
-    const v = validitaMesiForTipo(a.tipo_requisito_id, a.dipendente_id);
-    const d = $("fatto-data").value;
-    if (v !== undefined && v !== Infinity && d) {
-      $("fatto-hint").textContent = `Validità ${v} mesi → nuova scadenza ${fmtDate(addMonths(d, v))}.`;
-    }
-  });
+  // Cambiare la data dell'evento riporta la scadenza al valore della regola;
+  // scriverla a mano aggiorna solo l'avviso.
+  $("fatto-data").addEventListener("change", precompilaScadenzaFatto);
+  $("fatto-scadenza").addEventListener("input", aggiornaHintFatto);
 
   // Modale ruolo.
   $("ruolo-form").addEventListener("submit", saveRuolo);
