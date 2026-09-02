@@ -2377,9 +2377,13 @@ async function saveDip(e) {
   if (!await sincronizzaAssegnazioni(id)) return;   // l'errore e' gia' stato mostrato
 
   // 2.1 · La persona esce dall'azienda proprio adesso: link del portale spento e
-  // incarichi da chiudere. Solo alla TRANSIZIONE, e solo con una data: risalvare
+  // incarichi da chiudere. Solo alla TRANSIZIONE in forza -> cessato: risalvare
   // la scheda di un cessato non deve rifare niente.
-  const esceOra = !!esistente && esistente.attivo !== false && !row.attivo && !!row.data_cessazione;
+  // La condizione NON guarda la data di cessazione. Guardandola, chi togliesse la
+  // spunta senza compilare la data si terrebbe il link del portale vivo, e al
+  // salvataggio successivo (con la data) la transizione non varrebbe piu': quel
+  // link non verrebbe spento mai.
+  const esceOra = !!esistente && esistente.attivo !== false && !row.attivo;
   if (esceOra) await gestisciCessazione(id, row.data_cessazione);
 
   // Genera adempimenti MANCANTI per i requisiti obbligatori dei ruoli attuali
@@ -2410,13 +2414,21 @@ async function gestisciCessazione(dipId, dataCessazione) {
   //    cessato non piu' salvabile, e l'unica via d'uscita sarebbe riscegliere
   //    una mansione — che verrebbe scritta come riga NUOVA e attiva. La mansione
   //    di un cessato resta aperta di proposito: dice che mestiere faceva.
+  //    Senza una data di cessazione non si propone niente: `al` sarebbe una data
+  //    inventata. La proposta torna appena l'HR scrive la data e risalva.
+  if (!dataCessazione) return;
   const daChiudere = incarichiDaRevocare({ dipRuoli: state.dipRuoli, ruoli: state.ruoli, dipId });
   if (!daChiudere.length) return;
   const nomi = daChiudere.map((a) => "• " + (ruoloById(a.ruolo_id)?.nome || a.ruolo_id)).join(NL);
   if (!confirm(`Questa persona ha ancora ${daChiudere.length === 1 ? "un incarico aperto" : "degli incarichi aperti"}:`
     + NL + NL + nomi + NL + NL
     + `Li chiudo alla data di cessazione (${fmtDate(dataCessazione)})?`)) return;
-  for (const a of daChiudere) await sbUpsert("dipendente_ruoli", { ...a, al: dataCessazione });
+  // Ci si ferma al primo errore: sbUpsert ha gia' avvisato, e tre alert in fila
+  // direbbero all'HR che qualcosa non va senza dirgli quali incarichi sono
+  // rimasti aperti.
+  for (const a of daChiudere) {
+    if (!await sbUpsert("dipendente_ruoli", { ...a, al: dataCessazione })) return;
+  }
 }
 
 // 1.5 · Mansione e incarichi dal form alla tabella. Togliere la spunta NON
@@ -3743,7 +3755,17 @@ function wireEvents() {
   // openOnboardModal). Qui la linguetta del campo non valido si apre PRIMA che
   // il browser provi a dargli il fuoco. L'evento `invalid` non fa bubbling:
   // senza `true` (cattura) al form non arriverebbe mai.
+  // Conta SOLO il primo campo non valido: gli `invalid` di una stessa
+  // validazione arrivano tutti in fila, in ordine di documento, e il browser
+  // mette a fuoco il PRIMO. Ubbidendo all'ultimo, un dipendente nuovo con nome,
+  // cognome e mansione vuoti aprirebbe la linguetta Sicurezza mentre il browser
+  // cerca "dip-nome" nell'Anagrafica ormai nascosta: nessun messaggio, nessun
+  // campo evidenziato, e il Salva che sembra non funzionare.
+  let linguettaGiaScelta = false;
   $("dip-form").addEventListener("invalid", (ev) => {
+    if (linguettaGiaScelta) return;
+    linguettaGiaScelta = true;
+    setTimeout(() => { linguettaGiaScelta = false; }, 0);   // fine di questa validazione
     const panel = ev.target.closest(".dip-tab-panel");
     if (panel && panel.dataset.dtab !== state.dipTab) mostraLinguetta(panel.dataset.dtab);
   }, true);
