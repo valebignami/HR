@@ -49,6 +49,14 @@ const STORE_BY_TABLE = {
   dpi_consegne: "dpiConsegne",
 };
 
+// Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
+// che l'app carica in memoria. `invite_tokens` non sta in TABLES perche' nessuna
+// vista la legge, ma il suo `upload_prefix` e' l'unico legame fra un file
+// caricato dal portale e la persona a cui appartiene: senza, il backup dei
+// documenti diventa un mucchio di file anonimi.
+// NON entra in TABLES ne' in STORE_BY_TABLE: non va in `state` ne' in realtime.
+const TABELLE_BACKUP = TABLES.concat(["invite_tokens"]);
+
 // ---------- Helpers ----------
 // $, el, els, uid, esc, localISO, parseISO, fmtDate, addMonths, addDays, daysUntil,
 // GG_SCAD, GG_ONBOARD, STORAGE_BUCKET: vedi common.js (condivisi con me.js).
@@ -2635,6 +2643,242 @@ async function exportBackupZip(dipId) {
 }
 
 // ============================================================
+// BACKUP COMPLETI — dati (0.2) e documenti (0.6)
+// Due bottoni nel piede della barra laterale. Entrambi sono di SOLA LETTURA:
+// non scrivono nel database e non toccano il bucket. Sono l'unica copia che
+// esiste dei dati e dei file: il piano gratuito di Supabase non fa backup, e i
+// file del bucket non rientrerebbero comunque nei backup del piano a pagamento.
+// ============================================================
+
+// Scarica un blob con un nome di file, senza lasciare appeso l'URL temporaneo.
+function scaricaBlob(blob, nomeFile) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nomeFile;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Disabilita un bottone e ne cambia l'etichetta finche' il lavoro non finisce.
+// `ripristina` va chiamata in un finally: un bottone che resta disabilitato dopo
+// un errore sembra un'app rotta.
+function bottoneOccupato(btnId, testoIniziale) {
+  const btn = $(btnId);
+  const orig = btn ? btn.textContent : null;
+  if (btn) { btn.textContent = testoIniziale; btn.disabled = true; }
+  return {
+    aggiorna: (t) => { if (btn) btn.textContent = t; },
+    ripristina: () => { if (btn) { btn.textContent = orig; btn.disabled = false; } },
+  };
+}
+
+// Per il foglio Excel: jsonb e array diventano testo, altrimenti la cella
+// direbbe "[object Object]" (e' il caso di `adempimenti.history`).
+// Nei file JSON i valori restano quelli veri: l'Excel e' per leggere, il JSON
+// e' per ricostruire.
+function appiattisciPerExcel(righe) {
+  return righe.map((r) => {
+    const out = {};
+    for (const [k, v] of Object.entries(r)) {
+      out[k] = (v !== null && typeof v === "object") ? JSON.stringify(v) : v;
+    }
+    return out;
+  });
+}
+
+// ---------- 0.2 · Backup dei dati ----------
+async function backupDati() {
+  if (!window.XLSX || !window.JSZip) { alert("Librerie Excel/ZIP non caricate. Ricarica la pagina."); return; }
+  const btn = bottoneOccupato("btn-backup-dati", "⏳ Backup dati…");
+  try {
+    // Si legge dal DATABASE, non da `state`: lo stato in memoria e' allineato dal
+    // realtime, ma un backup deve essere la fotografia del database, non della
+    // scheda aperta.
+    const dati = {};
+    for (const t of TABELLE_BACKUP) {
+      btn.aggiorna(`⏳ ${t}…`);
+      const { data, error } = await sb.from(t).select("*");
+      if (error) {
+        // Ci si ferma: un backup con un buco e' peggio di un backup assente,
+        // perche' sembra un backup.
+        if (isAuthError(error)) showLogin("Sessione scaduta. Rientra.");
+        else alert(`Backup interrotto: non riesco a leggere la tabella "${t}".\n${error.message}\n\nNessun file e' stato scaricato.`);
+        return;
+      }
+      dati[t] = data || [];
+    }
+
+    btn.aggiorna("⏳ Creazione file…");
+    const zip = new JSZip();
+    const wb = XLSX.utils.book_new();
+    for (const t of TABELLE_BACKUP) {
+      // Nome del foglio = nome della tabella (il piu' lungo e'
+      // "onboarding_progressi", 20 caratteri: sotto il limite di 31 di Excel).
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(appiattisciPerExcel(dati[t])), t);
+      zip.file(`json/${t}.json`, JSON.stringify(dati[t], null, 2));
+    }
+    zip.file("dati.xlsx", XLSX.write(wb, { type: "array", bookType: "xlsx" }));
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    scaricaBlob(blob, `HR-backup-dati-${localISO(new Date())}.zip`);
+  } catch (err) {
+    alert("Backup dei dati non riuscito: " + (err?.message || err));
+  } finally {
+    btn.ripristina();
+  }
+}
+
+// ---------- 0.6 · Backup dei documenti ----------
+
+const BACKUP_DOC_AVVISO_BYTE = 200 * 1024 * 1024;   // oltre 200 MB il browser puo' non farcela
+
+// Elenca ricorsivamente i file del bucket. `list` NON e' ricorsiva e pagina a
+// 1000: si itera l'offset finche' la pagina e' piena, e le voci con id === null
+// sono cartelle da visitare (una per adempimento, piu' portal/{prefisso}/).
+async function elencaFileBucket(prefisso = "", profondita = 0) {
+  if (profondita > 5) return [];   // guardia: non puo' mai girare a vuoto
+  const PAG = 1000;
+  const trovati = [];
+  for (let offset = 0; ; offset += PAG) {
+    const { data, error } = await sb.storage.from(STORAGE_BUCKET)
+      .list(prefisso, { limit: PAG, offset, sortBy: { column: "name", order: "asc" } });
+    if (error) throw error;
+    const pagina = data || [];
+    for (const voce of pagina) {
+      // Segnaposto che Supabase crea per tenere in piedi una cartella vuota.
+      if (voce.name === ".emptyFolderPlaceholder") continue;
+      const path = prefisso ? `${prefisso}/${voce.name}` : voce.name;
+      if (voce.id === null) trovati.push(...await elencaFileBucket(path, profondita + 1));
+      else trovati.push({ path, byte: voce.metadata?.size ?? 0 });
+    }
+    if (pagina.length < PAG) break;
+  }
+  return trovati;
+}
+
+// A chi e a cosa appartiene ciascun file. Legge `state` piu' la mappa
+// prefisso -> dipendente ricavata dagli inviti. Un file che non compare in
+// nessuna riga resta nell'elenco come "non collegato": e' proprio quello che non
+// ha nessun'altra copia, ometterlo lo renderebbe invisibile.
+function collegaDocumentiAiDati(prefissoDip) {
+  const perPath = new Map();
+  const segna = (path, dip, tipoDoc, descr, data, stato) => {
+    if (!path || perPath.has(path)) return;
+    perPath.set(path, { dip: dip || null, tipoDoc, descr: descr || "", data: data || "", stato });
+  };
+
+  for (const a of state.adempimenti) {
+    const dip = dipById(a.dipendente_id);
+    const nomeTipo = tipoById(a.tipo_requisito_id)?.nome || a.tipo_requisito_id || "";
+    segna(a.documento_path, dip, "Adempimento", nomeTipo, a.data_rilascio,
+      a.corrente === false ? "archiviato" : "corrente");
+    if (Array.isArray(a.history)) {
+      for (const h of a.history) {
+        segna(h.documentoPath, dip, "Adempimento (archiviato)", nomeTipo, h.doneAt, "archiviato");
+      }
+    }
+  }
+  for (const p of state.provvedimenti) {
+    const et = (window.TIPI_PROVVEDIMENTO || []).find((t) => t.key === p.tipo)?.label || p.tipo || "";
+    segna(p.documento_path, dipById(p.dipendente_id), "Provvedimento", et, p.data, "corrente");
+  }
+  for (const pr of state.onboardProgressi) {
+    const et = state.onboardItems.find((i) => i.id === pr.item_id)?.label || pr.item_id || "";
+    segna(pr.documento_path, dipById(pr.dipendente_id), "Onboarding", et, pr.fatto_il, "corrente");
+  }
+  for (const c of state.dpiConsegne) {
+    const et = state.dpiTipi.find((t) => t.id === c.dpi_tipo_id)?.nome || c.dpi_tipo_id || "";
+    segna(c.modulo_path, dipById(c.dipendente_id), "Consegna DPI", et, c.data_consegna, "corrente");
+  }
+
+  // Fallback per i file del portale: portal/{prefisso}/... . Serve ai documenti
+  // caricati dal dipendente e non ancora validati dall'HR, che non sono
+  // referenziati da nessuna riga.
+  return (path) => {
+    const noto = perPath.get(path);
+    if (noto) return noto;
+    const m = /^portal\/([^/]+)\//.exec(path);
+    const dip = m ? prefissoDip.get(m[1]) : null;
+    return { dip: dip || null, tipoDoc: "Caricato dal portale", descr: "", data: "", stato: "non collegato" };
+  };
+}
+
+async function backupDocumenti() {
+  if (!window.XLSX || !window.JSZip) { alert("Librerie Excel/ZIP non caricate. Ricarica la pagina."); return; }
+  const btn = bottoneOccupato("btn-backup-documenti", "⏳ Lettura archivio…");
+  try {
+    const file = await elencaFileBucket();
+    if (!file.length) { alert("Nell'archivio dei documenti non c'e' ancora nessun file."); return; }
+
+    const totale = file.reduce((s, f) => s + f.byte, 0);
+    if (totale > BACKUP_DOC_AVVISO_BYTE) {
+      const mb = Math.round(totale / 1024 / 1024);
+      if (!confirm(`I documenti pesano circa ${mb} MB.\nUno ZIP cosi' grande potrebbe non farcela nel browser.\n\nProvo lo stesso?`)) return;
+    }
+
+    // Il prefisso dell'invito e' l'unico legame fra un file del portale e la
+    // persona: `invite_tokens` non sta in `state`, si legge qui.
+    const prefissoDip = new Map();
+    const { data: inviti } = await sb.from("invite_tokens").select("upload_prefix, dipendente_id");
+    for (const i of inviti || []) {
+      if (i.upload_prefix) prefissoDip.set(i.upload_prefix, dipById(i.dipendente_id));
+    }
+    const trova = collegaDocumentiAiDati(prefissoDip);
+
+    const zip = new JSZip();
+    const righeIndice = [];
+    let falliti = 0;
+    for (let i = 0; i < file.length; i++) {
+      const f = file[i];
+      btn.aggiorna(`⏳ ${i + 1}/${file.length}…`);
+      const info = trova(f.path);
+      let scaricato = false;
+      try {
+        const url = await getSignedDocUrl(f.path);
+        if (!url) throw new Error("nessun link firmato");
+        const blob = await fetch(url).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); });
+        // I file conservano il percorso che hanno nel bucket.
+        zip.file(f.path, blob);
+        scaricato = true;
+      } catch (err) {
+        console.warn("Documento non scaricato:", f.path, err);
+        falliti++;
+      }
+      righeIndice.push({
+        Percorso: f.path,
+        Dipendente: info.dip ? `${info.dip.cognome || ""} ${info.dip.nome || ""}`.trim() : "",
+        Matricola: info.dip?.matricola || "",
+        "Tipo documento": info.tipoDoc,
+        Descrizione: info.descr,
+        Data: info.data ? fmtDate(info.data) : "",
+        Byte: f.byte,
+        Stato: info.stato,
+        Scaricato: scaricato ? "Si" : "No",
+      });
+    }
+
+    // L'indice si genera SEMPRE, anche per i file non scaricati: dice cosa manca.
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(righeIndice), "Indice");
+    zip.file("indice.xlsx", XLSX.write(wb, { type: "array", bookType: "xlsx" }));
+
+    btn.aggiorna("⏳ Creazione ZIP…");
+    const blob = await zip.generateAsync({ type: "blob" });
+    scaricaBlob(blob, `HR-backup-documenti-${localISO(new Date())}.zip`);
+    if (falliti) {
+      alert(`${falliti} documenti su ${file.length} non sono stati scaricati.\nNello ZIP c'e' comunque indice.xlsx, che li elenca con "Scaricato = No".`);
+    }
+  } catch (err) {
+    alert("Backup dei documenti non riuscito: " + (err?.message || err));
+  } finally {
+    btn.ripristina();
+  }
+}
+
+// ============================================================
 // NAVIGAZIONE / FILTRI / EVENTI
 // ============================================================
 function setView(v) {
@@ -2705,6 +2949,8 @@ function wireEvents() {
   });
   $("btn-clear-filters").addEventListener("click", clearFilters);
   $("btn-export").addEventListener("click", exportExcel);
+  $("btn-backup-dati").addEventListener("click", backupDati);
+  $("btn-backup-documenti").addEventListener("click", backupDocumenti);
 
   $("btn-add").addEventListener("click", () => {
     if (state.view === "dipendenti") openDipModal(null);
