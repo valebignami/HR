@@ -199,7 +199,20 @@ async function handleLoginSubmit(e) {
   });
   btn.disabled = false;
   btn.textContent = "Accedi";
-  if (error) { showLogin("Credenziali non valide. Riprova."); return; }
+  if (error) {
+    // Un errore di RETE non e' una password sbagliata. Con un messaggio solo per
+    // entrambi i casi si finisce a ridigitare credenziali giuste mentre il vero
+    // problema e' che il progetto Supabase e' in pausa o la rete e' assente.
+    const msg = String(error.message || "");
+    const nome = String(error.name || "");
+    const problemaDiRete = !navigator.onLine || error.status === 0
+      || /AuthRetryableFetchError/i.test(nome)
+      || /failed to fetch|fetch failed|networkerror|load failed/i.test(msg);
+    showLogin(problemaDiRete
+      ? "Server non raggiungibile: database in pausa o rete assente. Le credenziali non c'entrano."
+      : "Credenziali non valide. Riprova.");
+    return;
+  }
   state.user = data.user;
   hideLogin();
   await startApp();
@@ -320,38 +333,17 @@ function incarichiList() { return state.ruoli.filter((r) => r.tipo === "incarico
 // Per ogni dipendente attivo: unione dei requisiti obbligatori
 // dei suoi ruoli, confronto con l'adempimento valido più recente.
 // ============================================================
+// Adattatore: raccoglie lo stato e chiama il nucleo puro in common.js.
+// L'ordinamento per gravita' resta qui perche' e' presentazione: STATO_INFO
+// e' UI, e il nucleo non deve conoscerla.
 function computeGaps(dip) {
-  const ruoli = ruoliOfDip(dip.id);
-  const ruoloIds = new Set(ruoli.map((r) => r.id));
-  // Requisiti dovuti (dedup per tipo_requisito; tiene la regola con validità più stringente).
-  const dovutiByTipo = new Map();
-  for (const req of state.requisiti) {
-    if (!ruoloIds.has(req.ruolo_id) || !req.obbligatorio) continue;
-    const prev = dovutiByTipo.get(req.tipo_requisito_id);
-    if (!prev) { dovutiByTipo.set(req.tipo_requisito_id, req); continue; }
-    const a = req.validita_mesi == null ? Infinity : req.validita_mesi;
-    const b = prev.validita_mesi == null ? Infinity : prev.validita_mesi;
-    if (a < b) dovutiByTipo.set(req.tipo_requisito_id, req);
-  }
-  const onboardDeadline = dip.data_assunzione ? localISO(addDays(parseISO(dip.data_assunzione), GG_ONBOARD)) : null;
-
-  const rows = [];
-  for (const [tipoId, req] of dovutiByTipo) {
-    const tipo = tipoById(tipoId);
-    if (!tipo) continue;
-    // Adempimento valido più recente per questo tipo.
-    const insts = state.adempimenti
-      .filter((a) => a.dipendente_id === dip.id && a.tipo_requisito_id === tipoId)
-      .sort((a, b) => (b.data_scadenza || b.data_rilascio || "").localeCompare(a.data_scadenza || a.data_rilascio || ""));
-    const inst = insts[0];
-
-    const hasRilascio = !!(inst && inst.data_rilascio);
-    const scadenza = hasRilascio
-      ? (inst.data_scadenza || null)
-      : ((inst?.data_scadenza) || onboardDeadline || null);
-    const stato = classificaStato(hasRilascio, scadenza);
-    rows.push({ dip, tipo, req, stato, scadenza, adempimento: inst || null });
-  }
+  const rows = calcolaGap({
+    dip,
+    ruoloIds: new Set(ruoliOfDip(dip.id).map((r) => r.id)),
+    requisiti: state.requisiti,
+    adempimenti: state.adempimenti,
+    trovaTipo: tipoById,
+  });
   rows.sort((a, b) => STATO_INFO[a.stato].order - STATO_INFO[b.stato].order);
   return rows;
 }
@@ -717,7 +709,7 @@ function collectStoricoEvents() {
         docPath: a.documento_path || null,
         docUrl: a.documento_url || null,
         note: a.note || null,
-        source: "current",
+        source: a.corrente === false ? "history" : "current",
         admId: a.id,
       });
     }
@@ -1208,7 +1200,7 @@ function renderDipOnboarding(dipId) {
   const rows = items.map((item) => {
     if (item.tipo_workflow === "crea_adempimento") {
       const tipoReqId = item.adempimento_tipo_id;
-      const adm = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId);
+      const adm = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId && a.corrente !== false);
       if (!adm) return { item, derived: true, applicabile: false, fatto: false };
       return {
         item, derived: true, applicabile: true,
@@ -1332,7 +1324,7 @@ function openOnboardModal(dipId, itemId) {
     $("onboard-adm-visita-wrap").hidden = !isVisita;
     $("onboard-adm-formazione-wrap").hidden = isVisita;
     // Pre-fill dai dati salvati nel progresso, o dall'adempimento esistente.
-    const existingAdm = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId);
+    const existingAdm = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId && a.corrente !== false);
     const dati = p?.dati || {};
     $("onboard-adm-data").value = dati.data_evento || existingAdm?.data_rilascio || "";
     $("onboard-adm-ente").value = dati.ente || "";
@@ -1422,11 +1414,12 @@ async function saveOnboardProgresso(e) {
     // Se ho data evento + tipo requisito → creo/aggiorno l'adempimento.
     if (dataEvento && tipoReqId) {
       const scadenza = calcScadenza(dataEvento, tipoReqId, dipId);
-      const existing = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId);
+      const existing = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId && a.corrente !== false);
       const admRow = {
         id: existing?.id || uid(),
         dipendente_id: dipId,
         tipo_requisito_id: tipoReqId,
+        corrente: true,
         data_rilascio: dataEvento,
         data_scadenza: scadenza,
         documento_path: documento_path || existing?.documento_path || null,
@@ -1873,7 +1866,7 @@ function renderDipAdempimenti(dipId) {
   const dip = dipById(dipId);
   if (!dip) return;
   // Popola il dropdown "+ Aggiungi adempimento…" con i tipi NON ancora assegnati.
-  const giaAssegnati = new Set(state.adempimenti.filter((a) => a.dipendente_id === dipId).map((a) => a.tipo_requisito_id));
+  const giaAssegnati = new Set(state.adempimenti.filter((a) => a.dipendente_id === dipId && a.corrente !== false).map((a) => a.tipo_requisito_id));
   const aggiungibili = state.tipi.filter((t) => !giaAssegnati.has(t.id))
     .sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
   $("dip-add-adempimento").innerHTML = `<option value="">+ Aggiungi adempimento…</option>` +
@@ -1884,7 +1877,7 @@ function renderDipAdempimenti(dipId) {
   const gaps = computeGaps(dip);
   const matrixTipos = new Set(gaps.map((g) => g.tipo.id));
   const extras = state.adempimenti
-    .filter((a) => a.dipendente_id === dipId && !matrixTipos.has(a.tipo_requisito_id))
+    .filter((a) => a.dipendente_id === dipId && !matrixTipos.has(a.tipo_requisito_id) && a.corrente !== false)
     .map((a) => {
       const tipo = tipoById(a.tipo_requisito_id);
       if (!tipo) return null;
@@ -2044,12 +2037,13 @@ function missingAdempimentiRows(dipId) {
     if (!ruoloIds.has(req.ruolo_id) || !req.obbligatorio) continue;
     if (seen.has(req.tipo_requisito_id)) continue;
     seen.add(req.tipo_requisito_id);
-    const exists = state.adempimenti.some((a) => a.dipendente_id === dipId && a.tipo_requisito_id === req.tipo_requisito_id);
+    const exists = state.adempimenti.some((a) => a.dipendente_id === dipId && a.tipo_requisito_id === req.tipo_requisito_id && a.corrente !== false);
     if (exists) continue;
     rows.push({
       id: uid(),
       dipendente_id: dipId,
       tipo_requisito_id: req.tipo_requisito_id,
+      corrente: true,
       data_rilascio: null,
       data_scadenza: onboardDeadline, // scadenza dei primi adempimenti = onboarding
       documento_url: null,
@@ -2380,13 +2374,13 @@ async function applyFatto(e) {
   if (v !== undefined && v !== Infinity) newScadenza = addMonths(dataEvento, v);
 
   const row = a
-    ? { ...a, data_rilascio: dataEvento, data_scadenza: newScadenza,
+    ? { ...a, corrente: true, data_rilascio: dataEvento, data_scadenza: newScadenza,
         // Se l'HR valida senza allegare un nuovo file, il file caricato dal dipendente resta
         // agganciato; quando invece si archivia un ciclo precedente (hasCurrentCycle) il vecchio
         // path vive nello storico e il campo si azzera come prima.
         documento_path: newDocumentoPath || (hasCurrentCycle ? null : (a?.documento_path || null)),
         note: null, last_done_at: dataEvento, previous_date: a.data_scadenza || null, history }
-    : { id: targetId, dipendente_id: dipId, tipo_requisito_id: tipoId,
+    : { id: targetId, dipendente_id: dipId, tipo_requisito_id: tipoId, corrente: true,
         data_rilascio: dataEvento, data_scadenza: newScadenza, documento_path: newDocumentoPath,
         documento_url: null, done: false, done_at: null, done_by: null,
         last_done_at: dataEvento, previous_date: null, history: [], note: null };
@@ -2773,6 +2767,7 @@ function wireEvents() {
       id: uid(),
       dipendente_id: dipId,
       tipo_requisito_id: tipoId,
+      corrente: true,
       data_rilascio: null,
       data_scadenza: null,
       documento_url: null,

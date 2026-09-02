@@ -4,9 +4,15 @@
 // date helpers, classificazione stato adempimenti).
 // ============================================================
 
-// ---------- Config Supabase (progetto condiviso, anon key pubblica) ----------
-const SUPABASE_URL = "https://cqdmfhdcdvaezmexzxrq.supabase.co";
-const SUPABASE_KEY = "sb_publishable_1ECriACxKWx6_4GPxyMXVQ_MPVc2GYy";
+// ---------- Config Supabase (progetto DEDICATO all'HR, chiave publishable) ----------
+// Dal 2026-09 l'app HR ha un progetto suo: "Overland HR" (eu-central-1).
+// Prima condivideva il progetto "Scadenziario", e le due app si contendevano la
+// tabella `dipendenti`: quella in produzione era dello Scadenziario (id, nome,
+// email, ruolo, attivo, ordine), quindi il `create table if not exists` dell'HR
+// non faceva nulla e meta' delle colonne attese non e' mai esistita.
+// Non tornare al progetto condiviso: non e' un dettaglio di configurazione.
+const SUPABASE_URL = "https://tbaagbngpxibllftsgoh.supabase.co";
+const SUPABASE_KEY = "sb_publishable_J9KU1PHWz9igxYG6SfIyDw_cjTeBwNM";
 const STORAGE_BUCKET = "hr-documenti";
 let sb = null;
 if (typeof window !== "undefined") {
@@ -98,6 +104,60 @@ function classificaStato(hasRilascio, scadenza) {
   return "ok";
 }
 
+// ============================================================
+// Motore gap — nucleo puro.
+// Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
+// importante dell'app e l'unica non testabile, perche' leggeva lo stato
+// globale. Qui non legge niente: riceve tutto e restituisce le righe.
+// L'ORDINAMENTO NON STA QUI: e' una scelta di presentazione e resta in app.js.
+//
+//   dip               il dipendente (serve data_assunzione e id)
+//   ruoloIds          Set degli id di ruolo assegnati alla persona
+//   requisiti         tutte le righe di requisiti_ruolo
+//   adempimenti       tutte le righe di adempimenti
+//   trovaTipo(id)     lookup del tipo di requisito, o null se non esiste
+//   giorniOnboarding  scadenza implicita per chi non ha ancora registrato
+//   oggiISO           solo per i test: forza la data di riferimento
+// ============================================================
+function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOnboarding = GG_ONBOARD }) {
+  // Requisiti dovuti, dedup per tipo: vince la regola con la validita' piu'
+  // stringente (null = non scade = la meno stringente di tutte).
+  const dovutiByTipo = new Map();
+  for (const req of requisiti) {
+    if (!ruoloIds.has(req.ruolo_id) || !req.obbligatorio) continue;
+    const prev = dovutiByTipo.get(req.tipo_requisito_id);
+    if (!prev) { dovutiByTipo.set(req.tipo_requisito_id, req); continue; }
+    const a = req.validita_mesi == null ? Infinity : req.validita_mesi;
+    const b = prev.validita_mesi == null ? Infinity : prev.validita_mesi;
+    if (a < b) dovutiByTipo.set(req.tipo_requisito_id, req);
+  }
+
+  // Neoassunto: finche' non registra, la scadenza implicita e' assunzione + N giorni.
+  const onboardDeadline = dip.data_assunzione
+    ? localISO(addDays(parseISO(dip.data_assunzione), giorniOnboarding))
+    : null;
+
+  const rows = [];
+  for (const [tipoId, req] of dovutiByTipo) {
+    const tipo = trovaTipo(tipoId);
+    if (!tipo) continue;
+    // corrente === false = ciclo superato, tenuto come prova storica: non deve
+    // mai diventare "l'adempimento piu' recente", o un attestato del 2016
+    // farebbe sembrare coperto un obbligo scoperto.
+    const insts = adempimenti
+      .filter((a) => a.dipendente_id === dip.id && a.tipo_requisito_id === tipoId && a.corrente !== false)
+      .sort((a, b) => (b.data_scadenza || b.data_rilascio || "").localeCompare(a.data_scadenza || a.data_rilascio || ""));
+    const inst = insts[0];
+
+    const hasRilascio = !!(inst && inst.data_rilascio);
+    const scadenza = hasRilascio
+      ? (inst.data_scadenza || null)
+      : ((inst?.data_scadenza) || onboardDeadline || null);
+    rows.push({ dip, tipo, req, stato: classificaStato(hasRilascio, scadenza), scadenza, adempimento: inst || null });
+  }
+  return rows;
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { classificaStato, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
+  module.exports = { classificaStato, calcolaGap, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }
