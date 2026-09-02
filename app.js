@@ -21,6 +21,7 @@ const state = {
   modelli: [],            // documenti_template (lettera assunzione, GDPR, ecc.)
   dpiTipi: [],            // catalogo DPI
   dpiConsegne: [],        // registro consegne DPI per dipendente
+  storicoModifiche: [],   // audit trail scritto dal trigger, mai dall'app (1.6)
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
@@ -31,7 +32,15 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche"];
+
+// Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
+// scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
+// quindi "caricata ma non in realtime" era impossibile da esprimere. Una tabella
+// nuova entra in TABLES e NON qui, se non per una decisione motivata.
+// storico_modifiche non c'e': e' un registro, non una vista, e ogni salvataggio
+// ne produrrebbe una riga e un render in piu'.
+const REALTIME_TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne"];
 const STORE_BY_TABLE = {
   categorie: "categorie",
   ruoli: "ruoli",
@@ -47,6 +56,7 @@ const STORE_BY_TABLE = {
   documenti_template: "modelli",
   dpi_tipi: "dpiTipi",
   dpi_consegne: "dpiConsegne",
+  storico_modifiche: "storicoModifiche",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -321,7 +331,7 @@ async function sbDelete(table, id) {
 let rtChannel = null;
 function subscribeRealtime() {
   rtChannel = sb.channel("hr-all");
-  for (const t of TABLES) {
+  for (const t of REALTIME_TABLES) {
     rtChannel.on("postgres_changes", { event: "*", schema: "public", table: t }, (payload) => {
       const store = STORE_BY_TABLE[t];
       const arr = state[store];
@@ -1026,6 +1036,10 @@ function openDipModal(id) {
   // Provvedimenti disciplinari del dipendente.
   if (d) renderDipProvvedimenti(d.id);
   else $("dip-provv-section").hidden = true;
+
+  // Modifiche registrate dal database (1.6).
+  if (d) renderDipModifiche(d.id);
+  else $("dip-modifiche-section").hidden = true;
 
   // Storico esecuzioni del dipendente (tutte).
   if (d) renderDipHistory(d.id);
@@ -1964,6 +1978,63 @@ function renderDipHistory(dipId) {
       window.open(url, "_blank", "noopener");
     }
   }));
+}
+
+// 1.6 · "Modifiche": chi ha cambiato cosa, e quando. Le righe le scrive un
+// trigger nel database, mai l'app: e' insieme la storia delle variazioni
+// contrattuali e l'audit trail ("chi ha cancellato questo provvedimento").
+// Sola lettura per costruzione: non esiste nessuna scrittura verso questa tabella.
+// Registra QUANDO e' stato salvato, non la decorrenza: per due o tre variazioni
+// l'anno la lettera nel fascicolo basta.
+// La tabella NON e' in realtime (scelta del piano): le righe scritte dopo il
+// caricamento della pagina compaiono al primo ricaricamento.
+const ETICHETTA_TABELLA = {
+  dipendenti: "Scheda",
+  dipendente_ruoli: "Ruoli",
+  adempimenti: "Adempimento",
+  provvedimenti: "Provvedimento",
+  requisiti_ruolo: "Matrice",
+  ruoli: "Ruolo",
+  tipi_requisito: "Tipo requisito",
+};
+
+// Il valore com'e' scritto nel jsonb: null diventa un trattino, gli oggetti
+// (taglie_dpi) restano leggibili invece di diventare [object Object].
+function valoreModifica(v) {
+  if (v == null || v === "") return "—";
+  if (typeof v === "object") return JSON.stringify(v);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmtDate(v);
+  return String(v);
+}
+
+function renderDipModifiche(dipId) {
+  const section = $("dip-modifiche-section");
+  const list = $("dip-modifiche-list");
+  const righe = state.storicoModifiche
+    .filter((m) => m.dipendente_id === dipId)
+    .sort((a, b) => String(b.modificato_il || "").localeCompare(String(a.modificato_il || "")));
+  $("dip-modifiche-count").textContent = righe.length;
+  section.hidden = righe.length === 0;
+  // Default: collassato, come le altre sezioni della scheda.
+  list.hidden = true;
+  el(".history-arrow", $("dip-modifiche-toggle"))?.classList.remove("expanded");
+  $("dip-modifiche-toggle").setAttribute("aria-expanded", "false");
+
+  list.innerHTML = righe.map((m) => {
+    const campi = m.campi && typeof m.campi === "object" ? m.campi : {};
+    const dove = ETICHETTA_TABELLA[m.tabella] || m.tabella;
+    const testo = campi.__cancellata
+      ? '<span class="mod-cancellata">riga cancellata</span>'
+      : Object.entries(campi).map(([campo, v]) =>
+          `<span class="mod-campo">${esc(campo)}</span>: `
+          + `<span class="mod-da">${esc(valoreModifica(v && v.da))}</span> → ${esc(valoreModifica(v && v.a))}`
+        ).join(" · ");
+    return `<div class="mod-row">
+      <div class="mod-quando">${fmtDateTime(m.modificato_il)}</div>
+      <div class="mod-campi">${esc(dove)} · ${testo}</div>
+      <div class="mod-chi">${esc(m.modificato_da || "—")}</div>
+    </div>`;
+  }).join("");
 }
 
 function renderDipAdempimenti(dipId) {
@@ -3442,6 +3513,7 @@ function wireEvents() {
   $("invite-copy").addEventListener("click", copyInviteLink);
   $("invite-link").addEventListener("focus", (e) => e.target.select());
   $("dip-history-toggle").addEventListener("click", () => toggleSection("dip-history-toggle", "dip-history-list"));
+  $("dip-modifiche-toggle").addEventListener("click", () => toggleSection("dip-modifiche-toggle", "dip-modifiche-list"));
   // Onboarding (scheda dipendente)
   $("dip-onboard-toggle").addEventListener("click", () => toggleSection("dip-onboard-toggle", "dip-onboard-list"));
   $("onboard-form").addEventListener("submit", saveOnboardProgresso);

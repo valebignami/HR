@@ -1495,3 +1495,21 @@ body.self-service { background: var(--bg); }
   font-size: 12px;
 }
 .rev-row .rev-nome { color: var(--ink); }
+
+/* 1.6 · Sezione "Modifiche" della scheda dipendente: sola lettura. */
+.mod-row {
+  display: grid;
+  grid-template-columns: 128px 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.mod-row:last-child { border-bottom: 0; }
+.mod-quando { color: var(--ink-soft); white-space: nowrap; }
+.mod-campi { color: var(--ink); word-break: break-word; }
+.mod-campo { font-weight: 600; }
+.mod-da { color: var(--ink-soft); text-decoration: line-through; }
+.mod-chi { color: var(--ink-soft); white-space: nowrap; }
+.mod-cancellata { color: var(--red); font-weight: 600; }
