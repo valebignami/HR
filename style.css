@@ -1746,3 +1746,12 @@ body.self-service { background: var(--bg); }
   border-left-color: #0f766e;
 }
 .ev-row .hist-note .stato { font-size: 11px; }
+/* `.modal-body label` piu' sopra dichiara `display: flex`, ed e' una regola
+   d'autore: batte l'`[hidden] { display: none }` del browser. Senza queste
+   righe i tre contenitori che la modale dell'evento nasconde da sola
+   (Dipendente, Ore, Protocollo INPS) resterebbero VISIBILI, e su una richiesta
+   di ferie comparirebbe un campo "Protocollo INPS *" da riempire.
+   E' la stessa trappola per cui questo file ha gia' dovuto scrivere
+   .view[hidden], .config-panel[hidden], .ro-field[hidden], .doc-current[hidden]
+   e .dip-tab-panel[hidden]. */
+#ev-dip-wrap[hidden], #ev-ore-wrap[hidden], #ev-inps-wrap[hidden] { display: none; }
