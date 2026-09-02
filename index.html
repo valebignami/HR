@@ -419,12 +419,16 @@
 
       <fieldset class="responsabili-fieldset">
         <legend>Mansione (obbligatoria, una sola)</legend>
-        <select id="dip-mansione" required></select>
+        <div class="row">
+          <label><span>Mansione *</span><select id="dip-mansione" required></select></label>
+          <label><span>In mansione dal</span><input type="date" id="dip-mansione-dal"></label>
+        </div>
       </fieldset>
 
       <fieldset class="responsabili-fieldset">
         <legend>Incarichi / nomine</legend>
         <div id="dip-incarichi" class="responsabili-checkboxes"></div>
+        <div id="dip-incarichi-revocati" class="incarichi-revocati"></div>
       </fieldset>
 
       <label class="inline-check"><input type="checkbox" id="dip-attivo" checked> <span>In forza (attivo)</span></label>

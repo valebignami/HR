@@ -125,6 +125,19 @@ async function uploadDoc(adempimentoId, file) {
   return path;
 }
 
+// 1.5 · Atto di nomina: stesso schema degli altri upload, prefisso proprio.
+// Il timestamp evita che una nomina nuova sovrascriva quella vecchia.
+async function uploadNomina(rigaId, file) {
+  const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+  const path = `nomine/${rigaId}/${Date.now()}.${ext}`;
+  const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, file, {
+    upsert: false,
+    contentType: file.type || "application/octet-stream",
+  });
+  if (error) throw error;
+  return path;
+}
+
 // TTL 10 minuti: i PDF contengono dati sanitari (idoneità) o provvedimenti
 // disciplinari — link a 1h è troppo se vengono inoltrati per errore.
 async function getSignedDocUrl(path, dlName) {
@@ -333,8 +346,20 @@ function unsubscribeAll() {
 const ruoloById = (id) => state.ruoli.find((r) => r.id === id);
 const tipoById = (id) => state.tipi.find((t) => t.id === id);
 const dipById = (id) => state.dipendenti.find((d) => d.id === id);
+// 1.5 · UNICO punto che filtra le assegnazioni attive di una persona.
+// Da qui passano il motore gap, il sync degli obblighi, il calcolo della
+// validita' e la scheda: se il filtro finisse in piu' posti, un incarico
+// revocato tornerebbe a contare da qualche parte, in silenzio.
+// L'altro lettore di state.dipRuoli e' calcolaCariche in common.js, che ha il
+// suo filtro e il suo test.
+function assegnazioniOfDip(dipId, { conRevocate = false } = {}) {
+  return state.dipRuoli
+    .filter((dr) => dr.dipendente_id === dipId && (conRevocate || assegnazioneAttiva(dr)))
+    .map((dr) => ({ ...dr, ruolo: ruoloById(dr.ruolo_id) }))
+    .filter((a) => a.ruolo);
+}
 function ruoliOfDip(dipId) {
-  return state.dipRuoli.filter((dr) => dr.dipendente_id === dipId).map((dr) => ruoloById(dr.ruolo_id)).filter(Boolean);
+  return assegnazioniOfDip(dipId).map((a) => a.ruolo);
 }
 function mansioniList() { return state.ruoli.filter((r) => r.tipo === "mansione"); }
 function incarichiList() { return state.ruoli.filter((r) => r.tipo === "incarico"); }
@@ -932,14 +957,51 @@ function openDipModal(id) {
   els(".dip-section .dip-section-body").forEach((b) => (b.hidden = true));
   els(".dip-section .history-arrow").forEach((a) => a.classList.remove("expanded"));
 
-  // Mansione (1) + incarichi (checkbox).
-  const assigned = d ? new Set(ruoliOfDip(d.id).map((r) => r.id)) : new Set();
+  // Mansione (1) + incarichi (checkbox), ciascuno con la sua data di nomina e
+  // il suo atto (1.5). Le righe revocate restano in fondo, in sola lettura.
+  const attive = d ? assegnazioniOfDip(d.id) : [];
+  const perRuolo = new Map(attive.map((a) => [a.ruolo_id, a]));
   fillSelect($("dip-mansione"), mansioniList(), { placeholder: "— seleziona —" });
-  const curMan = d ? ruoliOfDip(d.id).find((r) => r.tipo === "mansione") : null;
-  $("dip-mansione").value = curMan ? curMan.id : "";
-  $("dip-incarichi").innerHTML = incarichiList().map((i) =>
-    `<label><input type="checkbox" class="inc-check" value="${i.id}" ${assigned.has(i.id) ? "checked" : ""}> ${esc(i.nome)}</label>`
-  ).join("") || '<span class="muted">Nessun incarico configurato.</span>';
+  const curMan = attive.find((a) => a.ruolo.tipo === "mansione") || null;
+  $("dip-mansione").value = curMan ? curMan.ruolo_id : "";
+  // ATTENZIONE: `dal` NON si precompila mai su una riga che esiste gia'. Se
+  // scrivessimo oggi, il primo salvataggio della scheda registrerebbe la data di
+  // oggi come data di nomina di un incarico vecchio di anni. Vuoto = non nota.
+  $("dip-mansione-dal").value = curMan?.dal || "";
+
+  $("dip-incarichi").innerHTML = incarichiList().map((i) => {
+    const a = perRuolo.get(i.id);
+    return `<div class="inc-row" data-ruolo="${esc(i.id)}">
+      <label class="inline-check"><input type="checkbox" class="inc-check" value="${esc(i.id)}" ${a ? "checked" : ""}> <span>${esc(i.nome)}</span></label>
+      <div class="inc-dettagli" ${a ? "" : "hidden"}>
+        <label><span>dal</span><input type="date" class="inc-dal" value="${esc(a?.dal || "")}"></label>
+        <label><span>atto di nomina</span><input type="file" class="inc-file" accept=".pdf,image/*"></label>
+        ${a?.documento_path ? `<button type="button" class="icon-btn inc-doc" data-path="${esc(a.documento_path)}" title="Apri l'atto di nomina">📎</button>` : ""}
+      </div>
+    </div>`;
+  }).join("") || '<span class="muted">Nessun incarico configurato.</span>';
+
+  els("#dip-incarichi .inc-check").forEach((c) => c.addEventListener("change", () => {
+    const riga = c.closest(".inc-row");
+    el(".inc-dettagli", riga).hidden = !c.checked;
+    // Una casella appena spuntata e' una nomina che avviene ORA: quella data,
+    // a differenza di quelle gia' in archivio, la conosciamo.
+    const dal = el(".inc-dal", riga);
+    if (c.checked && !dal.value) dal.value = localISO(new Date());
+  }));
+  els("#dip-incarichi .inc-doc").forEach((b) => b.addEventListener("click", () => openSignedDoc(b.dataset.path)));
+
+  const revocate = d ? assegnazioniOfDip(d.id, { conRevocate: true }).filter((a) => !assegnazioneAttiva(a)) : [];
+  revocate.sort((a, b) => (b.al || "").localeCompare(a.al || ""));
+  $("dip-incarichi-revocati").innerHTML = revocate.length
+    ? '<div class="rev-titolo">Revocati</div>' + revocate.map((a) =>
+        `<div class="rev-row">
+          <span class="rev-nome">${esc(a.ruolo.nome)}</span>
+          <span>dal ${a.dal ? fmtDate(a.dal) : "—"} al ${fmtDate(a.al)}</span>
+          ${a.documento_path ? `<button type="button" class="icon-btn rev-doc" data-path="${esc(a.documento_path)}" title="Apri l'atto di nomina">📎</button>` : ""}
+        </div>`).join("")
+    : "";
+  els("#dip-incarichi-revocati .rev-doc").forEach((b) => b.addEventListener("click", () => openSignedDoc(b.dataset.path)));
 
   $("dip-delete").hidden = !d;
   // Genera link self-service: per qualunque dipendente esistente.
@@ -2075,18 +2137,8 @@ async function saveDip(e) {
   const ok = await sbUpsert("dipendenti", row);
   if (!ok) return;
 
-  // Sincronizza ruoli (mansione + incarichi).
-  const wantMan = $("dip-mansione").value;
-  const wantInc = incarichiSpuntati();
-  const want = new Set([...(wantMan ? [wantMan] : []), ...wantInc]);
-  const current = state.dipRuoli.filter((dr) => dr.dipendente_id === id);
-  // Rimuovi quelli non più voluti.
-  for (const dr of current) if (!want.has(dr.ruolo_id)) await sbDelete("dipendente_ruoli", dr.id);
-  // Aggiungi i nuovi.
-  const have = new Set(current.map((dr) => dr.ruolo_id));
-  for (const ruoloId of want) {
-    if (!have.has(ruoloId)) await sbUpsert("dipendente_ruoli", { id: uid(), dipendente_id: id, ruolo_id: ruoloId });
-  }
+  // Sincronizza mansione e incarichi (1.5): revoca, non cancella.
+  if (!await sincronizzaAssegnazioni(id)) return;   // l'errore e' gia' stato mostrato
 
   // Genera adempimenti MANCANTI per i requisiti obbligatori dei ruoli attuali
   // (sia per nuovi dipendenti che per cambi ruolo su esistenti).
@@ -2094,6 +2146,76 @@ async function saveDip(e) {
 
   closeModal("modal-dip");
   renderAll();
+}
+
+// 1.5 · Mansione e incarichi dal form alla tabella. Togliere la spunta NON
+// cancella piu' la riga: la chiude con `al`. "Da quando e' preposto, e dov'e' la
+// nomina" e' la storia che un'app di sicurezza deve conoscere — la formazione
+// del preposto decorre dalla nomina — ed e' il presupposto della cessazione.
+// Vale anche per la mansione: passare da operatore a manutentore chiude la riga
+// vecchia e ne apre una nuova, e da quel giorno cambiano gli obblighi.
+// Ritorna false se qualcosa e' andato storto (l'errore e' gia' a schermo).
+async function sincronizzaAssegnazioni(dipId) {
+  const oggi = localISO(new Date());
+  const attive = state.dipRuoli.filter((dr) => dr.dipendente_id === dipId && assegnazioneAttiva(dr));
+  const perRuolo = new Map(attive.map((dr) => [dr.ruolo_id, dr]));
+
+  // Cosa chiede il form: ruolo → { dal, file }.
+  const voluti = new Map();
+  const man = $("dip-mansione").value;
+  if (man) voluti.set(man, { dal: $("dip-mansione-dal").value || null, file: null });
+  for (const riga of els("#dip-incarichi .inc-row")) {
+    const check = el(".inc-check", riga);
+    if (!check || !check.checked) continue;
+    voluti.set(check.value, {
+      dal: el(".inc-dal", riga)?.value || null,
+      file: el(".inc-file", riga)?.files?.[0] || null,
+    });
+  }
+
+  // 1) Revoche.
+  for (const dr of attive) {
+    if (voluti.has(dr.ruolo_id)) continue;
+    if (!await sbUpsert("dipendente_ruoli", { ...dr, al: oggi })) return false;
+  }
+
+  // 2) Nuove assegnazioni e aggiornamenti.
+  for (const [ruoloId, v] of voluti) {
+    const esistente = perRuolo.get(ruoloId);
+    const rigaId = esistente?.id || uid();
+
+    let caricato = null;
+    if (v.file) {
+      try {
+        caricato = await uploadNomina(rigaId, v.file);
+      } catch (err) {
+        alert("Errore caricamento atto di nomina: " + err.message);
+        return false;
+      }
+    }
+    // Niente da scrivere: la riga c'e' gia', la data non e' cambiata, nessun file.
+    if (esistente && !caricato && (esistente.dal || null) === (v.dal || null)) continue;
+
+    const riga = {
+      ...(esistente || {}),
+      id: rigaId,
+      dipendente_id: dipId,
+      ruolo_id: ruoloId,
+      dal: v.dal || null,
+      al: null,
+      documento_path: caricato || esistente?.documento_path || null,
+    };
+    if (!await sbUpsert("dipendente_ruoli", riga)) {
+      // Mai lasciare nel bucket un file che nessuna riga referenzia.
+      if (caricato) await deleteDoc(caricato);
+      return false;
+    }
+    // Il file vecchio si cancella SOLO a salvataggio riuscito, mai prima.
+    if (caricato && esistente?.documento_path && esistente.documento_path !== caricato) {
+      await deleteDoc(esistente.documento_path);
+    }
+  }
+  return true;
 }
 
 // Righe MANCANTI da creare per i requisiti obbligatori non ancora a DB.
@@ -2207,7 +2329,7 @@ async function copyInviteLink() {
 // dipendente_id text), quindi il cascade va fatto esplicitamente qui:
 // senza, le righe restano orfane e i loro file restano nel bucket.
 const TABELLE_FIGLIE_DIP = [
-  { table: "dipendente_ruoli",      store: "dipRuoli",         doc: null },
+  { table: "dipendente_ruoli",      store: "dipRuoli",         doc: "documento_path" },
   { table: "adempimenti",           store: "adempimenti",      doc: "documento_path" },
   { table: "provvedimenti",         store: "provvedimenti",    doc: "documento_path" },
   { table: "onboarding_progressi",  store: "onboardProgressi", doc: "documento_path" },
@@ -3052,6 +3174,13 @@ function collegaDocumentiAiDati(prefissoDip) {
         segna(h.documentoPath, dip, "Adempimento (archiviato)", nomeTipo, h.doneAt || h.rilascio, "archiviato");
       }
     }
+  }
+  for (const dr of state.dipRuoli) {
+    // 1.5 · Gli atti di nomina sono documenti come gli altri: senza questa riga
+    // uscirebbero dal backup come "non collegato", cioe' file senza padrone.
+    segna(dr.documento_path, dipById(dr.dipendente_id), "Nomina",
+      ruoloById(dr.ruolo_id)?.nome || dr.ruolo_id || "", dr.dal,
+      assegnazioneAttiva(dr) ? "corrente" : "revocata");
   }
   for (const p of state.provvedimenti) {
     const et = (window.TIPI_PROVVEDIMENTO || []).find((t) => t.key === p.tipo)?.label || p.tipo || "";
