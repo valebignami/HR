@@ -56,6 +56,9 @@ const STORE_BY_TABLE = {
 // documenti diventa un mucchio di file anonimi.
 // NON entra in TABLES ne' in STORE_BY_TABLE: non va in `state` ne' in realtime.
 const TABELLE_BACKUP = TABLES.concat(["invite_tokens"]);
+// Colonna su cui ordinare per paginare in modo deterministico. Quasi tutte hanno
+// `id`; `invite_tokens` no, la sua chiave e' `token`.
+const CHIAVE_ORDINE_BACKUP = { invite_tokens: "token" };
 
 // ---------- Helpers ----------
 // $, el, els, uid, esc, localISO, parseISO, fmtDate, addMonths, addDays, daysUntil,
@@ -2689,6 +2692,29 @@ function appiattisciPerExcel(righe) {
   });
 }
 
+// Legge una tabella INTERA, a pagine. Senza `range` PostgREST si ferma al
+// `max-rows` del progetto (1000 di default su Supabase) e restituisce le prime
+// N righe SENZA errore: il backup sembrerebbe completo e non lo sarebbe.
+// Si esce solo su una pagina vuota, non su una pagina corta: cosi' il ciclo e'
+// corretto qualunque sia il max-rows configurato, anche piu' piccolo di PAGINA.
+// L'ordinamento e' obbligatorio: senza, due pagine possono ripetere o saltare righe.
+const PAGINA_BACKUP = 1000;
+async function leggiTabellaIntera(tabella) {
+  const chiave = CHIAVE_ORDINE_BACKUP[tabella] || "id";
+  const righe = [];
+  for (let da = 0; ; ) {
+    const { data, error } = await sb.from(tabella).select("*")
+      .order(chiave, { ascending: true })
+      .range(da, da + PAGINA_BACKUP - 1);
+    if (error) return { error };
+    const pagina = data || [];
+    if (!pagina.length) break;
+    righe.push(...pagina);
+    da += pagina.length;
+  }
+  return { righe };
+}
+
 // ---------- 0.2 · Backup dei dati ----------
 async function backupDati() {
   if (!window.XLSX || !window.JSZip) { alert("Librerie Excel/ZIP non caricate. Ricarica la pagina."); return; }
@@ -2700,7 +2726,7 @@ async function backupDati() {
     const dati = {};
     for (const t of TABELLE_BACKUP) {
       btn.aggiorna(`⏳ ${t}…`);
-      const { data, error } = await sb.from(t).select("*");
+      const { righe, error } = await leggiTabellaIntera(t);
       if (error) {
         // Ci si ferma: un backup con un buco e' peggio di un backup assente,
         // perche' sembra un backup.
@@ -2708,7 +2734,7 @@ async function backupDati() {
         else alert(`Backup interrotto: non riesco a leggere la tabella "${t}".\n${error.message}\n\nNessun file e' stato scaricato.`);
         return;
       }
-      dati[t] = data || [];
+      dati[t] = righe;
     }
 
     btn.aggiorna("⏳ Creazione file…");
@@ -2822,7 +2848,14 @@ async function backupDocumenti() {
     // Il prefisso dell'invito e' l'unico legame fra un file del portale e la
     // persona: `invite_tokens` non sta in `state`, si legge qui.
     const prefissoDip = new Map();
-    const { data: inviti } = await sb.from("invite_tokens").select("upload_prefix, dipendente_id");
+    const { righe: inviti, error: errInviti } = await leggiTabellaIntera("invite_tokens");
+    if (errInviti) {
+      // Non si interrompe il backup — i file si scaricano lo stesso — ma senza
+      // avviso l'HR leggerebbe un indice con tutti i file del portale "senza
+      // proprietario" e lo crederebbe la verita'.
+      if (isAuthError(errInviti)) { showLogin("Sessione scaduta. Rientra."); return; }
+      alert(`Non riesco a leggere gli inviti del portale: ${errInviti.message}\n\nIl backup prosegue, ma nell'indice i file caricati dai dipendenti resteranno senza nome.`);
+    }
     for (const i of inviti || []) {
       if (i.upload_prefix) prefissoDip.set(i.upload_prefix, dipById(i.dipendente_id));
     }
