@@ -898,8 +898,10 @@ function openDipModal(id) {
   $("dip-orario").value = d?.orario_tipo || "";
   $("dip-ore").value = d?.ore_settimanali ?? "";
   $("dip-sede").value = d?.sede_lavoro || "";
-  $("dip-iban").value = d?.iban || "";
-  $("dip-ral").value = d?.ral ?? "";
+  // IBAN e RAL non stanno piu' nella scheda (Fase 0.5): sono dati del consulente
+  // del lavoro, l'app non li usa e sono i due che fanno piu' danno se letti da
+  // chi non deve. Le colonne restano nel database e i valori esistenti non
+  // vengono toccati: sbUpsert scrive solo le colonne che gli passi.
 
   // Emergenza
   $("dip-emerg-nome").value = d?.emergenza_nome || "";
@@ -1486,7 +1488,8 @@ const SEGNAPOSTI_DISPONIBILI = [
   { key: "orario_tipo", label: "Orario di lavoro" },
   { key: "ore_settimanali", label: "Ore settimanali" },
   { key: "sede_lavoro", label: "Sede di lavoro" },
-  { key: "iban", label: "IBAN" },
+  // Niente {{iban}}: il campo non e' piu' compilabile dalla scheda (Fase 0.5),
+  // quindi il segnaposto stamperebbe "________" per sempre.
   { key: "residenza_indirizzo", label: "Indirizzo residenza" },
   { key: "residenza_cap", label: "CAP residenza" },
   { key: "residenza_citta", label: "Città residenza" },
@@ -1977,8 +1980,6 @@ async function saveDip(e) {
     orario_tipo: $("dip-orario").value || null,
     ore_settimanali: $("dip-ore").value ? parseFloat($("dip-ore").value) : null,
     sede_lavoro: $("dip-sede").value.trim() || null,
-    iban: $("dip-iban").value.trim().replace(/\s+/g, "") || null,
-    ral: $("dip-ral").value ? parseFloat($("dip-ral").value) : null,
     emergenza_nome: $("dip-emerg-nome").value.trim() || null,
     emergenza_telefono: $("dip-emerg-tel").value.trim() || null,
     emergenza_parentela: $("dip-emerg-parentela").value || null,
