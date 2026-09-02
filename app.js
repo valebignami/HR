@@ -1294,10 +1294,9 @@ async function syncOnboardingProgressi(dipId) {
   const dip = dipById(dipId);
   if (!dip) return;
   const have = new Set(state.onboardProgressi.filter((p) => p.dipendente_id === dipId).map((p) => p.item_id));
-  const rows = state.onboardItems
-    // Le voci "crea_adempimento" non hanno un progresso proprio: il loro stato
-    // è derivato dall'adempimento in Scadenze (singola fonte di verità).
-    .filter((item) => !have.has(item.id) && item.tipo_workflow !== "crea_adempimento")
+  // 2.1 · Chi e' in forza riceve solo le voci d'ingresso, chi e' cessato (con la
+  // sua data) solo quelle d'uscita. La regola sta in common.js con i test.
+  const rows = itemsOnboardingDaSincronizzare({ dip, items: state.onboardItems, itemIdEsistenti: have })
     .map((item) => ({
       id: uid(),
       dipendente_id: dipId,
@@ -1320,20 +1319,41 @@ async function syncOnboardingProgressi(dipId) {
   renderAll();
 }
 
-function scadenzaOnboardingItem(dip, item) {
-  if (!dip?.data_assunzione || item.giorni_da_assunzione == null) return null;
-  return localISO(addDays(parseISO(dip.data_assunzione), item.giorni_da_assunzione));
-}
+// 2.1 · scadenzaOnboardingItem e' passata in common.js: la data di base non e'
+// piu' sempre l'assunzione (per le voci d'uscita e' la cessazione), ed e' una
+// regola su date, quindi vive dove ci sono i test.
 
 function renderDipOnboarding(dipId) {
   const dip = dipById(dipId);
-  const section = $("dip-onboard-section");
-  if (!dip) { section.hidden = true; return; }
+  const sezIngresso = $("dip-onboard-section");
+  const sezUscita = $("dip-uscita-section");
+  if (!dip) { sezIngresso.hidden = true; sezUscita.hidden = true; return; }
   const items = state.onboardItems.slice().sort((a, b) => (a.ordine ?? 100) - (b.ordine ?? 100));
-  if (!items.length) { section.hidden = true; return; }
   const progressiByItem = Object.fromEntries(
     state.onboardProgressi.filter((p) => p.dipendente_id === dipId).map((p) => [p.item_id, p])
   );
+  const perFase = (f) => items.filter((it) => (it.fase || "ingresso") === f);
+
+  disegnaChecklist({ dip, items: perFase("ingresso"), progressiByItem,
+    idSezione: "dip-onboard-section", idConteggio: "dip-onboard-count", idLista: "dip-onboard-list" });
+
+  // La checklist di uscita esiste solo per chi se ne e' andato: a una persona in
+  // forza non si mostra vuota, non si mostra affatto.
+  if (dip.attivo === false) {
+    disegnaChecklist({ dip, items: perFase("uscita"), progressiByItem,
+      idSezione: "dip-uscita-section", idConteggio: "dip-uscita-count", idLista: "dip-uscita-list" });
+  } else {
+    sezUscita.hidden = true;
+  }
+}
+
+// Disegna UNA delle due checklist. Il corpo e' quello di sempre: separarlo per
+// fase avrebbe voluto dire due copie della stessa logica di stato, allegati e
+// click, cioe' il modo sicuro di farle divergere.
+function disegnaChecklist({ dip, items, progressiByItem, idSezione, idConteggio, idLista }) {
+  const dipId = dip.id;
+  const section = $(idSezione);
+  if (!items.length) { section.hidden = true; return; }
 
   // Calcolo lo stato di ogni voce: derivato dall'adempimento (per crea_adempimento)
   // o dal progresso (per gli altri).
@@ -1363,10 +1383,10 @@ function renderDipOnboarding(dipId) {
 
   const totale = rows.filter((r) => r.applicabile).length;
   const fatti = rows.filter((r) => r.applicabile && r.fatto).length;
-  $("dip-onboard-count").textContent = `${fatti}/${totale}`;
+  $(idConteggio).textContent = `${fatti}/${totale}`;
   section.hidden = false;
 
-  const host = $("dip-onboard-list");
+  const host = $(idLista);
   host.innerHTML = rows.map((r) => {
     const item = r.item;
     if (!r.applicabile) {
@@ -1825,12 +1845,20 @@ const WORKFLOW_ONBOARDING = {
   crea_adempimento:    { label: "Registra un adempimento", hint: "Alla compilazione crea/aggiorna l'adempimento di compliance scelto (visita medica, corso…)." },
 };
 
+// 2.1 · Le due checklist vivono nella stessa tabella, distinte da `fase`.
+// L'ordinamento e' per (fase, ordine) di proposito: mescolarle renderebbe
+// illeggibile l'elenco, perche' i due `ordine` partono entrambi da 10.
+const FASE_ONBOARDING = { ingresso: "Ingresso", uscita: "Uscita" };
+
 function renderOnboardingItemsTable() {
-  const rows = state.onboardItems.slice().sort((a, b) => (a.ordine ?? 100) - (b.ordine ?? 100));
+  const faseDi = (r) => (r.fase === "uscita" ? "uscita" : "ingresso");
+  const rows = state.onboardItems.slice().sort((a, b) =>
+    faseDi(a).localeCompare(faseDi(b)) || (a.ordine ?? 100) - (b.ordine ?? 100));
   $("onboard-items-table").innerHTML =
-    `<div class="cfg-row head cfg-cols-tipi"><div>Etichetta</div><div>Giorni</div><div>Workflow</div><div>Descrizione</div></div>` +
-    rows.map((r) => `<div class="cfg-row cfg-cols-tipi" data-id="${esc(r.id)}">
+    `<div class="cfg-row head cfg-cols-onb"><div>Etichetta</div><div>Fase</div><div>Giorni</div><div>Workflow</div><div>Descrizione</div></div>` +
+    rows.map((r) => `<div class="cfg-row cfg-cols-onb" data-id="${esc(r.id)}">
       <div><strong>${esc(r.label)}</strong></div>
+      <div>${esc(FASE_ONBOARDING[faseDi(r)])}</div>
       <div>${r.giorni_da_assunzione ?? 0}gg</div>
       <div class="muted">${esc(WORKFLOW_ONBOARDING[r.tipo_workflow]?.label || r.tipo_workflow || "Semplice")}</div>
       <div class="muted">${esc((r.descrizione || "").slice(0, 60))}${(r.descrizione || "").length > 60 ? "…" : ""}</div>
@@ -1846,12 +1874,22 @@ function aggiornaCampiWorkflowOnboarding() {
   $("onbi-workflow-hint").textContent = WORKFLOW_ONBOARDING[wf]?.hint || "";
 }
 
+// 2.1 · I giorni si contano da due date diverse a seconda della fase, e
+// l'etichetta deve dirlo: "30 giorni" da soli non vogliono dire niente.
+function aggiornaEtichettaGiorniOnboarding() {
+  $("onbi-giorni-label").textContent = $("onbi-fase").value === "uscita"
+    ? "Giorni dalla cessazione *"
+    : "Giorni dall'assunzione *";
+}
+
 function openOnboardItemModal(id) {
   const it = id ? state.onboardItems.find((x) => x.id === id) : null;
   $("onbi-title").textContent = it ? it.label : "Nuova voce template onboarding";
   $("onbi-id").value = it ? it.id : "";
   $("onbi-label").value = it?.label || "";
   $("onbi-descrizione").value = it?.descrizione || "";
+  $("onbi-fase").value = it?.fase === "uscita" ? "uscita" : "ingresso";
+  aggiornaEtichettaGiorniOnboarding();
   $("onbi-giorni").value = it?.giorni_da_assunzione ?? 0;
   $("onbi-ordine").value = it?.ordine ?? 100;
   $("onbi-workflow").value = it?.tipo_workflow || "semplice";
@@ -1884,6 +1922,7 @@ async function saveOnboardItem(e) {
     id,
     label: $("onbi-label").value.trim(),
     descrizione: $("onbi-descrizione").value.trim() || null,
+    fase: $("onbi-fase").value === "uscita" ? "uscita" : "ingresso",
     giorni_da_assunzione: parseInt($("onbi-giorni").value, 10) || 0,
     ordine: parseInt($("onbi-ordine").value, 10) || 100,
     tipo_workflow: wf,
@@ -2292,12 +2331,47 @@ async function saveDip(e) {
   // Sincronizza mansione e incarichi (1.5): revoca, non cancella.
   if (!await sincronizzaAssegnazioni(id)) return;   // l'errore e' gia' stato mostrato
 
+  // 2.1 · La persona esce dall'azienda proprio adesso: link del portale spento e
+  // incarichi da chiudere. Solo alla TRANSIZIONE, e solo con una data: risalvare
+  // la scheda di un cessato non deve rifare niente.
+  const esceOra = !!esistente && esistente.attivo !== false && !row.attivo && !!row.data_cessazione;
+  if (esceOra) await gestisciCessazione(id, row.data_cessazione);
+
   // Genera adempimenti MANCANTI per i requisiti obbligatori dei ruoli attuali
   // (sia per nuovi dipendenti che per cambi ruolo su esistenti).
   await syncAdempimentiObbligatori(id);
 
   closeModal("modal-dip");
   renderAll();
+}
+
+// 2.1 · Le due cose che devono succedere quando qualcuno viene cessato.
+// La terza che il piano elenca — "checklist mostrata" — e' conseguenza: alla
+// riapertura della scheda syncOnboardingProgressi crea le voci d'uscita.
+async function gestisciCessazione(dipId, dataCessazione) {
+  // 1) Il link del portale muore con il rapporto di lavoro. Un token ancora
+  //    valido terrebbe in vita l'autorizzazione di caricamento sui file, e non
+  //    va perso in silenzio: e' esattamente cio' che si vuole spegnere.
+  const { error } = await sb.from("invite_tokens").delete().eq("dipendente_id", dipId);
+  if (error) {
+    console.warn("invite_tokens non cancellati:", error.message);
+    alert("Attenzione: il link del portale di questa persona NON e' stato disattivato.\n"
+      + "Riapri la scheda e rigenera il link, oppure riprova a salvare.\n\nDettaglio: " + error.message);
+  }
+
+  // 2) Gli INCARICHI aperti si chiudono alla data di cessazione, se l'HR vuole.
+  //    Non la mansione: e' `required` nella scheda e viene precompilata dalle
+  //    sole assegnazioni attive, quindi chiuderla renderebbe la scheda del
+  //    cessato non piu' salvabile, e l'unica via d'uscita sarebbe riscegliere
+  //    una mansione — che verrebbe scritta come riga NUOVA e attiva. La mansione
+  //    di un cessato resta aperta di proposito: dice che mestiere faceva.
+  const daChiudere = incarichiDaRevocare({ dipRuoli: state.dipRuoli, ruoli: state.ruoli, dipId });
+  if (!daChiudere.length) return;
+  const nomi = daChiudere.map((a) => "• " + (ruoloById(a.ruolo_id)?.nome || a.ruolo_id)).join(NL);
+  if (!confirm(`Questa persona ha ancora ${daChiudere.length === 1 ? "un incarico aperto" : "degli incarichi aperti"}:`
+    + NL + NL + nomi + NL + NL
+    + `Li chiudo alla data di cessazione (${fmtDate(dataCessazione)})?`)) return;
+  for (const a of daChiudere) await sbUpsert("dipendente_ruoli", { ...a, al: dataCessazione });
 }
 
 // 1.5 · Mansione e incarichi dal form alla tabella. Togliere la spunta NON
@@ -3660,6 +3734,7 @@ function wireEvents() {
   $("dip-modifiche-toggle").addEventListener("click", () => toggleSection("dip-modifiche-toggle", "dip-modifiche-list"));
   // Onboarding (scheda dipendente)
   $("dip-onboard-toggle").addEventListener("click", () => toggleSection("dip-onboard-toggle", "dip-onboard-list"));
+  $("dip-uscita-toggle").addEventListener("click", () => toggleSection("dip-uscita-toggle", "dip-uscita-list"));
   $("onboard-form").addEventListener("submit", saveOnboardProgresso);
   $("onboard-close").addEventListener("click", () => closeModal("modal-onboard"));
   $("onboard-cancel").addEventListener("click", () => closeModal("modal-onboard"));
@@ -3699,6 +3774,7 @@ function wireEvents() {
   $("add-onboard-item").addEventListener("click", () => openOnboardItemModal(null));
   $("onbi-form").addEventListener("submit", saveOnboardItem);
   $("onbi-workflow").addEventListener("change", aggiornaCampiWorkflowOnboarding);
+  $("onbi-fase").addEventListener("change", aggiornaEtichettaGiorniOnboarding);
   $("onbi-close").addEventListener("click", () => closeModal("modal-onboard-item"));
   $("onbi-cancel").addEventListener("click", () => closeModal("modal-onboard-item"));
   $("onbi-delete").addEventListener("click", deleteOnboardItem);

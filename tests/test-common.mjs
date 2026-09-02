@@ -19,6 +19,7 @@ const { classificaStato, calcolaGap, avvisoScadenza,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
+        scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -368,5 +369,124 @@ assert.deepEqual(dipendentiDiProva([{ id: "dip-prova-01", note: "FAC-SIMILE di c
 assert.deepEqual(dipendentiDiProva([]), []);
 assert.deepEqual(dipendentiDiProva(undefined), []);
 assert.deepEqual(dipendentiDiProva(null), []);
+
+// ============================================================
+// 2.1 · Checklist di ingresso e di uscita
+// ============================================================
+
+// --- scadenzaOnboardingItem: da quale data si contano i giorni ---
+const dipEntrato = { data_assunzione: "2015-03-10", data_cessazione: null, attivo: true };
+const dipUscito  = { data_assunzione: "2015-03-10", data_cessazione: "2026-07-29", attivo: false };
+
+// Voce d'ingresso: si conta dall'assunzione. (Nessuna `fase` = ingresso, come le
+// otto voci lette prima della migrazione.)
+assert.equal(scadenzaOnboardingItem(dipEntrato, { giorni_da_assunzione: 30 }), "2015-04-09");
+assert.equal(scadenzaOnboardingItem(dipEntrato, { fase: "ingresso", giorni_da_assunzione: 0 }), "2015-03-10");
+
+// Voce d'uscita: si conta dalla CESSAZIONE. E' il difetto che il piano descrive:
+// contandola dall'assunzione, l'UNILAV di chi esce oggi risulterebbe da fare nel
+// 2015, cioe' "scaduto da anni" per tutti.
+assert.equal(scadenzaOnboardingItem(dipUscito, { fase: "uscita", giorni_da_assunzione: 5 }), "2026-08-03");
+assert.notEqual(scadenzaOnboardingItem(dipUscito, { fase: "uscita", giorni_da_assunzione: 5 }),
+                scadenzaOnboardingItem(dipUscito, { fase: "ingresso", giorni_da_assunzione: 5 }));
+
+// Giorni NEGATIVI: la lettera di dimissioni arriva prima dell'ultimo giorno.
+// Il campo Giorni ha perso min="0" apposta. Qui si torna anche al mese prima.
+assert.equal(scadenzaOnboardingItem(dipUscito, { fase: "uscita", giorni_da_assunzione: -7 }), "2026-07-22");
+assert.equal(scadenzaOnboardingItem({ data_cessazione: "2026-03-05", attivo: false },
+                                    { fase: "uscita", giorni_da_assunzione: -10 }), "2026-02-23");
+
+// Manca la data di base: nessun termine. NON si ripiega sull'altra data.
+assert.equal(scadenzaOnboardingItem({ data_assunzione: "2015-03-10", data_cessazione: null },
+                                    { fase: "uscita", giorni_da_assunzione: 5 }), null);
+assert.equal(scadenzaOnboardingItem({ data_assunzione: null }, { giorni_da_assunzione: 30 }), null);
+// Voce senza giorni, e input degeneri.
+assert.equal(scadenzaOnboardingItem(dipUscito, { fase: "uscita", giorni_da_assunzione: null }), null);
+assert.equal(scadenzaOnboardingItem(dipUscito, {}), null);
+assert.equal(scadenzaOnboardingItem(null, { giorni_da_assunzione: 0 }), null);
+assert.equal(scadenzaOnboardingItem(dipUscito, null), null);
+
+// --- itemsOnboardingDaSincronizzare: quali righe nascono, e per chi ---
+const vociCatalogo = [
+  { id: "onb-contratto",     fase: "ingresso", tipo_workflow: "genera_pdf_template" },
+  { id: "onb-badge",         fase: "ingresso", tipo_workflow: "dati_specifici" },
+  { id: "onb-visita",        fase: "ingresso", tipo_workflow: "crea_adempimento" },
+  { id: "onb-usc-unilav",    fase: "uscita",   tipo_workflow: "semplice" },
+  { id: "onb-usc-riconsegna",fase: "uscita",   tipo_workflow: "semplice" },
+];
+const ids = (arr) => arr.map((x) => x.id);
+
+// In forza: solo ingresso. Le voci d'uscita non esistono finche' la persona c'e'.
+assert.deepEqual(
+  ids(itemsOnboardingDaSincronizzare({ dip: { attivo: true }, items: vociCatalogo, itemIdEsistenti: [] })),
+  ["onb-contratto", "onb-badge"]);
+// `attivo` assente (riga vecchia) vale "in forza": e' come si comporta oggi.
+assert.deepEqual(
+  ids(itemsOnboardingDaSincronizzare({ dip: {}, items: vociCatalogo, itemIdEsistenti: [] })),
+  ["onb-contratto", "onb-badge"]);
+
+// Cessato CON data: solo uscita, e NESSUNA voce d'ingresso in piu' (difetto n. 3
+// del §2 del piano: i progressi continuavano a generarsi anche per i cessati).
+assert.deepEqual(
+  ids(itemsOnboardingDaSincronizzare({ dip: { attivo: false, data_cessazione: "2026-07-29" },
+                                       items: vociCatalogo, itemIdEsistenti: [] })),
+  ["onb-usc-unilav", "onb-usc-riconsegna"]);
+
+// Cessato SENZA data: niente. Sette termini calcolati sul nulla sarebbero falsi.
+assert.deepEqual(
+  itemsOnboardingDaSincronizzare({ dip: { attivo: false, data_cessazione: null },
+                                   items: vociCatalogo, itemIdEsistenti: [] }), []);
+
+// Le voci "crea_adempimento" non hanno mai un progresso proprio.
+assert.equal(ids(itemsOnboardingDaSincronizzare({ dip: { attivo: true }, items: vociCatalogo, itemIdEsistenti: [] }))
+  .includes("onb-visita"), false);
+
+// Le righe gia' esistenti non si ricreano (Set o array indifferente).
+assert.deepEqual(
+  ids(itemsOnboardingDaSincronizzare({ dip: { attivo: true }, items: vociCatalogo,
+                                       itemIdEsistenti: new Set(["onb-contratto"]) })),
+  ["onb-badge"]);
+assert.deepEqual(
+  ids(itemsOnboardingDaSincronizzare({ dip: { attivo: true }, items: vociCatalogo,
+                                       itemIdEsistenti: ["onb-contratto", "onb-badge"] })), []);
+
+// Voce SENZA `fase` (letta prima della migrazione): conta come ingresso.
+assert.deepEqual(
+  ids(itemsOnboardingDaSincronizzare({ dip: { attivo: true },
+                                       items: [{ id: "onb-vecchia", tipo_workflow: "semplice" }],
+                                       itemIdEsistenti: [] })), ["onb-vecchia"]);
+assert.deepEqual(
+  itemsOnboardingDaSincronizzare({ dip: { attivo: false, data_cessazione: "2026-07-29" },
+                                   items: [{ id: "onb-vecchia", tipo_workflow: "semplice" }],
+                                   itemIdEsistenti: [] }), []);
+
+// Input degeneri.
+assert.deepEqual(itemsOnboardingDaSincronizzare({ dip: null, items: vociCatalogo, itemIdEsistenti: [] }), []);
+assert.deepEqual(itemsOnboardingDaSincronizzare({ dip: { attivo: true }, items: null }), []);
+
+// --- incarichiDaRevocare: cosa si propone di chiudere alla cessazione ---
+const ruoliCat = [
+  { id: "ruolo-man-uff", tipo: "mansione" },
+  { id: "ruolo-antinc",  tipo: "incarico" },
+  { id: "ruolo-rls",     tipo: "incarico" },
+];
+const assegnazioni = [
+  { id: "dr1", dipendente_id: "d1", ruolo_id: "ruolo-man-uff", al: null },   // mansione attiva
+  { id: "dr2", dipendente_id: "d1", ruolo_id: "ruolo-antinc",  al: null },   // incarico attivo
+  { id: "dr3", dipendente_id: "d1", ruolo_id: "ruolo-rls",     al: "2026-06-01" }, // gia' revocato
+  { id: "dr4", dipendente_id: "d2", ruolo_id: "ruolo-antinc",  al: null },   // un'altra persona
+  { id: "dr5", dipendente_id: "d1", ruolo_id: "ruolo-sparito", al: null },   // ruolo non in catalogo
+];
+// Solo l'incarico attivo di quella persona: MAI la mansione (chiuderla renderebbe
+// la scheda del cessato non piu' salvabile, perche' il campo e' required).
+assert.deepEqual(
+  incarichiDaRevocare({ dipRuoli: assegnazioni, ruoli: ruoliCat, dipId: "d1" }).map((a) => a.id),
+  ["dr2"]);
+assert.deepEqual(
+  incarichiDaRevocare({ dipRuoli: assegnazioni, ruoli: ruoliCat, dipId: "d2" }).map((a) => a.id),
+  ["dr4"]);
+assert.deepEqual(incarichiDaRevocare({ dipRuoli: assegnazioni, ruoli: ruoliCat, dipId: "ignoto" }), []);
+assert.deepEqual(incarichiDaRevocare({ dipRuoli: [], ruoli: ruoliCat, dipId: "d1" }), []);
+assert.deepEqual(incarichiDaRevocare({ dipRuoli: null, ruoli: null, dipId: "d1" }), []);
 
 console.log("OK tutti i test common.js");

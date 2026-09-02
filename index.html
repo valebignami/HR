@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HR Overland — Compliance personale</title>
-<link rel="stylesheet" href="style.css?v=b6">
+<link rel="stylesheet" href="style.css?v=b7">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous" defer></script>
 </head>
@@ -502,6 +502,15 @@
         <div id="dip-onboard-list" hidden></div>
       </div>
 
+      <div id="dip-uscita-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-uscita-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>Checklist di uscita</span>
+          <span class="history-count" id="dip-uscita-count">0/0</span>
+        </button>
+        <div id="dip-uscita-list" hidden></div>
+      </div>
+
       <div id="dip-provv-section" class="history-section" hidden>
         <button type="button" class="history-toggle" id="dip-provv-toggle" aria-expanded="false">
           <span class="history-arrow">▸</span>
@@ -683,10 +692,17 @@
       <input type="hidden" id="onbi-id">
       <label><span>Etichetta *</span><input type="text" id="onbi-label" required placeholder="Es. Consegna DPI iniziale"></label>
       <label><span>Descrizione</span><textarea id="onbi-descrizione" rows="2"></textarea></label>
+      <label><span>Fase</span>
+        <select id="onbi-fase">
+          <option value="ingresso">Ingresso — checklist di assunzione</option>
+          <option value="uscita">Uscita — checklist di cessazione</option>
+        </select>
+      </label>
       <div class="row">
-        <label><span>Giorni dall'assunzione *</span><input type="number" id="onbi-giorni" min="0" value="0"></label>
+        <label><span id="onbi-giorni-label">Giorni dall'assunzione *</span><input type="number" id="onbi-giorni" value="0"></label>
         <label><span>Ordine</span><input type="number" id="onbi-ordine" min="0" value="100"></label>
       </div>
+      <p class="cfg-hint">Per le voci di <strong>uscita</strong> i giorni si contano dalla data di cessazione e possono essere <strong>negativi</strong>: −7 vuol dire «una settimana prima dell'ultimo giorno».</p>
       <label><span>Tipo di workflow</span>
         <select id="onbi-workflow">
           <option value="semplice">Semplice — spunta manuale dell'HR</option>
@@ -965,7 +981,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
 <script src="data.js?v=c2"></script>
-<script src="common.js?v=c6"></script>
-<script src="app.js?v=c8"></script>
+<script src="common.js?v=c7"></script>
+<script src="app.js?v=c9"></script>
 </body>
 </html>

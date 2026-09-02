@@ -269,6 +269,76 @@ function dipendentiDiProva(dipendenti) {
 }
 
 // ============================================================
+// 2.1 · Checklist di ingresso e di uscita.
+// La stessa tabella `onboarding_items` porta le due checklist, distinte dalla
+// colonna `fase`. Le tre regole qui sotto sono regole su date e su stati: stanno
+// in common.js con i loro test, perche' sbagliarne una non da' nessun errore —
+// da' una checklist che sembra giusta e non lo e'.
+// ============================================================
+
+// Entro quando va fatta una voce di checklist.
+// La data di base NON e' la stessa per le due fasi: per l'ingresso e' la data di
+// assunzione, per l'uscita la data di cessazione. Calcolare una voce d'uscita
+// dall'assunzione e' il difetto che il piano descrive con parole precise: "tutto
+// risulta scaduto da anni", perche' una persona assunta nel 2015 avrebbe la
+// riconsegna del badge attesa per il 2015.
+// I giorni possono essere NEGATIVI (la lettera di dimissioni arriva prima
+// dell'ultimo giorno): addDays li regge, e il campo Giorni non ha piu' min="0".
+// null = nessun termine da mostrare (manca la data di base, o la voce non ne ha).
+function scadenzaOnboardingItem(dip, item) {
+  if (!dip || !item) return null;
+  const base = item.fase === "uscita" ? dip.data_cessazione : dip.data_assunzione;
+  if (!base || item.giorni_da_assunzione == null) return null;
+  const d = parseISO(base);
+  if (!d) return null;
+  return localISO(addDays(d, Number(item.giorni_da_assunzione)));
+}
+
+// Quali voci di checklist vanno create per questa persona, adesso.
+// Ritorna gli ITEM, non le righe: chi chiama costruisce le righe e le scrive.
+//
+// Tre proprieta', che prima non valevano:
+//   - chi e' IN FORZA riceve solo voci d'ingresso: la sua uscita non esiste;
+//   - chi e' CESSATO riceve solo voci d'uscita, e non se ne creano piu'
+//     d'ingresso (era il difetto n. 3 del §2 del piano: "i progressi di
+//     onboarding continuano a generarsi anche per i cessati");
+//   - un cessato SENZA data di cessazione non riceve niente: senza quella data
+//     i termini delle sette voci sarebbero tutti falsi.
+// Le righe gia' esistenti non si toccano mai: l'ingresso di un cessato resta
+// come storia di quando quella persona e' entrata.
+function itemsOnboardingDaSincronizzare({ dip, items, itemIdEsistenti }) {
+  if (!dip) return [];
+  const gia = itemIdEsistenti instanceof Set ? itemIdEsistenti : new Set(itemIdEsistenti || []);
+  const cessato = dip.attivo === false;
+  if (cessato && !dip.data_cessazione) return [];
+  const faseVoluta = cessato ? "uscita" : "ingresso";
+  return (items || []).filter((it) => {
+    if (!it || gia.has(it.id)) return false;
+    // Le voci "crea_adempimento" non hanno un progresso proprio: il loro stato
+    // e' derivato dall'adempimento in Scadenze (singola fonte di verita').
+    if (it.tipo_workflow === "crea_adempimento") return false;
+    // Le voci lette prima della migrazione non hanno `fase`: sono d'ingresso,
+    // che e' esattamente come si comportano oggi.
+    return (it.fase || "ingresso") === faseVoluta;
+  });
+}
+
+// Cosa si propone di chiudere quando una persona viene cessata: i suoi
+// INCARICHI ancora aperti, mai la mansione.
+// La mansione e' `required` nella scheda e viene precompilata dalle sole
+// assegnazioni attive: chiuderla renderebbe la scheda del cessato non piu'
+// salvabile, e l'unica via d'uscita sarebbe riscegliere una mansione, che
+// verrebbe scritta come riga NUOVA e attiva — un'assegnazione inventata per chi
+// non lavora piu'. La mansione di un cessato resta aperta di proposito: e' la
+// riga che dice che mestiere faceva quando e' uscito.
+function incarichiDaRevocare({ dipRuoli, ruoli, dipId }) {
+  const tipoDelRuolo = new Map((ruoli || []).map((r) => [r.id, r.tipo]));
+  return (dipRuoli || []).filter((dr) =>
+    dr && dr.dipendente_id === dipId && assegnazioneAttiva(dr) &&
+    tipoDelRuolo.get(dr.ruolo_id) === "incarico");
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -326,5 +396,6 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
+    scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,
     daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }
