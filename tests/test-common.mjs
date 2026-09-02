@@ -15,7 +15,9 @@ globalThis.window = {
 };
 globalThis.document = { addEventListener: () => {} };
 
-const { classificaStato, calcolaGap, avvisoScadenza, parseISO, fmtDate, localISO, fmtDateTime,
+const { classificaStato, calcolaGap, avvisoScadenza,
+        assegnazioneAttiva, calcolaCariche, caricheScoperte,
+        parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
 
@@ -77,6 +79,80 @@ assert.equal(avvisoScadenza("", 12, "2027-05-15"), null);
 // Se l'avviso non usasse addMonths, contraddirebbe la scadenza che l'app scrive.
 assert.equal(avvisoScadenza("2026-01-31", 1, "2026-02-28"), null);
 assert.ok(avvisoScadenza("2026-01-31", 1, "2026-03-03"));
+
+// ============================================================
+// calcolaCariche / caricheScoperte (1.2) — l'azienda non deve scoprirsi senza
+// accorgersene. Cessare l'unico addetto antincendio MIGLIORA il cruscotto:
+// e' l'unico caso in cui un numero che sale e' una cattiva notizia.
+// ============================================================
+const RUOLI_C = [
+  { id: "anti", nome: "Addetto antincendio", tipo: "incarico", minimo_richiesto: 3 },
+  { id: "rls",  nome: "RLS",                 tipo: "incarico", minimo_richiesto: 1 },
+  { id: "jolly", nome: "Incarico senza minimo", tipo: "incarico", minimo_richiesto: 0 },
+  { id: "oper", nome: "Operatore",           tipo: "mansione",  minimo_richiesto: 0 },
+];
+const DIP_C = [
+  { id: "d1", nome: "Anna",  cognome: "Rossi",  attivo: true },
+  { id: "d2", nome: "Bruno", cognome: "Bianchi", attivo: true },
+  { id: "d3", nome: "Carla", cognome: "Verdi",  attivo: true },
+  { id: "d4", nome: "Dario", cognome: "Neri",   attivo: false },  // cessato
+];
+const dr = (id, dip, ruolo, extra = {}) => ({ id, dipendente_id: dip, ruolo_id: ruolo, ...extra });
+const cariche = (dipRuoli, dipendenti = DIP_C) => calcolaCariche({ ruoli: RUOLI_C, dipRuoli, dipendenti });
+const perId = (lista, id) => lista.find((c) => c.ruolo.id === id);
+
+// assegnazioneAttiva: prima di 1.5 la colonna `al` non esiste, e le righe vecchie
+// devono restare attive.
+assert.equal(assegnazioneAttiva({ id: "x" }), true);
+assert.equal(assegnazioneAttiva({ id: "x", al: null }), true);
+assert.equal(assegnazioneAttiva({ id: "x", al: "2026-01-01" }), false);
+assert.equal(assegnazioneAttiva(null), false);
+
+// Tre nominati su tre: in regola. L'incarico con minimo 0 non compare affatto,
+// e nemmeno le mansioni.
+let c = cariche([dr("a1", "d1", "anti"), dr("a2", "d2", "anti"), dr("a3", "d3", "anti"),
+                 dr("j1", "d1", "jolly"), dr("m1", "d1", "oper")]);
+assert.equal(c.length, 2);                       // anti + rls, non jolly, non oper
+assert.equal(perId(c, "anti").nominati.length, 3);
+assert.equal(perId(c, "anti").sottoSoglia, false); // esattamente al minimo = in regola
+assert.equal(perId(c, "rls").sottoSoglia, true);   // nessun RLS nominato
+
+// Un CESSATO non conta, anche se la riga di assegnazione c'e' ancora.
+c = cariche([dr("a1", "d1", "anti"), dr("a2", "d2", "anti"), dr("a3", "d4", "anti")]);
+assert.equal(perId(c, "anti").nominati.length, 2);
+assert.equal(perId(c, "anti").sottoSoglia, true);
+
+// Un incarico REVOCATO non conta: e' la trappola della 1.5. Se questo filtro
+// sparisse, un preposto revocato continuerebbe a coprire il minimo e il
+// cruscotto direbbe "in regola" senza che nessuno lo sia.
+c = cariche([dr("a1", "d1", "anti"), dr("a2", "d2", "anti"),
+             dr("a3", "d3", "anti", { al: "2026-08-31" })]);
+assert.equal(perId(c, "anti").nominati.length, 2);
+
+// caricheScoperte: da 3/3 a 2/3 si segnala.
+const tutti = [dr("a1", "d1", "anti"), dr("a2", "d2", "anti"), dr("a3", "d3", "anti")];
+let scoperte = caricheScoperte(cariche(tutti),
+  cariche(tutti, DIP_C.map((d) => (d.id === "d3" ? { ...d, attivo: false } : d))));
+assert.equal(scoperte.length, 1);
+assert.equal(scoperte[0].ruolo.id, "anti");
+assert.equal(scoperte[0].prima, 3);
+assert.equal(scoperte[0].dopo, 2);
+
+// Da 3/3 a 2/3 per REVOCA (non per cessazione): stesso avviso.
+scoperte = caricheScoperte(cariche(tutti),
+  cariche([tutti[0], tutti[1], { ...tutti[2], al: "2026-09-02" }]));
+assert.equal(scoperte.length, 1);
+
+// Scende ma resta sopra il minimo: nessun avviso (RLS minimo 1, da 2 a 1).
+const dueRls = [dr("r1", "d1", "rls"), dr("r2", "d2", "rls")];
+assert.equal(caricheScoperte(cariche(dueRls), cariche([dueRls[0]])).length, 0);
+
+// Era gia' scoperta e peggiora ancora: si segnala (2/3 -> 1/3).
+const dueAnti = [dr("a1", "d1", "anti"), dr("a2", "d2", "anti")];
+assert.equal(caricheScoperte(cariche(dueAnti), cariche([dueAnti[0]])).length, 1);
+
+// Niente cambia: niente da dire.
+assert.equal(caricheScoperte(cariche(tutti), cariche(tutti)).length, 0);
 
 // ============================================================
 // calcolaGap — il nucleo: cosa deve avere una persona e come sta messa.

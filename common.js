@@ -119,6 +119,49 @@ function avvisoScadenza(dataRilascio, validitaMesi, scadenzaInserita) {
 }
 
 // ============================================================
+// 1.2 · Cariche aziendali — quanti sono e quanti dovrebbero essere.
+// Era in app.js e leggeva lo stato globale, quindi non era provabile. E' una
+// regola su stati (chi conta e chi no), quindi sta qui, con un test.
+// NON ordina: l'ordine e' presentazione e resta in app.js.
+// ============================================================
+
+// Un'assegnazione ruolo→dipendente e' attiva finche' non e' stata revocata.
+// Regola unica: la usano sia calcolaCariche qui sia assegnazioniOfDip in app.js.
+// Prima della Fase 1.5 la colonna `al` non esisteva: undefined == null e' vero,
+// quindi le righe vecchie risultano attive, che e' esattamente quello che erano.
+function assegnazioneAttiva(a) {
+  return !!a && a.al == null;
+}
+
+function calcolaCariche({ ruoli, dipRuoli, dipendenti }) {
+  return ruoli
+    .filter((r) => r.tipo === "incarico" && (r.minimo_richiesto || 0) > 0)
+    .map((r) => {
+      const nominati = dipendenti.filter((d) => d.attivo !== false &&
+        dipRuoli.some((dr) => dr.dipendente_id === d.id && dr.ruolo_id === r.id && assegnazioneAttiva(dr)));
+      const minimo = r.minimo_richiesto || 0;
+      return { ruolo: r, nominati, minimo, sottoSoglia: nominati.length < minimo };
+    });
+}
+
+// Quali cariche PEGGIORANO passando da uno stato all'altro: meno nominati e
+// sotto il minimo. Serve a chiedere conferma prima di cessare una persona o di
+// toglierle un incarico — l'unico momento in cui l'azienda si scopre senza
+// accorgersene, perche' il cruscotto migliora.
+function caricheScoperte(prima, dopo) {
+  const primaById = new Map(prima.map((c) => [c.ruolo.id, c]));
+  const out = [];
+  for (const d of dopo) {
+    const p = primaById.get(d.ruolo.id);
+    if (!p) continue;
+    if (d.nominati.length < p.nominati.length && d.sottoSoglia) {
+      out.push({ ruolo: d.ruolo, minimo: d.minimo, prima: p.nominati.length, dopo: d.nominati.length });
+    }
+  }
+  return out;
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -173,5 +216,6 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { classificaStato, calcolaGap, avvisoScadenza, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
+  module.exports = { classificaStato, calcolaGap, avvisoScadenza,
+    assegnazioneAttiva, calcolaCariche, caricheScoperte, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }

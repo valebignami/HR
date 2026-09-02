@@ -412,16 +412,11 @@ function renderCounts() {
   $("count-storico").textContent = collectStoricoEvents().length;
 }
 
-// Ritorna lo stato di ogni incarico aziendale con minimo > 0.
+// Stato di ogni incarico aziendale con minimo > 0.
+// Adattatore: il conteggio e' una regola su stati e vive in common.js (testata);
+// qui resta solo l'ORDINAMENTO, che e' presentazione — sotto soglia in cima.
 function caricheStato() {
-  return state.ruoli
-    .filter((r) => r.tipo === "incarico" && (r.minimo_richiesto || 0) > 0)
-    .map((r) => {
-      const nominati = state.dipendenti.filter((d) => d.attivo !== false &&
-        state.dipRuoli.some((dr) => dr.dipendente_id === d.id && dr.ruolo_id === r.id));
-      const minimo = r.minimo_richiesto || 0;
-      return { ruolo: r, nominati, minimo, sottoSoglia: nominati.length < minimo };
-    })
+  return calcolaCariche({ ruoli: state.ruoli, dipRuoli: state.dipRuoli, dipendenti: state.dipendenti })
     .sort((a, b) => (a.sottoSoglia === b.sottoSoglia ? a.ruolo.nome.localeCompare(b.ruolo.nome) : (a.sottoSoglia ? -1 : 1)));
 }
 
@@ -943,7 +938,7 @@ function openDipModal(id) {
   const curMan = d ? ruoliOfDip(d.id).find((r) => r.tipo === "mansione") : null;
   $("dip-mansione").value = curMan ? curMan.id : "";
   $("dip-incarichi").innerHTML = incarichiList().map((i) =>
-    `<label><input type="checkbox" value="${i.id}" ${assigned.has(i.id) ? "checked" : ""}> ${esc(i.nome)}</label>`
+    `<label><input type="checkbox" class="inc-check" value="${i.id}" ${assigned.has(i.id) ? "checked" : ""}> ${esc(i.nome)}</label>`
   ).join("") || '<span class="muted">Nessun incarico configurato.</span>';
 
   $("dip-delete").hidden = !d;
@@ -1987,9 +1982,47 @@ function renderDipAdempimenti(dipId) {
   }));
 }
 
+// A capo nei messaggi di alert/confirm.
+const NL = String.fromCharCode(10);
+
+// Unico punto che legge le caselle degli incarichi dal form della scheda.
+const incarichiSpuntati = () => els("#dip-incarichi input.inc-check:checked").map((c) => c.value);
+
+// 1.2 · Prima di cessare qualcuno o di togliergli un incarico, ricalcola le
+// cariche COME SE fosse gia' fatto e chiede conferma se qualcuna resta scoperta.
+// E' l'unico momento in cui l'azienda si scopre senza accorgersene: cessare una
+// persona fa MIGLIORARE il cruscotto, perche' i suoi obblighi spariscono.
+// Ritorna false se l'utente annulla.
+function confermaCariche(id, esistente) {
+  const want = new Set([...($("dip-mansione").value ? [$("dip-mansione").value] : []), ...incarichiSpuntati()]);
+  const attivoNuovo = $("dip-attivo").checked;
+  const oggi = localISO(new Date());
+  const dipendentiDopo = state.dipendenti.map((d) => (d.id === id ? { ...d, attivo: attivoNuovo } : d));
+  // Le assegnazioni che stiamo per togliere vengono REVOCATE (al = oggi), non
+  // cancellate: e' quello che fara' il salvataggio vero (1.5).
+  const dipRuoliDopo = state.dipRuoli.map((dr) =>
+    (dr.dipendente_id === id && assegnazioneAttiva(dr) && !want.has(dr.ruolo_id)) ? { ...dr, al: oggi } : dr);
+
+  const scoperte = caricheScoperte(
+    calcolaCariche({ ruoli: state.ruoli, dipRuoli: state.dipRuoli, dipendenti: state.dipendenti }),
+    calcolaCariche({ ruoli: state.ruoli, dipRuoli: dipRuoliDopo, dipendenti: dipendentiDopo })
+  );
+  if (!scoperte.length) return true;
+
+  const chi = `${esistente.cognome || ""} ${esistente.nome || ""}`.trim() || "questa persona";
+  const righe = scoperte
+    .map((c) => `• Senza ${chi}, "${c.ruolo.nome}" scende a ${c.dopo} su ${c.minimo} richiesti.`)
+    .join(NL);
+  return confirm("Attenzione: questa modifica lascia scoperta una carica aziendale." + NL + NL
+    + righe + NL + NL + "Salvare lo stesso?");
+}
+
 async function saveDip(e) {
   e.preventDefault();
   const id = $("dip-id").value || uid();
+  const esistente = $("dip-id").value ? dipById(id) : null;
+  // L'avviso va dato PRIMA di qualunque scrittura: dopo, la carica e' gia' scoperta.
+  if (esistente && !confermaCariche(id, esistente)) return;
   const row = {
     id,
     nome: $("dip-nome").value.trim(),
@@ -2044,7 +2077,7 @@ async function saveDip(e) {
 
   // Sincronizza ruoli (mansione + incarichi).
   const wantMan = $("dip-mansione").value;
-  const wantInc = els("#dip-incarichi input:checked").map((c) => c.value);
+  const wantInc = incarichiSpuntati();
   const want = new Set([...(wantMan ? [wantMan] : []), ...wantInc]);
   const current = state.dipRuoli.filter((dr) => dr.dipendente_id === id);
   // Rimuovi quelli non più voluti.
