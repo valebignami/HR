@@ -327,6 +327,17 @@
     </div>
     <form id="dip-form" class="modal-body">
       <input type="hidden" id="dip-id">
+      <!-- 2.3 - Cinque linguette dentro un solo form: il salvataggio resta uno.
+           I bottoni sono type="button", altrimenti dentro un form inviano. -->
+      <div class="dip-tabs">
+        <button type="button" class="dt-btn active" data-dtab="anagrafica">👤 Anagrafica</button>
+        <button type="button" class="dt-btn" data-dtab="sicurezza">🦺 Sicurezza</button>
+        <button type="button" class="dt-btn" data-dtab="ingresso-uscita">✅ Ingresso/Uscita</button>
+        <button type="button" class="dt-btn" data-dtab="registro">📋 Registro</button>
+        <button type="button" class="dt-btn" data-dtab="storia">📜 Storia</button>
+      </div>
+
+      <div class="dip-tab-panel" id="dip-tab-anagrafica" data-dtab="anagrafica">
       <div class="row">
         <label><span>Nome *</span><input type="text" id="dip-nome" required></label>
         <label><span>Cognome *</span><input type="text" id="dip-cognome" required></label>
@@ -439,20 +450,6 @@
         </div>
       </div>
 
-      <fieldset class="responsabili-fieldset">
-        <legend>Mansione (obbligatoria, una sola)</legend>
-        <div class="row">
-          <label><span>Mansione *</span><select id="dip-mansione" required></select></label>
-          <label><span>In mansione dal</span><input type="date" id="dip-mansione-dal"></label>
-        </div>
-      </fieldset>
-
-      <fieldset class="responsabili-fieldset">
-        <legend>Incarichi / nomine</legend>
-        <div id="dip-incarichi" class="responsabili-checkboxes"></div>
-        <div id="dip-incarichi-revocati" class="incarichi-revocati"></div>
-      </fieldset>
-
       <label class="inline-check"><input type="checkbox" id="dip-attivo" checked> <span>In forza (attivo)</span></label>
 
       <div class="dip-section" id="dip-cessazione-section" hidden>
@@ -469,6 +466,23 @@
       </div>
 
       <label><span>Note</span><textarea id="dip-note" rows="2"></textarea></label>
+      </div><!-- /anagrafica -->
+
+      <div class="dip-tab-panel" id="dip-tab-sicurezza" data-dtab="sicurezza" hidden>
+      <fieldset class="responsabili-fieldset">
+        <legend>Mansione (obbligatoria, una sola)</legend>
+        <div class="row">
+          <label><span>Mansione *</span><select id="dip-mansione" required></select></label>
+          <label><span>In mansione dal</span><input type="date" id="dip-mansione-dal"></label>
+        </div>
+      </fieldset>
+
+      <fieldset class="responsabili-fieldset">
+        <legend>Incarichi / nomine</legend>
+        <div id="dip-incarichi" class="responsabili-checkboxes"></div>
+        <div id="dip-incarichi-revocati" class="incarichi-revocati"></div>
+      </fieldset>
+
 
       <div id="dip-adempimenti-section" class="adempimenti-section" hidden>
         <div class="adempimenti-head">
@@ -493,6 +507,9 @@
         <div id="dip-dpi-list" hidden></div>
       </div>
 
+      </div><!-- /sicurezza -->
+
+      <div class="dip-tab-panel" id="dip-tab-ingresso-uscita" data-dtab="ingresso-uscita" hidden>
       <div id="dip-onboard-section" class="history-section" hidden>
         <button type="button" class="history-toggle" id="dip-onboard-toggle" aria-expanded="false">
           <span class="history-arrow">▸</span>
@@ -511,6 +528,9 @@
         <div id="dip-uscita-list" hidden></div>
       </div>
 
+      </div><!-- /ingresso-uscita -->
+
+      <div class="dip-tab-panel" id="dip-tab-registro" data-dtab="registro" hidden>
       <div id="dip-provv-section" class="history-section" hidden>
         <button type="button" class="history-toggle" id="dip-provv-toggle" aria-expanded="false">
           <span class="history-arrow">▸</span>
@@ -521,6 +541,9 @@
         <div id="dip-provv-list" hidden></div>
       </div>
 
+      </div><!-- /registro -->
+
+      <div class="dip-tab-panel" id="dip-tab-storia" data-dtab="storia" hidden>
       <div id="dip-modifiche-section" class="history-section" hidden>
         <button type="button" class="history-toggle" id="dip-modifiche-toggle" aria-expanded="false">
           <span class="history-arrow">▸</span>
@@ -538,6 +561,8 @@
         </button>
         <div id="dip-history-list" hidden></div>
       </div>
+
+      </div><!-- /storia -->
 
       <div class="modal-foot">
         <button type="button" class="ghost-btn danger" id="dip-delete" hidden>🗑 Elimina</button>

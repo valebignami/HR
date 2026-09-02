@@ -1548,3 +1548,37 @@ body.self-service { background: var(--bg); }
   color: #5b21b6;
   border-left-color: #5b21b6;
 }
+
+/* ---------- 2.3 · Linguette della scheda dipendente ----------
+   Classi distinte da .config-tabs/.ct-btn di proposito: renderConfig e
+   wireEvents raccolgono i bottoni con els(".ct-btn"), e riusare quella classe
+   qui farebbe scrivere state.configTab = undefined al primo click su una
+   linguetta della scheda. */
+.dip-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;              /* su telefono scorrono, non vanno a capo */
+  -webkit-overflow-scrolling: touch;
+}
+.dt-btn {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  padding: 7px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-weight: 600;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.dt-btn:hover { background: var(--gray-soft); color: var(--ink); }
+.dt-btn.active { background: var(--brand-soft); color: var(--brand-ink); border-color: rgba(47,87,217,.25); }
+
+/* Scritto per esteso come .config-panel[hidden]: senza, basterebbe una regola di
+   layout su questo contenitore per far ricomparire tutti e cinque i pannelli. */
+.dip-tab-panel[hidden] { display: none; }

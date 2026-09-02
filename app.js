@@ -25,6 +25,7 @@ const state = {
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
+  dipTab: "anagrafica",      // 2.3 · linguetta aperta nella scheda dipendente
   search: "",
   compFilter: { dipendente: "", mansione: "", incarico: "", stato: "" },
   storicoFilter: { dipendente: "", tipo: "", categoria: "", anno: "", mese: "" },
@@ -1039,10 +1040,29 @@ function leggiCampiDipendente() {
   return row;
 }
 
+// ============================================================
+// 2.3 · Le cinque linguette della scheda dipendente.
+// Due mestieri distinti: renderDipTabs DISEGNA, mostraLinguetta SCEGLIE.
+// I contenitori si riconoscono da `data-dtab`, mai da un id composto a mano
+// ($("dip-tab-" + tab)): quello uscirebbe dal controllo di test-dom-ids, che
+// vede solo i letterali, ed e' l'unica rete sotto lo spostamento di questo HTML.
+// ============================================================
+function renderDipTabs() {
+  els("#modal-dip .dt-btn").forEach((b) => b.classList.toggle("active", b.dataset.dtab === state.dipTab));
+  els("#modal-dip .dip-tab-panel").forEach((p) => (p.hidden = p.dataset.dtab !== state.dipTab));
+}
+
+function mostraLinguetta(tab) {
+  state.dipTab = tab;
+  renderDipTabs();
+}
+
 function openDipModal(id) {
   const d = id ? dipById(id) : null;
   $("dip-title").textContent = d ? `${d.cognome} ${d.nome}` : "Nuovo dipendente";
   $("dip-id").value = d ? d.id : "";
+  // Riaprire una scheda deve mostrare sempre la stessa faccia.
+  mostraLinguetta("anagrafica");
   // Le tendine dei lookup vanno riempite PRIMA di scriverci dentro un valore
   // (idempotente: riscrivere le option e' ok).
   fillSelect($("dip-livello"), (window.LIVELLI_CCNL || []).map((l) => ({ id: l, nome: "Livello " + l })), { placeholder: "—" });
@@ -3715,6 +3735,18 @@ function wireEvents() {
 
   // Modale dipendente.
   $("dip-form").addEventListener("submit", saveDip);
+  // 2.3 · Le linguette.
+  els("#modal-dip .dt-btn").forEach((b) => b.addEventListener("click", () => mostraLinguetta(b.dataset.dtab)));
+  // 2.3 · Un campo `required` dentro un contenitore nascosto blocca l'invio del
+  // form E il browser non riesce nemmeno a metterci il fuoco: il bottone Salva
+  // smetterebbe di funzionare senza dire niente (stessa trappola gia' pagata in
+  // openOnboardModal). Qui la linguetta del campo non valido si apre PRIMA che
+  // il browser provi a dargli il fuoco. L'evento `invalid` non fa bubbling:
+  // senza `true` (cattura) al form non arriverebbe mai.
+  $("dip-form").addEventListener("invalid", (ev) => {
+    const panel = ev.target.closest(".dip-tab-panel");
+    if (panel && panel.dataset.dtab !== state.dipTab) mostraLinguetta(panel.dataset.dtab);
+  }, true);
   // 1.5 · Cambiare mansione apre una riga nuova: la sua data di ingresso e' oggi,
   // a meno che quella mansione fosse gia' attiva (allora si riprende la sua data).
   // Non si tocca mai il campo senza che l'utente abbia cambiato la tendina: e'
