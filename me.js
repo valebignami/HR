@@ -1,10 +1,10 @@
 // ============================================================
-// HR Overland — Portale self-service (me.html) — versione c2
+// HR Overland — Portale self-service (me.html) — versione c4
 // Auth basata su TOKEN passato nell'URL (?token=xxx). Niente login email.
 // L'HR genera il token, manda il link come vuole (WhatsApp/Outlook/SMS).
 // Tutte le operazioni passano da RPC SECURITY DEFINER che validano il token.
 // ============================================================
-console.log("[me.js] versione c2 caricata");
+console.log("[me.js] versione c4 caricata");
 
 const state = {
   token: null,
@@ -16,17 +16,18 @@ const state = {
 };
 
 // Ogni file caricato dal portale sta sotto "portal/{prefisso dell'invito}/".
-// E' l'unico path che le policy storage concedono al ruolo anon: senza il
-// prefisso (che si ottiene solo con un token valido) il bucket e' chiuso.
+// E' l'unico path che le policy storage concedono al ruolo anon, e solo in
+// SCRITTURA: dalla Fase 1b (2026-09-02) anon non ha nessuna policy di
+// lettura sul bucket. Il portale invia file e non ne riapre nessuno,
+// nemmeno i propri: la policy "self_doc_select" concedeva la SELECT su
+// storage.objects, che in Supabase Storage *e'* l'elenco, e l'elenco
+// rivelava a chiunque avesse la chiave pubblica il prefisso casuale che
+// doveva essere il segreto. Chi legge un file o e' l'HR autenticato, o ha
+// un link firmato generato dall'HR (Fase 3).
 const PORTAL_PREFIX = "portal/";
 function portalPath(suffisso) {
   if (!state.uploadPrefix) return null;
   return `${PORTAL_PREFIX}${state.uploadPrefix}/${suffisso}`;
-}
-// I documenti caricati dall'HR non sono leggibili dal portale (by design):
-// il dipendente riapre solo cio' che ha inviato lui.
-function apribileDalPortale(path) {
-  return !!path && String(path).startsWith(PORTAL_PREFIX);
 }
 
 // $, els, esc, uid, fmtDate, STORAGE_BUCKET, sb: vedi common.js (condivisi con app.js).
@@ -229,7 +230,6 @@ function renderDocs() {
     else if (mio?.documento_path) stato = "📤 Inviato — in attesa di verifica";
     else stato = "Da caricare";
     const hasFile = !!mio?.documento_path;
-    const riapribile = apribileDalPortale(mio?.documento_path);
     return `<div class="me-doc-row" data-tipo="${esc(t.id)}" data-ad="${esc(mio?.id || "")}">
       <div class="me-doc-head">
         <div>
@@ -243,7 +243,6 @@ function renderDocs() {
         <div class="me-doc-progress" hidden>⏳ Caricamento…</div>
         <div class="me-actions">
           <button type="button" class="primary-btn me-doc-save">Invia documento</button>
-          ${riapribile ? `<button type="button" class="ghost-btn me-doc-open" data-path="${esc(mio.documento_path)}">📎 Apri file attuale</button>` : ""}
         </div>
         <span class="me-status me-doc-status"></span>
       </div>
@@ -254,14 +253,6 @@ function renderDocs() {
     form.hidden = !form.hidden;
   }));
   els(".me-doc-save", host).forEach((btn) => btn.addEventListener("click", (e) => saveDoc(e, btn.closest(".me-doc-row"))));
-  els(".me-doc-open", host).forEach((btn) => btn.addEventListener("click", () => openSignedUrl(btn.dataset.path)));
-}
-
-async function openSignedUrl(path) {
-  // TTL 10 minuti (dati personali/documenti identificativi).
-  const { data, error } = await sb.storage.from(STORAGE_BUCKET).createSignedUrl(path, 600);
-  if (error) { alert("Errore: " + error.message); return; }
-  window.open(data.signedUrl, "_blank", "noopener");
 }
 
 async function saveDoc(e, row) {
@@ -449,7 +440,6 @@ function renderFirma() {
   section.hidden = false;
   host.innerHTML = items.map((it) => {
     const caricato = !!it.documento_path;
-    const riapribile = apribileDalPortale(it.documento_path);
     const stato = caricato ? `📎 Firmato e caricato il ${fmtDate(it.fatto_il)}` : "⏳ In attesa di firma";
     return `<div class="me-doc-row" data-item="${esc(it.item_id)}" data-tpl="${esc(it.template_id || "")}">
       <div class="me-doc-head">
@@ -460,7 +450,6 @@ function renderFirma() {
         </div>
         <div class="me-actions" style="gap:6px">
           ${it.template_id ? `<button type="button" class="ghost-btn me-firma-download">📄 Scarica da firmare</button>` : ""}
-          ${riapribile ? `<button type="button" class="ghost-btn me-firma-open" data-path="${esc(it.documento_path)}">📎 Vedi firmato</button>` : ""}
         </div>
       </div>
       <div class="me-firma-upload">
@@ -476,9 +465,6 @@ function renderFirma() {
   els(".me-firma-download", host).forEach((btn) => btn.addEventListener("click", async (e) => {
     const row = e.currentTarget.closest(".me-doc-row");
     await openTemplate(row.dataset.tpl, "Stampa questo documento, firmalo a penna e poi torna sul portale per caricarlo.");
-  }));
-  els(".me-firma-open", host).forEach((btn) => btn.addEventListener("click", async (e) => {
-    await openSignedUrl(e.currentTarget.dataset.path);
   }));
   els(".me-firma-file", host).forEach((inp) => inp.addEventListener("change", (e) => {
     const row = e.currentTarget.closest(".me-doc-row");
