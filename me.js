@@ -9,7 +9,7 @@ console.log("[me.js] versione c5 caricata");
 const state = {
   token: null,
   dipendente: null,
-  tipiDoc: [],
+  tipi: [],           // 3.4 · tutto il catalogo dei tipi di requisito (prima del blocco B: solo i documenti)
   adempimenti: [],
   onboardItems: [],   // voci che il dipendente deve gestire dal portale
   cedolini: [],       // 3.2 · i cedolini della persona, con il loro collegamento firmato
@@ -93,7 +93,7 @@ async function loadMyData() {
   setLoadingStep("Carico i tuoi documenti…");
   const rTipi = await rpcT("self_get_tipi_documenti", { t: state.token }, 4000, "self_get_tipi_documenti");
   if (rTipi.error) console.warn("tipi_documenti skipped:", rTipi.error.message);
-  state.tipiDoc = rTipi.data || [];
+  state.tipi = rTipi.data || [];
 
   const rAd = await rpcT("self_get_adempimenti", { t: state.token }, 4000, "self_get_adempimenti");
   if (rAd.error) console.warn("adempimenti skipped:", rAd.error.message);
@@ -105,6 +105,7 @@ async function loadMyData() {
     renderForm();
     renderDocs();
     renderCedolini();
+    renderAttestati();
   } catch (err) {
     console.error("Errore nel rendering iniziale:", err);
   } finally {
@@ -225,13 +226,22 @@ async function saveMyData(e) {
 // ============================================================
 // DOCUMENTI IDENTIFICATIVI
 // ============================================================
+// I DOCUMENTI D'IDENTITA' sono i tipi di categoria "documenti": sono gli unici
+// che il dipendente carica dal portale. Il filtro sta qui e non nella RPC perche'
+// dalla Fase 3.4 la RPC deve restituire tutto il catalogo, per dare un nome agli
+// attestati nella sezione piu' sotto.
+function tipiIdentificativi() {
+  return state.tipi.filter((t) => t.categoria === "documenti");
+}
+
 function renderDocs() {
   const host = $("me-docs-list");
-  if (!state.tipiDoc.length) {
+  const tipiDoc = tipiIdentificativi();
+  if (!tipiDoc.length) {
     host.innerHTML = '<div class="muted">Nessun tipo di documento configurato.</div>';
     return;
   }
-  host.innerHTML = state.tipiDoc.map((t) => {
+  host.innerHTML = tipiDoc.map((t) => {
     const mio = state.adempimenti.find((a) => a.tipo_requisito_id === t.id);
     let stato;
     if (mio?.data_rilascio) stato = mio.data_scadenza ? `✅ Verificato — scade il ${fmtDate(mio.data_scadenza)}` : "✅ Verificato";
@@ -373,6 +383,60 @@ function renderCedolini() {
             : ""}
         </div>
       </div>`).join("")}
+    </div>`;
+  }).join("");
+}
+
+// ============================================================
+// 3.4 · I MIEI ATTESTATI E IDONEITA'
+// Il dipendente vede quando gli scade il carrello, senza telefonare all'ufficio.
+// Sola lettura: nessun bottone. Le date le registra l'HR quando valida.
+//
+// Il semaforo e' `classificaStato` di common.js, LA STESSA che disegna il
+// cruscotto dell'HR. Una seconda regola qui vorrebbe dire che un giorno il
+// portale dice "in regola" e l'app dice "scaduto" per la stessa riga.
+//
+// Prima del blocco B della migrazione la RPC restituisce solo i tipi di
+// documento d'identita': gli attestati non hanno un nome da mostrare, la lista
+// resta vuota e la sezione non compare. E' il degrado voluto, non un errore.
+// ============================================================
+const SEMAFORO = {
+  ok:          { icona: "✅", testo: "In regola" },
+  in_scadenza: { icona: "🟠", testo: "In scadenza" },
+  scaduto:     { icona: "🔴", testo: "Scaduto" },
+};
+
+function renderAttestati() {
+  const section = $("me-attestati-section");
+  const host = $("me-attestati-list");
+  if (!section || !host) return;   // HTML vecchio in cache: esco in silenzio
+
+  const identificativi = new Set(tipiIdentificativi().map((t) => t.id));
+  const righe = state.adempimenti
+    // corrente === false = ciclo superato, tenuto come prova storica: nel portale
+    // non ci va, o un attestato del 2016 sembrerebbe quello valido.
+    .filter((a) => a.corrente !== false && !identificativi.has(a.tipo_requisito_id))
+    .map((a) => ({ a, tipo: state.tipi.find((t) => t.id === a.tipo_requisito_id) }))
+    .filter((r) => r.tipo)
+    .sort((x, y) => (x.a.data_scadenza || "9999-99-99").localeCompare(y.a.data_scadenza || "9999-99-99"));
+
+  if (!righe.length) { section.hidden = true; return; }
+  section.hidden = false;
+
+  host.innerHTML = righe.map(({ a, tipo }) => {
+    const stato = classificaStato(!!a.data_rilascio, a.data_scadenza || null);
+    const s = SEMAFORO[stato] || SEMAFORO.scaduto;
+    let quando;
+    if (!a.data_rilascio) quando = "Non ancora registrato dall'ufficio del personale";
+    else if (a.data_scadenza) quando = `Scade il ${fmtDate(a.data_scadenza)}`;
+    else quando = "Non scade";
+    return `<div class="me-doc-row">
+      <div class="me-doc-head">
+        <div>
+          <div class="me-doc-nome">${esc(tipo.icon || "📘")} ${esc(tipo.nome)}</div>
+          <div class="me-doc-stato">${esc(s.icona)} ${esc(s.testo)} · ${esc(quando)}</div>
+        </div>
+      </div>
     </div>`;
   }).join("");
 }
