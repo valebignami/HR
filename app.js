@@ -2352,9 +2352,12 @@ function renderAdmHistory(a) {
 }
 
 // Auto-calcolo scadenza da data rilascio + validita_mesi della regola del tipo selezionato.
-function validitaMesiForTipo(tipoId, dipId) {
+// `requisiti` e' un parametro (1.3): serve a calcolare la validita' effettiva
+// anche con una matrice SIMULATA, cioe' come sarebbe se la regola che si sta
+// modificando avesse gia' il valore nuovo.
+function validitaMesiForTipo(tipoId, dipId, requisiti = state.requisiti) {
   const ruoloIds = new Set(ruoliOfDip(dipId).map((r) => r.id));
-  const reqs = state.requisiti.filter((req) => req.tipo_requisito_id === tipoId && ruoloIds.has(req.ruolo_id));
+  const reqs = requisiti.filter((req) => req.tipo_requisito_id === tipoId && ruoloIds.has(req.ruolo_id));
   if (!reqs.length) return undefined;
   // validità più stringente
   return reqs.reduce((min, r) => {
@@ -2561,7 +2564,20 @@ async function saveRuolo(e) {
 async function deleteRuolo() {
   const id = $("ruolo-id").value;
   if (!id) return;
-  if (!confirm("Eliminare il ruolo? Verranno rimosse anche le sue regole e assegnazioni.")) return;
+  // 1.3 · Rifiuta se in uso, come gia' fa deleteCategoria, e dice quanto.
+  // Le assegnazioni REVOCATE contano: la cascata cancellerebbe anche la storia,
+  // cioe' la prova di chi era preposto e da quando.
+  const dipCoinvolti = new Set(state.dipRuoli.filter((dr) => dr.ruolo_id === id).map((dr) => dr.dipendente_id)).size;
+  const regole = state.requisiti.filter((r) => r.ruolo_id === id).length;
+  if (dipCoinvolti || regole) {
+    const parti = [];
+    if (dipCoinvolti) parti.push(`${dipCoinvolti} ${dipCoinvolti === 1 ? "dipendente lo ha" : "dipendenti lo hanno"} assegnato (anche revocato)`);
+    if (regole) parti.push(`${regole} ${regole === 1 ? "regola della matrice lo usa" : "regole della matrice lo usano"}`);
+    alert(`Impossibile eliminare questo ruolo: ${parti.join(" e ")}.`
+      + NL + "Togli prima le assegnazioni e le regole, poi riprova.");
+    return;
+  }
+  if (!confirm("Eliminare il ruolo? Non è assegnato a nessuno e non ha regole.")) return;
   await sbDelete("ruoli", id);
   state.requisiti = state.requisiti.filter((r) => r.ruolo_id !== id);
   state.dipRuoli = state.dipRuoli.filter((dr) => dr.ruolo_id !== id);
@@ -2636,7 +2652,23 @@ async function saveTipo(e) {
 async function deleteTipo() {
   const id = $("tipo-id").value;
   if (!id) return;
-  if (!confirm("Eliminare il tipo di requisito? Verranno rimosse anche le regole collegate.")) return;
+  // 1.3 · Rifiuta se in uso. Le voci di onboarding sono contate perche' fra
+  // onboarding_items e tipi_requisito NON c'e' foreign key: senza questo
+  // conteggio la guardia direbbe "non in uso" e lascerebbe una voce del flusso
+  // di ingresso che punta a un tipo che non esiste piu'.
+  const dipCoinvolti = new Set(state.adempimenti.filter((a) => a.tipo_requisito_id === id).map((a) => a.dipendente_id)).size;
+  const regole = state.requisiti.filter((r) => r.tipo_requisito_id === id).length;
+  const vociOnboarding = state.onboardItems.filter((i) => i.adempimento_tipo_id === id).length;
+  if (dipCoinvolti || regole || vociOnboarding) {
+    const parti = [];
+    if (dipCoinvolti) parti.push(`${dipCoinvolti} ${dipCoinvolti === 1 ? "dipendente ce l'ha" : "dipendenti ce l'hanno"} registrato`);
+    if (regole) parti.push(`${regole} ${regole === 1 ? "regola della matrice lo usa" : "regole della matrice lo usano"}`);
+    if (vociOnboarding) parti.push(`${vociOnboarding} ${vociOnboarding === 1 ? "voce di onboarding lo crea" : "voci di onboarding lo creano"}`);
+    alert(`Impossibile eliminare questo tipo di requisito: ${parti.join(", ")}.`
+      + NL + "Togli prima quelle righe, poi riprova.");
+    return;
+  }
+  if (!confirm("Eliminare il tipo di requisito? Non è usato da nessuna regola né da nessun dipendente.")) return;
   await sbDelete("tipi_requisito", id);
   state.requisiti = state.requisiti.filter((r) => r.tipo_requisito_id !== id);
   closeModal("modal-tipo");
@@ -2644,6 +2676,59 @@ async function deleteTipo() {
 }
 
 // ---------- Regola (matrice) ----------
+
+// 1.3 · Quali adempimenti cambierebbero scadenza se questa regola passasse a
+// `nuovaValidita`. Adattatore: raccoglie lo stato e chiama ricalcolaScadenze.
+// Tre filtri che decidono tutto:
+//   - `corrente !== false`: un ciclo archiviato e' una prova storica. Ha una
+//     data di rilascio e una scadenza coerente col vecchio calcolo, quindi
+//     senza questo filtro verrebbe riscritto: si altererebbe un attestato.
+//   - solo chi ha DAVVERO il ruolo di questa regola;
+//   - la validita' e' quella EFFETTIVA della persona (validitaMesiForTipo tiene
+//     conto degli altri suoi ruoli), non la regola da sola.
+function righeDaRicalcolare(req, nuovaValidita) {
+  if (!req || !req.id || !req.ruolo_id || !req.tipo_requisito_id) return [];
+  const requisitiDopo = state.requisiti.map((r) => (r.id === req.id ? { ...r, validita_mesi: nuovaValidita } : r));
+  const effettiva = (v) => (v === undefined || v === Infinity ? null : v);
+  const righe = [];
+  for (const a of state.adempimenti) {
+    if (a.tipo_requisito_id !== req.tipo_requisito_id) continue;
+    if (a.corrente === false) continue;
+    if (!a.data_rilascio) continue;
+    if (!ruoliOfDip(a.dipendente_id).some((r) => r.id === req.ruolo_id)) continue;
+    const vVecchia = validitaMesiForTipo(req.tipo_requisito_id, a.dipendente_id);
+    if (vVecchia === undefined) continue;
+    righe.push({
+      id: a.id,
+      data_rilascio: a.data_rilascio,
+      data_scadenza: a.data_scadenza,
+      validitaVecchia: effettiva(vVecchia),
+      validitaNuova: effettiva(validitaMesiForTipo(req.tipo_requisito_id, a.dipendente_id, requisitiDopo)),
+    });
+  }
+  return ricalcolaScadenze(righe);
+}
+
+// La modale dice quante righe sarebbero toccate, mentre si scrive.
+function aggiornaHintRicalcolo() {
+  const box = $("req-ricalcolo-hint");
+  const id = $("req-id").value;
+  const prev = id ? state.requisiti.find((r) => r.id === id) : null;
+  const vRaw = $("req-validita").value;
+  const nuova = vRaw === "" ? null : Number(vRaw);
+  if (!prev || (prev.validita_mesi ?? null) === nuova
+      || prev.ruolo_id !== $("req-ruolo").value
+      || prev.tipo_requisito_id !== $("req-tipo").value) {
+    box.hidden = true;
+    return;
+  }
+  const n = righeDaRicalcolare(prev, nuova).length;
+  box.textContent = n
+    ? `${n} ${n === 1 ? "adempimento registrato ha" : "adempimenti registrati hanno"} la scadenza calcolata con la validità vecchia: al salvataggio potrai ricalcolarla.`
+    : "Nessun adempimento registrato usa questa validità: non c'è niente da ricalcolare.";
+  box.hidden = false;
+}
+
 function openReqModal(id) {
   const req = id ? state.requisiti.find((r) => r.id === id) : null;
   $("req-title").textContent = req ? "Modifica regola" : "Nuova regola";
@@ -2657,6 +2742,7 @@ function openReqModal(id) {
   $("req-validita").value = req?.validita_mesi ?? "";
   $("req-note").value = req?.note || "";
   $("req-delete").hidden = !req;
+  $("req-ricalcolo-hint").hidden = true;
   openModal("modal-requisito");
 }
 async function saveReq(e) {
@@ -2672,7 +2758,30 @@ async function saveReq(e) {
     note: $("req-note").value.trim() || null,
   };
   if (!row.ruolo_id || !row.tipo_requisito_id) { alert("Seleziona ruolo e tipo di requisito."); return; }
-  if (await sbUpsert("requisiti_ruolo", row)) closeModal("modal-requisito");
+
+  // 1.3 · Le righe da ricalcolare si calcolano PRIMA di salvare, quando lo stato
+  // ha ancora la validita' vecchia. Solo se e' cambiata la validita' e nient'altro.
+  const prev = $("req-id").value ? state.requisiti.find((r) => r.id === id) : null;
+  const cambiaSoloValidita = prev
+    && prev.ruolo_id === row.ruolo_id
+    && prev.tipo_requisito_id === row.tipo_requisito_id
+    && (prev.validita_mesi ?? null) !== (row.validita_mesi ?? null);
+  const daRicalcolare = cambiaSoloValidita ? righeDaRicalcolare(prev, row.validita_mesi) : [];
+
+  if (!await sbUpsert("requisiti_ruolo", row)) return;
+
+  if (daRicalcolare.length) {
+    const n = daRicalcolare.length;
+    const ok = confirm(`Regola salvata. ${n} ${n === 1 ? "adempimento registrato ha" : "adempimenti registrati hanno"} ancora la scadenza calcolata con la validità vecchia.`
+      + NL + NL + "Ricalcolarla adesso? Le date corrette a mano e i cicli archiviati non vengono toccati.");
+    if (ok) {
+      for (const u of daRicalcolare) {
+        const a = state.adempimenti.find((x) => x.id === u.id);
+        if (a) await sbUpsert("adempimenti", { ...a, data_scadenza: u.data_scadenza });
+      }
+    }
+  }
+  closeModal("modal-requisito");
 }
 async function deleteReq() {
   const id = $("req-id").value;
@@ -2864,6 +2973,28 @@ async function backupDati() {
   } finally {
     btn.ripristina();
   }
+}
+
+// ---------- 1.3 · Scarica configurazione ----------
+// Le regole di compliance vivono SOLO nel database e si cambiano dall'app: una
+// modifica sbagliata in Configurazione non ha un "annulla". Questo bottone e' la
+// fotografia da fare prima. Solo il catalogo: nessun dato personale (per quelli
+// c'e' il Backup dati).
+const TABELLE_CONFIGURAZIONE = [
+  ["categorie", "categorie"],
+  ["ruoli", "ruoli"],
+  ["tipi_requisito", "tipi"],
+  ["requisiti_ruolo", "requisiti"],
+  ["onboarding_items", "onboardItems"],
+  ["documenti_template", "modelli"],
+  ["dpi_tipi", "dpiTipi"],
+];
+
+function scaricaConfigurazione() {
+  const contenuto = { esportato_il: new Date().toISOString(), tabelle: {} };
+  for (const [tabella, store] of TABELLE_CONFIGURAZIONE) contenuto.tabelle[tabella] = state[store] || [];
+  const blob = new Blob([JSON.stringify(contenuto, null, 2)], { type: "application/json" });
+  scaricaBlob(blob, `configurazione-${localISO(new Date())}.json`);
 }
 
 // ---------- 0.6 · Backup dei documenti ----------
@@ -3099,6 +3230,7 @@ function wireEvents() {
   $("btn-export").addEventListener("click", exportExcel);
   $("btn-backup-dati").addEventListener("click", backupDati);
   $("btn-backup-documenti").addEventListener("click", backupDocumenti);
+  $("btn-scarica-config").addEventListener("click", scaricaConfigurazione);
 
   $("btn-add").addEventListener("click", () => {
     if (state.view === "dipendenti") openDipModal(null);
@@ -3333,6 +3465,7 @@ function wireEvents() {
 
   // Modale regola.
   $("req-form").addEventListener("submit", saveReq);
+  $("req-validita").addEventListener("input", aggiornaHintRicalcolo);
   $("req-close").addEventListener("click", () => closeModal("modal-requisito"));
   $("req-cancel").addEventListener("click", () => closeModal("modal-requisito"));
   $("req-delete").addEventListener("click", deleteReq);

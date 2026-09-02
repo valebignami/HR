@@ -162,6 +162,34 @@ function caricheScoperte(prima, dopo) {
 }
 
 // ============================================================
+// 1.3 · Ricalcolo delle scadenze dopo un cambio di validita' in matrice.
+// Chi chiama passa, per ogni adempimento candidato:
+//   { id, data_rilascio, data_scadenza, validitaVecchia, validitaNuova }
+// dove le due validita' sono quelle EFFETTIVE della persona (che tengono conto
+// degli altri suoi ruoli), non la regola da sola; null = "non scade".
+// Ritorna solo le righe da aggiornare: [{ id, data_scadenza }].
+//
+// Due cose che questa funzione NON tocca, ed e' il punto:
+//   - le righe mai registrate (senza data_rilascio): non c'e' niente da cui
+//     ricalcolare, e la loro scadenza e' quella dell'onboarding;
+//   - le righe la cui scadenza NON coincide col vecchio calcolo: sono quelle
+//     corrette a mano (1.1), cioe' la data che ha scritto il medico. Riscriverle
+//     disferebbe esattamente il lavoro che la 1.1 rende possibile.
+// ============================================================
+function ricalcolaScadenze(righe) {
+  const out = [];
+  for (const r of righe || []) {
+    if (!r || !r.data_rilascio) continue;
+    const attesaVecchia = r.validitaVecchia == null ? null : addMonths(r.data_rilascio, r.validitaVecchia);
+    if ((r.data_scadenza || null) !== attesaVecchia) continue;   // corretta a mano
+    const nuova = r.validitaNuova == null ? null : addMonths(r.data_rilascio, r.validitaNuova);
+    if ((r.data_scadenza || null) === nuova) continue;           // gia' giusta
+    out.push({ id: r.id, data_scadenza: nuova });
+  }
+  return out;
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -217,5 +245,5 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza,
-    assegnazioneAttiva, calcolaCariche, caricheScoperte, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
+    assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }

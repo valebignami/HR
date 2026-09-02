@@ -235,6 +235,11 @@
         <button class="ct-btn" data-ctab="modelli">📄 Modelli documento</button>
       </div>
 
+      <div class="config-toolbar">
+        <h3>Le regole di compliance</h3>
+        <button class="ghost-btn" id="btn-scarica-config" title="Scarica ruoli, tipi di requisito, matrice, categorie, voci di onboarding, modelli e DPI in un file JSON. Fallo prima di ogni modifica.">⬇ Scarica configurazione</button>
+      </div>
+
       <div class="config-panel" id="cfg-ruoli">
         <div class="config-toolbar">
           <h3>Ruoli (mansioni e incarichi)</h3>
@@ -911,6 +916,7 @@
         <label class="inline-check"><input type="checkbox" id="req-obblig" checked> <span>Obbligatorio</span></label>
         <label><span>Validità (mesi, vuoto = non scade)</span><input type="number" id="req-validita" min="1"></label>
       </div>
+      <p class="cfg-hint avviso-scadenza" id="req-ricalcolo-hint" hidden></p>
       <label><span>Note</span><textarea id="req-note" rows="2"></textarea></label>
       <div class="modal-foot">
         <button type="button" class="ghost-btn danger" id="req-delete" hidden>🗑 Elimina</button>

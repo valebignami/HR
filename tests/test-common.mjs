@@ -16,7 +16,7 @@ globalThis.window = {
 globalThis.document = { addEventListener: () => {} };
 
 const { classificaStato, calcolaGap, avvisoScadenza,
-        assegnazioneAttiva, calcolaCariche, caricheScoperte,
+        assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         parseISO, fmtDate, localISO, fmtDateTime,
         daysUntil, addDays, addMonths, GG_SCAD, GG_ONBOARD } =
   await import("../common.js");
@@ -153,6 +153,44 @@ assert.equal(caricheScoperte(cariche(dueAnti), cariche([dueAnti[0]])).length, 1)
 
 // Niente cambia: niente da dire.
 assert.equal(caricheScoperte(cariche(tutti), cariche(tutti)).length, 0);
+
+// ============================================================
+// ricalcolaScadenze (1.3) — cambiare una validita' in matrice non deve
+// riscrivere la data che ha messo il medico, ne' inventarne una dove non c'e'.
+// ============================================================
+const riga = (o = {}) => ({ id: "a1", data_rilascio: "2026-05-15", data_scadenza: "2027-05-15",
+                            validitaVecchia: 12, validitaNuova: 24, ...o });
+
+// Registrata e coerente col vecchio calcolo: si aggiorna.
+let ric = ricalcolaScadenze([riga()]);
+assert.equal(ric.length, 1);
+assert.equal(ric[0].data_scadenza, "2028-05-15");
+
+// Mai registrata: niente da ricalcolare (la sua scadenza e' quella dell'onboarding).
+assert.equal(ricalcolaScadenze([riga({ data_rilascio: null, data_scadenza: "2026-07-01" })]).length, 0);
+
+// Corretta a mano (1.1): la data del medico non si tocca.
+assert.equal(ricalcolaScadenze([riga({ data_scadenza: "2026-11-15" })]).length, 0);
+
+// Da "12 mesi" a "non scade": la scadenza si azzera.
+ric = ricalcolaScadenze([riga({ validitaNuova: null })]);
+assert.equal(ric.length, 1);
+assert.equal(ric[0].data_scadenza, null);
+
+// Da "non scade" a "24 mesi": la riga senza scadenza ne prende una.
+ric = ricalcolaScadenze([riga({ data_scadenza: null, validitaVecchia: null, validitaNuova: 24 })]);
+assert.equal(ric.length, 1);
+assert.equal(ric[0].data_scadenza, "2028-05-15");
+
+// Stessa validita': niente da fare.
+assert.equal(ricalcolaScadenze([riga({ validitaNuova: 12 })]).length, 0);
+assert.equal(ricalcolaScadenze([]).length, 0);
+assert.equal(ricalcolaScadenze(null).length, 0);
+
+// Il clamp vale anche qui: rilascio 31/01, da 1 a 2 mesi.
+ric = ricalcolaScadenze([{ id: "a2", data_rilascio: "2026-01-31", data_scadenza: "2026-02-28",
+                           validitaVecchia: 1, validitaNuova: 2 }]);
+assert.equal(ric[0].data_scadenza, "2026-03-31");
 
 // ============================================================
 // calcolaGap — il nucleo: cosa deve avere una persona e come sta messa.
