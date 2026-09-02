@@ -1469,7 +1469,7 @@ function openOnboardModal(dipId, itemId) {
     $("onboard-adm-prescrizioni").value = dati.prescrizioni || "";
     $("onboard-adm-ore").value = dati.ore_effettive ?? "";
     $("onboard-adm-hint").textContent =
-      tipoReq ? `Verrà creato/aggiornato l'adempimento "${tipoReq.nome}" con la data indicata. La scadenza si calcola dalla matrice ruoli del dipendente.`
+      tipoReq ? `Verrà creato/aggiornato l'adempimento "${tipoReq.nome}" con la data indicata. La scadenza è proposta dalla matrice ruoli e si può correggere.`
               : "Tipo di requisito non trovato.";
     // 1.1 · La scadenza e' precompilata dalla matrice ma MODIFICABILE: fino alla
     // Fase 1 il campo era `disabled` e la data del medico si perdeva.
@@ -1481,9 +1481,19 @@ function openOnboardModal(dipId, itemId) {
       campoAvviso.textContent = msg || "";
       campoAvviso.hidden = !msg;
     };
-    const precompila = () => {
+    // `dallaRegola = false` all'apertura: se l'adempimento e' gia' registrato con
+    // quella stessa data, la scadenza che si mostra e' QUELLA SALVATA, non quella
+    // ricalcolata. Altrimenti riaprendo la voce per allegare il certificato si
+    // riproporrebbero i 12 mesi della matrice al posto dei 6 scritti dal medico,
+    // e il salvataggio successivo li sovrascriverebbe in silenzio: esattamente il
+    // difetto che la 1.1 esiste per chiudere.
+    // Cambiare la data dell'evento invece ricalcola: la data e' il presupposto.
+    const precompila = (dallaRegola) => {
       const d = $("onboard-adm-data").value;
-      const scad = d ? (calcScadenza(d, tipoReqId, dipId) || "") : "";
+      let scad = d ? (calcScadenza(d, tipoReqId, dipId) || "") : "";
+      if (!dallaRegola && existingAdm && existingAdm.data_rilascio === d && existingAdm.data_scadenza) {
+        scad = existingAdm.data_scadenza;
+      }
       // Scrive su entrambi i campi: solo uno e' visibile, ma il salvataggio
       // legge quello attivo e i due non devono divergere.
       $("onboard-adm-scadenza").value = scad;
@@ -1491,10 +1501,10 @@ function openOnboardModal(dipId, itemId) {
       aggiornaAvviso();
     };
     campoScad.required = scadenzaRichiesta(v) && !!$("onboard-adm-data").value;
-    precompila();
+    precompila(false);
     $("onboard-adm-data").onchange = () => {
       campoScad.required = scadenzaRichiesta(v) && !!$("onboard-adm-data").value;
-      precompila();
+      precompila(true);
     };
     campoScad.oninput = aggiornaAvviso;
   } else {
@@ -1523,6 +1533,19 @@ async function saveOnboardProgresso(e) {
   const itemId = $("onboard-item-id").value;
   if (!progrId) { alert("Voce non sincronizzata. Chiudi e riapri la scheda."); return; }
   const prev = state.onboardProgressi.find((x) => x.id === progrId);
+
+  // 1.1 · Guardia della scadenza PRIMA dell'upload, come in applyFatto: uscire
+  // dopo aver caricato il file significherebbe caricarlo per niente.
+  const itemGuardia = state.onboardItems.find((i) => i.id === itemId);
+  if (itemGuardia?.tipo_workflow === "crea_adempimento" && $("onboard-adm-data").value) {
+    const vG = validitaMesiForTipo(itemGuardia.adempimento_tipo_id, dipId);
+    if (scadenzaRichiesta(vG) && !campoScadenzaOnboard(isTipoSanitario(itemGuardia.adempimento_tipo_id)).input.value) {
+      alert(`La regola prevede una validità di ${vG} mesi: la scadenza è obbligatoria. `
+            + 'Lasciandola vuota, questo obbligo risulterebbe "non scade" per sempre.');
+      return;
+    }
+  }
+
   const oldPath = prev?.documento_path || null;
   let documento_path = oldPath;
   let uploadedPath = null;
@@ -1568,14 +1591,8 @@ async function saveOnboardProgresso(e) {
     // Se ho data evento + tipo requisito → creo/aggiorno l'adempimento.
     if (dataEvento && tipoReqId) {
       // 1.1 · La scadenza e' quella scritta nel campo, non piu' quella calcolata.
+      // La guardia sull'obbligatorieta' e' gia' passata, prima dell'upload.
       const scadenza = campoScadenzaOnboard(isVisita).input.value || null;
-      const vReq = validitaMesiForTipo(tipoReqId, dipId);
-      if (scadenzaRichiesta(vReq) && !scadenza) {
-        if (uploadedPath) await deleteDoc(uploadedPath);
-        alert(`La regola prevede una validità di ${vReq} mesi: la scadenza è obbligatoria. `
-              + 'Lasciandola vuota, questo obbligo risulterebbe "non scade" per sempre.');
-        return;
-      }
       const existing = state.adempimenti.find((a) => a.dipendente_id === dipId && a.tipo_requisito_id === tipoReqId && a.corrente !== false);
       const admRow = {
         id: existing?.id || uid(),
@@ -2289,13 +2306,13 @@ async function sincronizzaAssegnazioni(dipId) {
     });
   }
 
-  // 1) Revoche.
-  for (const dr of attive) {
-    if (voluti.has(dr.ruolo_id)) continue;
-    if (!await sbUpsert("dipendente_ruoli", { ...dr, al: oggi })) return false;
-  }
-
-  // 2) Nuove assegnazioni e aggiornamenti.
+  // 1) Prima si aprono le assegnazioni nuove, POI si revocano le vecchie.
+  // L'ordine conta se qualcosa fallisce a meta': revocando prima, un cambio di
+  // mansione andato storto lascia la persona SENZA mansione, il motore gap non
+  // le assegna piu' nessun obbligo e il cruscotto migliora da solo. Nell'ordine
+  // giusto, il caso peggiore sono due mansioni attive: obblighi in piu', non in
+  // meno. L'indice unico parziale e' per (dipendente, ruolo) e non si oppone,
+  // perche' un ruolo voluto non e' mai anche un ruolo da revocare.
   for (const [ruoloId, v] of voluti) {
     const esistente = perRuolo.get(ruoloId);
     const rigaId = esistente?.id || uid();
@@ -2330,6 +2347,12 @@ async function sincronizzaAssegnazioni(dipId) {
     if (caricato && esistente?.documento_path && esistente.documento_path !== caricato) {
       await deleteDoc(esistente.documento_path);
     }
+  }
+
+  // 2) Revoche: chiudono la riga, non la cancellano.
+  for (const dr of attive) {
+    if (voluti.has(dr.ruolo_id)) continue;
+    if (!await sbUpsert("dipendente_ruoli", { ...dr, al: oggi })) return false;
   }
   return true;
 }
