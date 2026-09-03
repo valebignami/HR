@@ -772,7 +772,7 @@ function renderDipColloqui(dipId) {
     : list.map((c) => `<div class="hist-row colloquio-row" data-id="${esc(c.id)}">
         <div class="hist-date">${fmtDate(c.data)}</div>
         <div><strong>${esc(c.esito || "Colloquio")}</strong>${c.condotto_da ? ` <span class="muted">— ${esc(c.condotto_da)}</span>` : ""}</div>
-        <div class="hist-meta">${c.obiettivi ? `<span class="hist-note">${esc(c.obiettivi).slice(0, 80)}${c.obiettivi.length > 80 ? "…" : ""}</span>` : ""}</div>
+        <div class="hist-meta">${c.obiettivi ? `<span class="hist-note">${esc(c.obiettivi.slice(0, 80))}${c.obiettivi.length > 80 ? "…" : ""}</span>` : ""}</div>
         ${c.documento_path ? `<button type="button" class="hist-doc colloquio-doc-btn" data-path="${esc(c.documento_path)}" title="Apri il verbale">📎</button>` : '<span class="hist-doc disabled">—</span>'}
       </div>`).join("");
   els(".colloquio-row", host).forEach((row) =>
@@ -909,6 +909,7 @@ function resetFormCandidatura() {
   $("candidature-esito").value = "";
   $("candidature-note").value = "";
   $("candidature-doc-file").value = "";
+  $("candidature-doc-file").disabled = false;
   $("candidature-doc-upload-label").textContent = "Allega il CV";
   $("candidature-doc-progress").hidden = true;
   $("candidature-salva").textContent = "Aggiungi";
@@ -969,6 +970,17 @@ function caricaCandidaturaNelForm(id) {
   const c = state.candidature.find((x) => x.id === id);
   if (!c) return;
   resetFormCandidatura();
+  // Su una riga gia' segnata cancellata il caricamento si SPEGNE, non si
+  // nasconde: `.doc-upload` dichiara il suo display con !important, e nasconderla
+  // con `hidden` non avrebbe nessun effetto visibile (la trappola delle Fasi 4b
+  // e 4c). Il motivo per cui si spegne: una riga "cancellata il ..." con un CV
+  // nuovo nel bucket sarebbe esattamente la bugia che questa voce esiste per
+  // evitare.
+  $("candidature-doc-file").disabled = !!c.cancellato_il;
+  if (c.cancellato_il) {
+    $("candidature-doc-upload-label").textContent =
+      `CV cancellato il ${fmtDate(c.cancellato_il)}: non se ne allegano altri`;
+  }
   $("candidature-id").value = c.id;
   $("candidature-ricevuto").value = c.ricevuto_il || "";
   $("candidature-nominativo").value = c.nominativo || "";
@@ -987,6 +999,14 @@ async function saveCandidatura(e) {
   if (!nominativo || !ricevuto) { alert("Nome e data di ricezione sono obbligatori."); return; }
   const id = $("candidature-id").value || uid();
   const prev = state.candidature.find((x) => x.id === id) || null;
+  // La guardia vera sta qui, non nel campo spento: allegare un CV a una
+  // candidatura gia' cancellata rimetterebbe nel bucket il file che la riga
+  // dichiara di aver tolto.
+  if (prev?.cancellato_il && pendingCandidaturaFile) {
+    alert("Questa candidatura risulta già cancellata: non si può allegare un CV nuovo. " +
+          "Se la persona si è ricandidata, registrala come candidatura nuova.");
+    return;
+  }
 
   const oldPath = prev?.documento_path || null;
   let documento_path = oldPath;
@@ -1292,14 +1312,22 @@ function renderAdempAzienda() {
   let colloqui = perPersona ? null : rigaColloquiDellAnno();
   if (colloqui && filtroStato && colloqui.stato !== filtroStato) colloqui = null;
 
-  $("azienda-wrap").hidden = righe.length === 0 && !colloqui;
+  // Il blocco sparisce SOLO quando si sta guardando una persona sola. Con zero
+  // righe resta, con il suo "Nessuna voce": nasconderlo porterebbe via anche il
+  // bottone "+ Nuova voce", e non ci sarebbe piu' nessun modo di aggiungerne una.
+  $("azienda-wrap").hidden = perPersona;
   // Il contatore e' PROPRIO: quante voci non sono a posto, colloqui compresi.
   $("azienda-count").textContent =
     righe.filter((x) => x.stato !== "ok").length + (colloqui && colloqui.stato !== "ok" ? 1 : 0);
   $("azienda-colloqui").innerHTML = colloqui ? colloqui.html : "";
   if (colloqui) collegaClickColloqui();
 
-  $("azienda-rows").innerHTML = righe.map(({ riga, stato }) => {
+  $("azienda-rows").innerHTML = (righe.length === 0
+    ? `<div class="muted" style="padding:12px 16px">${
+        filtroStato || state.search
+          ? "Nessuna voce corrisponde ai filtri scelti."
+          : "Nessun adempimento dell'azienda. Aggiungine uno con «+ Nuova voce»."}</div>`
+    : "") + righe.map(({ riga, stato }) => {
     const doc = riga.documento_path
       ? `<button type="button" class="hist-doc az-doc-btn" data-path="${esc(riga.documento_path)}" title="Apri il documento">📎</button>`
       : "";
