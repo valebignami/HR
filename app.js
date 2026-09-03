@@ -1247,10 +1247,17 @@ function righeAdempAzienda() {
     });
 }
 
-// Le voci con una data entrano nel calendario delle Scadenze.
+// Le voci con una data entrano nel calendario delle Scadenze, con GLI STESSI
+// filtri della lista: le due modalita' sono la stessa vista, e devono dare la
+// stessa risposta allo stesso filtro. Senza, filtrando per una persona il
+// calendario mostrerebbe le sue scadenze insieme a tutte quelle dell'azienda,
+// mentre la lista le nasconde.
 function aziendaPerCalendario() {
+  const { perPersona, stato: filtroStato } = filtriBloccoAzienda();
+  if (perPersona) return [];
   return state.adempAzienda
     .filter((r) => r.prossima && matchSearch(r.nome || ""))
+    .filter((r) => !filtroStato || statoAdempimentoAzienda(r) === filtroStato)
     .map((r) => ({ kind: "azienda", riga: r, scadenza: r.prossima }));
 }
 
@@ -1263,15 +1270,27 @@ function etichettaPeriodicita(mesi) {
   return `ogni ${n} mesi`;
 }
 
-function renderAdempAzienda() {
-  // I filtri per PERSONA non si applicano a queste righe — non sono di
-  // nessuno. Ma lasciarle visibili mentre si sta guardando una sola persona
-  // mostrerebbe righe che con lei non c'entrano: il blocco si nasconde.
+// Che cosa resta visibile del blocco aziendale, dati i filtri della barra.
+// Due regole diverse, perche' i filtri sono di due specie:
+//   - dipendente / mansione / incarico sono filtri PER PERSONA, e queste righe
+//     non sono di nessuno: mentre se ne guarda una sola, il blocco si nasconde,
+//     o mostrerebbe righe che con lei non c'entrano;
+//   - lo stato (il click sui KPI) NON e' un filtro per persona: anche queste
+//     righe hanno un semaforo, quindi si filtrano invece di sparire. Nasconderle
+//     su "Scaduti" toglierebbe di mezzo proprio quelle che si stava cercando.
+function filtriBloccoAzienda() {
   const f = state.compFilter;
-  const filtroPersona = !!(f.dipendente || f.mansione || f.incarico || f.stato);
-  const righe = filtroPersona ? [] : righeAdempAzienda().filter((x) => matchSearch(x.riga.nome || ""));
+  return { perPersona: !!(f.dipendente || f.mansione || f.incarico), stato: f.stato || "" };
+}
+
+function renderAdempAzienda() {
+  const { perPersona, stato: filtroStato } = filtriBloccoAzienda();
+  const righe = perPersona ? [] : righeAdempAzienda()
+    .filter((x) => matchSearch(x.riga.nome || ""))
+    .filter((x) => !filtroStato || x.stato === filtroStato);
   // 5.4 · La riga calcolata dei colloqui dell'anno, in cima al blocco.
-  const colloqui = filtroPersona ? null : rigaColloquiDellAnno();
+  let colloqui = perPersona ? null : rigaColloquiDellAnno();
+  if (colloqui && filtroStato && colloqui.stato !== filtroStato) colloqui = null;
 
   $("azienda-wrap").hidden = righe.length === 0 && !colloqui;
   // Il contatore e' PROPRIO: quante voci non sono a posto, colloqui compresi.
@@ -1318,7 +1337,9 @@ function openAziendaModal(id) {
   $("azienda-doc-upload-label").textContent = "Carica un file";
   $("azienda-doc-progress").hidden = true;
   $("azienda-doc-current").hidden = !r?.documento_path;
-  if (r?.documento_path) $("azienda-doc-current-name").textContent = esc(r.nome || "Documento");
+  // textContent scrive testo, non HTML: passarlo da esc() raddoppierebbe le
+  // fughe e un nome con la & si leggerebbe "&amp;".
+  if (r?.documento_path) $("azienda-doc-current-name").textContent = r.nome || "Documento";
   openModal("modal-azienda");
 }
 
@@ -1334,7 +1355,10 @@ function segnaFattoAzienda() {
   const m = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/.exec(testo);
   if (m) dataISO = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
   else if (/^\d{4}-\d{2}-\d{2}$/.test(testo)) dataISO = testo;
-  else if (testo !== "") { alert("Data non riconosciuta. Scrivila come 03/09/2026."); return; }
+  // Una risposta VUOTA non vale "oggi": chi cancella il campo per riscriverlo e
+  // poi conferma non sta dicendo "oggi", e non deve trovarsi una data che non
+  // ha scritto, con l'avviso che gliela conferma.
+  else { alert("Data non riconosciuta. Scrivila come 03/09/2026."); return; }
   if (!parseISO(dataISO)) { alert("Data non valida."); return; }
 
   $("azienda-ultima").value = dataISO;
@@ -5657,7 +5681,6 @@ function clearFilters() {
   state.compFilter = { dipendente: "", mansione: "", incarico: "", stato: "" };
   state.compView = "list";
   state.compGroup = "persona";   // 5.1 · come compView: "pulisci" riporta alla vista di partenza
-  els("#comp-view-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x.dataset.compview === "list"));
   els("#comp-group-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x.dataset.cgroup === "persona"));
   populateFilters();
   $("btn-clear-filters").hidden = true;
