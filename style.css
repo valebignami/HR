@@ -1966,3 +1966,46 @@ body.self-service { background: var(--bg); }
    fuori da `.modal-body`. */
 .me-doc-form[hidden] { display: none; }
 .doc-block[hidden]   { display: none; }
+
+/* ============================================================
+   5.3 · Scadenze: l'elenco delle persone ha la precedenza.
+   Difetto trovato col collaudo del 2026-09-03, a 1440x900: .comp-wrap
+   mostrava 75px di finestra per 2420px di righe, cioe' una riga e mezza.
+   Causa: .view non scorre (overflow: hidden) e i DUE blocchi della Fase 5
+   erano `flex: 0 0 auto; max-height: 40vh` l'uno. Ottanta vh non cedibili
+   piu' 197px di contatori e filtri: l'unico elemento elastico della colonna
+   e' .comp-wrap, che quindi assorbiva tutto lo scarto. Con un blocco solo
+   (fino alla Fase 4) il conto tornava; con due no, e peggiora a ogni voce
+   aggiunta ai blocchi.
+   Rimedio in tre righe, nell'ordine in cui contano:
+   - i due blocchi diventano `0 1 auto` con un tetto piu' basso: cedono
+     spazio invece di pretenderlo, e scorrono al loro interno (hanno gia'
+     overflow-y: auto). Il `min-height` evita che si riducano a un filo.
+   - .comp-wrap non scende sotto due quinti di schermo (misurato: 360px
+     contro 150+150 dei due blocchi, rapporti contenuto/finestra 6,9 · 8,0
+     · 1,3, tutti sotto la soglia di 10). E' una regola sul minimo,
+     non sul valore: sopra quella soglia si comporta come prima.
+   - la vista scorre come ultima rete: su una finestra molto bassa la somma
+     dei minimi supera l'altezza, e senza questo verrebbe TAGLIATA in
+     silenzio invece che scorrere. Scoped a #view-compliance: le altre
+     viste non hanno due blocchi rigidi e restano com'erano.
+   ============================================================ */
+#view-compliance .contratti-wrap { flex: 0 1 auto; max-height: 24vh; min-height: 150px; }
+#view-compliance .comp-wrap      { min-height: 40vh; }
+#view-compliance { overflow-y: auto; }
+
+/* I due blocchi si aprono e si chiudono, e nascono CHIUSI. Le regole qui
+   sopra bastavano a non far schiacciare l'elenco, ma sotto i 700px di
+   finestra restavano tre blocchi impilati e due barre di scorrimento
+   annidate. Chiusi occupano una riga di titolo invece di 150px l'uno.
+   Si piega con una CLASSE, non con `hidden`: .contratti-wrap non dichiara
+   display, ma i suoi figli si', e la trappola dei `[hidden]` ignorati e'
+   gia' costata le fasi 4b e 4c. */
+.contratti-wrap.pieghevole .contratti-titolo { cursor: pointer; user-select: none; }
+.contratti-wrap.pieghevole .contratti-titolo::before { content: "▾"; font-size: 12px; opacity: .55; }
+.contratti-wrap.pieghevole.piegato .contratti-titolo::before { content: "▸"; }
+/* stessa specificita' del blocco che fissa il minimo qui sopra, o `#view-compliance`
+   vincerebbe e un blocco chiuso resterebbe alto 150px. Misurato. */
+#view-compliance .contratti-wrap.piegato { min-height: 0; max-height: none; overflow: hidden; }
+.contratti-wrap.piegato .contratti-titolo { padding-bottom: 12px; }
+.contratti-wrap.piegato .list > *:not(.contratti-titolo) { display: none; }

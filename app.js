@@ -5970,6 +5970,50 @@ function clearFilters() {
 function toggleDrawer() { $("sidebar").classList.toggle("open"); $("drawer-backdrop").classList.toggle("open"); }
 function closeDrawer() { $("sidebar").classList.remove("open"); $("drawer-backdrop").classList.remove("open"); }
 
+// ---------- 5.3 . Blocchi pieghevoli delle Scadenze ----------
+const BLOCCHI_PIEGHEVOLI = ["contratti-wrap", "azienda-wrap"];
+
+function piegaBlocco(id, chiuso) {
+  const wrap = $(id);
+  if (!wrap) return;
+  wrap.classList.toggle("piegato", chiuso);
+  const tit = wrap.querySelector(".contratti-titolo");
+  if (tit) tit.setAttribute("aria-expanded", chiuso ? "false" : "true");
+  try { localStorage.setItem("hr-piegato-" + id, chiuso ? "1" : "0"); } catch (e) {}
+}
+
+function wirePieghevoli() {
+  BLOCCHI_PIEGHEVOLI.forEach((id) => {
+    const wrap = $(id);
+    if (!wrap) return;
+    const tit = wrap.querySelector(".contratti-titolo");
+    if (!tit || tit.dataset.pieghevole) return;   // idempotente: due ascoltatori si annullerebbero
+    tit.dataset.pieghevole = "1";
+    // la classe distingue questi due dagli altri .contratti-wrap (p.es.
+    // #ev-richieste-wrap negli Eventi, che non si piega): le regole CSS del
+    // pieghevole si agganciano a lei, non alla classe condivisa.
+    wrap.classList.add("pieghevole");
+    tit.setAttribute("role", "button");
+    tit.setAttribute("tabindex", "0");
+    let salvato = null;
+    try { salvato = localStorage.getItem("hr-piegato-" + id); } catch (e) {}
+    // chiusi di default: solo un "0" esplicito li lascia aperti
+    piegaBlocco(id, salvato !== "0");
+    const alterna = (ev) => {
+      // "+ Nuova voce" sta dentro il titolo e non deve piegare niente
+      if (ev.target !== tit && ev.target.closest("button")) return;
+      piegaBlocco(id, !wrap.classList.contains("piegato"));
+    };
+    tit.addEventListener("click", alterna);
+    tit.addEventListener("keydown", (ev) => {
+      // da tastiera l'evento del bottone risale fin qui: senza questo controllo
+      // il preventDefault annullerebbe "+ Nuova voce" invece di piegare.
+      if (ev.target !== tit) return;
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); alterna(ev); }
+    });
+  });
+}
+
 function wireEvents() {
   $("login-form").addEventListener("submit", handleLoginSubmit);
   $("btn-logout").addEventListener("click", handleLogout);
@@ -6111,6 +6155,13 @@ function wireEvents() {
   $("competenza-delete").addEventListener("click", deleteCompetenza);
   $("dip-competenze-toggle").addEventListener("click", () => toggleSection("dip-competenze-toggle", "dip-competenze-list"));
 
+  // 5.3 . I due blocchi delle Scadenze si aprono e si chiudono, e nascono
+  // CHIUSI. Il collaudo del 2026-09-03 li ha trovati aperti e non cedibili:
+  // lasciavano all'elenco delle persone 75px per 2420px di righe. Lo stato
+  // sta in localStorage per blocco, cosi' chi li tiene aperti li ritrova
+  // aperti. Si piega con una CLASSE, mai con `hidden`: quei wrap hanno figli
+  // con display d'autore, ed e' la trappola gia' pagata nelle fasi 4b e 4c.
+  wirePieghevoli();
   // 5.2 · Adempimenti dell'azienda.
   $("azienda-add").addEventListener("click", () => openAziendaModal(null));
   $("azienda-close").addEventListener("click", () => closeModal("modal-azienda"));
