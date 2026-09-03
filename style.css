@@ -1746,19 +1746,34 @@ body.self-service { background: var(--bg); }
   border-left-color: #0f766e;
 }
 .ev-row .hist-note .stato { font-size: 11px; }
-/* `.modal-body label` piu' sopra dichiara `display: flex`, ed e' una regola
-   d'autore: batte l'`[hidden] { display: none }` del browser. Senza queste
-   righe i tre contenitori che la modale dell'evento nasconde da sola
-   (Dipendente, Ore, Protocollo INPS) resterebbero VISIBILI, e su una richiesta
-   di ferie comparirebbe un campo "Protocollo INPS *" da riempire.
-   E' la stessa trappola per cui questo file ha gia' dovuto scrivere
-   .view[hidden], .config-panel[hidden], .ro-field[hidden], .doc-current[hidden]
-   e .dip-tab-panel[hidden]. */
-#ev-dip-wrap[hidden], #ev-ore-wrap[hidden], #ev-inps-wrap[hidden] { display: none; }
-/* Stessa trappola di `.modal-body label`, un piano piu' sopra: `.me-fieldset`
-   dichiara `display: flex` ed e' una regola d'autore, quindi le sezioni del
-   portale che il codice nasconde con `.hidden = true` resterebbero VISIBILI.
-   Per le due sezioni nuove della Fase 4 vorrebbe dire un riquadro "Ferie e
-   permessi" vuoto per chiunque non abbia ancora un saldo scritto sul cedolino,
-   e un modulo per chiedere ferie mostrato anche quando la RPC non risponde. */
-#me-saldo-section[hidden], #me-richieste-section[hidden] { display: none; }
+/* ---------- 4b · L'attributo `hidden` deve nascondere davvero ----------
+   `.modal-body label { display: flex }` (riga 833) e `.me-fieldset { display:
+   flex }` (riga 1109) sono regole d'AUTORE, e nella cascata l'origine autore
+   batte l'origine user-agent: vincono sull'`[hidden] { display: none }` del
+   browser. Senza le due righe qui sotto, `elemento.hidden = true` scritto dal
+   JavaScript non ha NESSUN effetto visibile su quegli elementi, e nessuno se ne
+   accorge leggendo il JavaScript, che fa la cosa giusta.
+   Misurato sul sito pubblicato prima della correzione, con getComputedStyle:
+   "Data fine contratto" a schermo su un contratto indeterminato
+   (#dip-fine-contr-wrap), "Minimo richiesto in azienda" sulle mansioni
+   (#ruolo-minimo-wrap), i due campi alternativi della voce di checklist
+   (#onbi-tpl-wrap, #onbi-adm-wrap), e nel portale quattro riquadri con il solo
+   titolo e niente sotto (#me-attestati-section, #me-cedolini-section,
+   #me-accetta-section, #me-firma-section).
+   Queste due righe SOSTITUISCONO le regole ristrette che la Fase 4 aveva dovuto
+   scrivere per i propri elementi (#ev-dip-wrap, #ev-ore-wrap, #ev-inps-wrap,
+   #me-saldo-section, #me-richieste-section), che ora ci ricadono sotto.
+   Vanno in coda al foglio, e vincono comunque per specificita': (0,2,1) contro
+   (0,1,1), e (0,2,0) contro (0,1,0).
+   DUE LIMITI, per chi le leggesse credendole definitive:
+   1) non valgono contro un `display` dichiarato con `!important` — .doc-upload
+      (riga 960) e .doc-external (riga 982) lo fanno; oggi il JavaScript non
+      nasconde mai nessuno dei due, ma se un giorno lo facesse tornerebbe la
+      stessa trappola;
+   2) valgono per i `label` dentro `.modal-body`, non per ogni `label` del
+      progetto: `.me-fieldset label` (riga 1125) e `.login-form label` (riga
+      1383) sono la stessa forma su selettori che oggi nessuno nasconde.
+   Restano scoperti .me-doc-form e .doc-block, stessa causa, altri selettori:
+   sono la Fase 4c del piano. */
+.modal-body label[hidden] { display: none; }
+.me-fieldset[hidden]      { display: none; }
