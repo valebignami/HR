@@ -1091,9 +1091,14 @@ function nomeDocumentoFascicolo({ persona, descrizione, data, scadenza, superato
 function nomeUnicoNellaCartella(usati, nome) {
   const insieme = usati instanceof Set ? usati : new Set();
   if (!insieme.has(nome)) { insieme.add(nome); return nome; }
+  // Un punto NON e' per forza un'estensione: "De Sanctis Jr. Mario" e'
+  // una cartella, e spezzarla sul punto darebbe "De Sanctis Jr (2). Mario".
+  // Vale come estensione solo cio' che ne ha la forma: da 1 a 8 caratteri
+  // alfanumerici in coda.
   const i = nome.lastIndexOf(".");
-  const base = i > 0 ? nome.slice(0, i) : nome;
-  const ext = i > 0 ? nome.slice(i) : "";
+  const pareEstensione = i > 0 && /^[A-Za-z0-9]{1,8}$/.test(nome.slice(i + 1));
+  const base = pareEstensione ? nome.slice(0, i) : nome;
+  const ext = pareEstensione ? nome.slice(i) : "";
   for (let n = 2; n < 10000; n++) {
     const tentativo = `${base} (${n})${ext}`;
     if (!insieme.has(tentativo)) { insieme.add(tentativo); return tentativo; }

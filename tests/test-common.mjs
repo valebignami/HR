@@ -1257,6 +1257,23 @@ const nascosti = new Set();
 assert.equal(nomeUnicoNellaCartella(nascosti, ".gitignore"), ".gitignore");
 assert.equal(nomeUnicoNellaCartella(nascosti, ".gitignore"), ".gitignore (2)");
 
+// Una scadenza SENZA data di rilascio: l'anno che si scrive e' quello della
+// scadenza, e non si scrive due volte. (Il caso esiste: un adempimento
+// registrato con la sola data di scadenza.)
+assert.equal(nomeDocumentoFascicolo({
+  persona: "A B", descrizione: "Idoneita", scadenza: "2027-05-10", path: "a/b.pdf",
+}), "A B - Idoneita (scad. 2027).pdf");
+
+// Un punto DENTRO il nome non e' un'estensione: la cartella di due omonimi
+// non si spezza in "De Sanctis Jr (2). Mario".
+const conPunto = new Set();
+assert.equal(nomeUnicoNellaCartella(conPunto, "De Sanctis Jr. Mario"), "De Sanctis Jr. Mario");
+assert.equal(nomeUnicoNellaCartella(conPunto, "De Sanctis Jr. Mario"), "De Sanctis Jr. Mario (2)");
+// Ma una vera estensione continua a valere.
+const conExt = new Set();
+assert.equal(nomeUnicoNellaCartella(conExt, "X - Y.docx"), "X - Y.docx");
+assert.equal(nomeUnicoNellaCartella(conExt, "X - Y.docx"), "X - Y (2).docx");
+
 // --- Le cinque cartelle sono quelle dell'archivio, nome per nome ---
 assert.equal(CARTELLE_FASCICOLO.contratto, "1_Contratto");
 assert.equal(CARTELLE_FASCICOLO.cedolini, "2_Cedolini");
