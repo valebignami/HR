@@ -74,10 +74,23 @@ function todayMid() {
   const n = new Date();
   return new Date(n.getFullYear(), n.getMonth(), n.getDate());
 }
-function daysUntil(s) {
+// Giorni che mancano a una data. `oggiISO` e' facoltativo e serve SOLO ai test
+// (Fase 5): senza, si legge la data vera, come ha sempre fatto. Esiste perche'
+// tre regole della Fase 5 passano di qui, e un test che dipende dal giorno in
+// cui gira e' un test che un giorno fallisce da solo — "tutti i colloqui fatti
+// entro novembre 2026 e' verde" e' vero a settembre e falso a ottobre.
+// Una data di riferimento illeggibile NON diventa "oggi": diventa null, perche'
+// rispondere "mancano 40 giorni" partendo da una data che non si e' capita e'
+// peggio che non rispondere.
+function daysUntil(s, oggiISO) {
   const d = parseISO(s);
   if (!d) return null;
-  return Math.round((d - todayMid()) / 86400000);
+  let base = todayMid();
+  if (oggiISO != null) {
+    base = parseISO(oggiISO);
+    if (!base) return null;
+  }
+  return Math.round((d - base) / 86400000);
 }
 
 // Timestamp con orario (timestamptz): converte al fuso locale.
@@ -92,13 +105,16 @@ function fmtDateTime(ts) {
 
 // Classificazione unica dello stato di un adempimento (era duplicata in 3 punti).
 // hasRilascio: il ciclo è stato registrato dall'HR. scadenza: ISO o null.
-function classificaStato(hasRilascio, scadenza) {
+// `oggiISO` (Fase 5) e' facoltativo e in coda: tutte le chiamate che esistevano
+// prima ne passano due e continuano a leggere la data vera. Non e' una regola
+// nuova, e' la stessa regola resa provabile.
+function classificaStato(hasRilascio, scadenza, oggiISO) {
   if (!hasRilascio) {
     if (!scadenza) return "scaduto";                 // nessuna scadenza nota: visibile subito
-    return daysUntil(scadenza) < 0 ? "scaduto" : "in_scadenza"; // mai "ok" se non registrato
+    return daysUntil(scadenza, oggiISO) < 0 ? "scaduto" : "in_scadenza"; // mai "ok" se non registrato
   }
   if (!scadenza) return "ok";                        // rilasciato e non scade
-  const gg = daysUntil(scadenza);
+  const gg = daysUntil(scadenza, oggiISO);
   if (gg < 0) return "scaduto";
   if (gg <= GG_SCAD) return "in_scadenza";
   return "ok";

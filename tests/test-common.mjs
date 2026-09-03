@@ -45,6 +45,31 @@ assert.equal(classificaStato(true, iso(-1)), "scaduto");
 assert.equal(classificaStato(false, null), "scaduto");
 assert.equal(classificaStato(false, iso(40)), "in_scadenza");
 assert.equal(classificaStato(false, iso(-5)), "scaduto");
+// ============================================================
+// 5 · Il terzo argomento "oggi" di daysUntil e classificaStato.
+// Serve ai test delle regole nuove della Fase 5, che altrimenti dipenderebbero
+// dal giorno in cui girano. Qui si prova che NON cambia niente per chi non lo
+// passa: e' la stessa regola, resa provabile.
+// ============================================================
+const oggiVero = localISO(new Date());
+assert.equal(daysUntil("2026-11-30", "2026-11-20"), 10);
+assert.equal(daysUntil("2026-11-30", "2026-12-01"), -1);
+assert.equal(daysUntil("2026-11-30", "2026-11-30"), 0);
+// Senza il terzo argomento si legge la data vera, esattamente come prima.
+assert.equal(daysUntil("2026-11-30"), daysUntil("2026-11-30", oggiVero));
+// Una data di riferimento illeggibile non diventa "oggi": diventa null.
+assert.equal(daysUntil("2026-11-30", "non-una-data"), null);
+// classificaStato: passare la data vera da' lo stesso risultato che non passarla.
+for (const gg of [-5, 0, 10, GG_SCAD, GG_SCAD + 1]) {
+  assert.equal(classificaStato(true, iso(gg)), classificaStato(true, iso(gg), oggiVero));
+  assert.equal(classificaStato(false, iso(gg)), classificaStato(false, iso(gg), oggiVero));
+}
+// E con una data fissata risponde su quella, non su oggi.
+assert.equal(classificaStato(true, "2026-11-30", "2026-01-01"), "ok");            // lontano
+assert.equal(classificaStato(true, "2026-11-30", "2026-10-01"), "in_scadenza");   // dentro i 60gg
+assert.equal(classificaStato(true, "2026-11-30", "2026-12-01"), "scaduto");
+assert.equal(classificaStato(false, "2026-11-30", "2026-01-01"), "in_scadenza");  // mai "ok"
+
 // date
 assert.equal(fmtDate("2026-07-16"), "16/07/2026");
 assert.equal(fmtDate(null), "—");
