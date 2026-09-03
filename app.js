@@ -5794,7 +5794,7 @@ function datiDelFascicolo(dip, documenti) {
     Provvedimenti: mio(state.provvedimenti).map((p) => ({
       Tipo: (window.TIPI_PROVVEDIMENTO || []).find((t) => t.key === p.tipo)?.label || p.tipo || "",
       Data: p.data ? fmtDate(p.data) : "",
-      Motivo: p.motivo || "",
+      Motivazione: p.motivazione || "",
       Note: p.note || "",
     })),
     Onboarding: mio(state.onboardProgressi).map((pr) => ({
@@ -5828,10 +5828,13 @@ function datiDelFascicolo(dip, documenti) {
       Esito: c.esito || "",
       Obiettivi: c.obiettivi || "",
     })),
+    // `competenze` non ha nessuna colonna di data (id, dipendente_id,
+    // competenza_id, livello): una colonna "Aggiornato" sarebbe vuota per
+    // tutte le righe, e chi legge lo ZIP crederebbe che la data non sia mai
+    // stata registrata invece che inesistente.
     Competenze: mio(state.competenze).map((c) => ({
       Lavorazione: state.competenzeCatalogo.find((x) => x.id === c.competenza_id)?.nome || c.competenza_id || "",
       Livello: c.livello ?? "",
-      Aggiornato: c.aggiornato_il ? fmtDate(String(c.aggiornato_il).slice(0, 10)) : "",
     })),
     Documenti: documenti.map((d) => ({
       Cartella: d.cartella,
