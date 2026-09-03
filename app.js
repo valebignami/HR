@@ -104,7 +104,11 @@ const STORE_BY_TABLE = {
 // caricato dal portale e la persona a cui appartiene: senza, il backup dei
 // documenti diventa un mucchio di file anonimi.
 // NON entra in TABLES ne' in STORE_BY_TABLE: non va in `state` ne' in realtime.
-const TABELLE_BACKUP = TABLES.concat(["invite_tokens"]);
+// 6.2 · `hr_utenti` sta qui e NON in TABLES: nessuna vista la legge, come
+// invite_tokens. Ma e' una tabella del database, ed e' l'elenco di CHI PUO'
+// ENTRARE nell'app: senza questa riga il backup dei dati la dimenticherebbe
+// in silenzio.
+const TABELLE_BACKUP = TABLES.concat(["invite_tokens", "hr_utenti"]);
 // La colonna che identifica una riga. Quasi tutte le tabelle hanno `id`, ma non
 // tutte: `invite_tokens` ha `token` e `parametri` (3.1) ha `chiave`.
 // UNA mappa sola per i due mestieri che ne hanno bisogno, perche' sono lo stesso
@@ -114,7 +118,11 @@ const TABELLE_BACKUP = TABLES.concat(["invite_tokens"]);
 // undefined con undefined e ritroverebbe SEMPRE la prima riga — salvando un
 // parametro ne sovrascriverebbe un altro in memoria — e il backup ordinerebbe per
 // una colonna che non esiste, fermandosi con un errore e non scaricando niente.
-const CHIAVE_TABELLA = { invite_tokens: "token", parametri: "chiave" };
+// `hr_utenti` (6.2) ha `email`: senza questa riga leggiTabellaIntera
+// ordinerebbe per una colonna `id` che non esiste, e il backup dei dati si
+// fermerebbe senza scaricare NIENTE — lo stesso difetto gia' pagato con
+// `parametri` nella Fase 3.
+const CHIAVE_TABELLA = { invite_tokens: "token", parametri: "chiave", hr_utenti: "email" };
 const chiaveDi = (tabella) => CHIAVE_TABELLA[tabella] || "id";
 
 // ---------- Helpers ----------
@@ -5272,52 +5280,6 @@ function exportExcel() {
 }
 
 // ============================================================
-// EXPORT BACKUP ZIP — tutti i PDF di un dipendente in struttura per cartelle
-// ============================================================
-async function exportBackupZip(dipId) {
-  if (!window.JSZip) { alert("Libreria ZIP non caricata."); return; }
-  const dip = dipById(dipId);
-  if (!dip) return;
-  const docs = state.adempimenti.filter((a) => a.dipendente_id === dipId && a.documento_path);
-  if (!docs.length) { alert("Questo dipendente non ha PDF caricati nell'app."); return; }
-
-  const btn = $("dip-backup-zip");
-  const origLabel = btn?.textContent;
-  if (btn) { btn.textContent = "⏳ Preparazione ZIP…"; btn.disabled = true; }
-
-  try {
-    const zip = new JSZip();
-    const folderName = `${sanitizeName(dip.cognome) || "Cognome"}_${sanitizeName(dip.nome) || "Nome"}`;
-    const folder = zip.folder(folderName);
-    let ok = 0;
-    for (const a of docs) {
-      try {
-        const tipo = tipoById(a.tipo_requisito_id);
-        const url = await getSignedDocUrl(a.documento_path);
-        if (!url) continue;
-        const blob = await fetch(url).then((r) => { if (!r.ok) throw new Error(r.status); return r.blob(); });
-        folder.file(downloadName(dip, tipo, a), blob);
-        ok++;
-      } catch (err) {
-        console.warn("Skip doc", a.id, err);
-      }
-    }
-    if (!ok) { alert("Impossibile scaricare i documenti."); return; }
-    const blob = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${folderName}_backup_${localISO(new Date())}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  } finally {
-    if (btn) { btn.textContent = origLabel; btn.disabled = false; }
-  }
-}
-
-// ============================================================
 // BACKUP COMPLETI — dati (0.2) e documenti (0.6)
 // Due bottoni nel piede della barra laterale. Entrambi sono di SOLA LETTURA:
 // non scrivono nel database e non toccano il bucket. Sono l'unica copia che
@@ -5659,6 +5621,296 @@ async function backupDocumenti() {
 }
 
 // ============================================================
+// 6.1 · ESPORTAZIONE DEI FASCICOLI
+// Un bottone, uno ZIP, una cartella per persona con la struttura e i nomi
+// dell'archivio: e' la garanzia della regola 6 del piano — se l'app sparisce,
+// 01_Fascicoli si ricostruisce da qui.
+//
+// SOSTITUISCE l'export per singolo dipendente (il vecchio "Esporta backup"
+// della scheda, tolto in questa fase): quello prendeva i soli PDF degli
+// adempimenti di una persona e li metteva in una cartella piatta.
+//
+// Come backupDocumenti e NON come backupDati: un file che non si scarica non
+// ferma l'esportazione, viene contato e segnato `Scaricato = No` nel dati.xlsx
+// della sua persona. La ragione della differenza e' che nel backup dei dati un
+// buco sarebbe invisibile, qui e' scritto in chiaro nella cartella a cui manca.
+// ============================================================
+
+// Cosa NON entra in questo ZIP, ed e' voluto: gli scambi con il consulente, i
+// CV dei candidati e i verbali degli adempimenti aziendali. Non sono documenti
+// di una persona e nel fascicolo non hanno una cartella. Per loro c'e' il
+// Backup documenti, che prende il bucket intero.
+function documentiDelFascicolo(dip) {
+  const persona = nomeFascicolo(dip);
+  const usatiPerCartella = new Map();   // cartella -> Set dei nomi gia' presi
+  const visti = new Set();              // path gia' messi: mai due volte lo stesso file
+  const righe = [];
+
+  const aggiungi = ({ cartella, path, descrizione, data, scadenza, superato, tipoDoc }) => {
+    if (!path || visti.has(path)) return;
+    visti.add(path);
+    let usati = usatiPerCartella.get(cartella);
+    if (!usati) { usati = new Set(); usatiPerCartella.set(cartella, usati); }
+    const nome = nomeUnicoNellaCartella(usati,
+      nomeDocumentoFascicolo({ persona, descrizione, data, scadenza, superato, path }));
+    righe.push({ cartella, path, nome, tipoDoc, descrizione: descrizione || "", data: data || "" });
+  };
+
+  // 1_Contratto — i documenti della checklist di ingresso e di uscita.
+  for (const pr of state.onboardProgressi) {
+    if (pr.dipendente_id !== dip.id) continue;
+    aggiungi({
+      cartella: CARTELLE_FASCICOLO.contratto, path: pr.documento_path, tipoDoc: "Onboarding",
+      descrizione: state.onboardItems.find((i) => i.id === pr.item_id)?.label || pr.item_id,
+      data: pr.fatto_il,
+    });
+  }
+
+  // 2_Cedolini/<anno> — l'archivio tiene una sottocartella per anno.
+  // L'anno NON si ripete nel nome del file: sta gia' nell'etichetta del periodo
+  // ("Cedolino 2025-01"), e nomeDocumentoFascicolo lo aggiunge solo se gli si
+  // passa una data.
+  for (const c of state.cedolini) {
+    if (c.dipendente_id !== dip.id) continue;
+    const periodo = c.tipo === "mensile"
+      ? `Cedolino ${c.anno}-${String(c.mese).padStart(2, "0")}`
+      : etichettaPeriodoCedolino(c);
+    aggiungi({
+      cartella: `${CARTELLE_FASCICOLO.cedolini}/${c.anno}`, path: c.path, tipoDoc: "Cedolino",
+      descrizione: periodo,
+    });
+  }
+
+  // 3_Formazione e idoneita — attestati, storico archiviato, nomine, DPI.
+  for (const a of state.adempimenti) {
+    if (a.dipendente_id !== dip.id) continue;
+    const nomeTipo = tipoById(a.tipo_requisito_id)?.nome || a.tipo_requisito_id || "";
+    aggiungi({
+      cartella: CARTELLE_FASCICOLO.formazione, path: a.documento_path, tipoDoc: "Adempimento",
+      descrizione: nomeTipo, data: a.data_rilascio, scadenza: a.data_scadenza,
+      superato: a.corrente === false,
+    });
+    // Le voci archiviate hanno DUE formati, e lo Storico le legge gia' cosi'
+    // (`h.doneAt || h.rilascio`, `h.scadenza || h.dueDate`). Leggerne uno solo
+    // farebbe uscire gli attestati vecchi senza "(scad. ...)", in silenzio.
+    if (!Array.isArray(a.history)) continue;
+    for (const h of a.history) {
+      aggiungi({
+        cartella: CARTELLE_FASCICOLO.formazione, path: h.documentoPath,
+        tipoDoc: "Adempimento (archiviato)", descrizione: nomeTipo,
+        data: h.doneAt || h.rilascio, scadenza: h.scadenza || h.dueDate, superato: true,
+      });
+    }
+  }
+  for (const dr of state.dipRuoli) {
+    if (dr.dipendente_id !== dip.id) continue;
+    aggiungi({
+      cartella: CARTELLE_FASCICOLO.formazione, path: dr.documento_path, tipoDoc: "Nomina",
+      descrizione: `Nomina ${ruoloById(dr.ruolo_id)?.nome || dr.ruolo_id || ""}`.trim(),
+      data: dr.dal, superato: !assegnazioneAttiva(dr),
+    });
+  }
+  for (const c of state.dpiConsegne) {
+    if (c.dipendente_id !== dip.id) continue;
+    aggiungi({
+      cartella: CARTELLE_FASCICOLO.formazione, path: c.modulo_path, tipoDoc: "Consegna DPI",
+      descrizione: `Consegna DPI ${state.dpiTipi.find((t) => t.id === c.dpi_tipo_id)?.nome || ""}`.trim(),
+      data: c.data_consegna,
+    });
+  }
+
+  // 4_Assenze e varie — provvedimenti disciplinari ed eventi (certificati,
+  // schede infortunio). Per gli eventi la data sta nella descrizione, in forma
+  // ISO: "Malattia 2026-09-03" e' un nome di file, "03/09/2026" no.
+  for (const p of state.provvedimenti) {
+    if (p.dipendente_id !== dip.id) continue;
+    aggiungi({
+      cartella: CARTELLE_FASCICOLO.assenze, path: p.documento_path, tipoDoc: "Provvedimento",
+      descrizione: (window.TIPI_PROVVEDIMENTO || []).find((t) => t.key === p.tipo)?.label || p.tipo || "",
+      data: p.data,
+    });
+  }
+  for (const ev of state.eventi) {
+    if (ev.dipendente_id !== dip.id) continue;
+    aggiungi({
+      cartella: CARTELLE_FASCICOLO.assenze, path: ev.documento_path, tipoDoc: "Evento",
+      descrizione: `${tipoEvento(ev.tipo).label} ${String(ev.dal || "").slice(0, 10)}`.trim(),
+    });
+  }
+
+  // 5_Valutazioni — i verbali dei colloqui annuali.
+  for (const c of state.colloqui) {
+    if (c.dipendente_id !== dip.id) continue;
+    aggiungi({
+      cartella: CARTELLE_FASCICOLO.valutazioni, path: c.documento_path, tipoDoc: "Colloquio",
+      descrizione: "Colloquio annuale", data: c.data,
+    });
+  }
+
+  return righe;
+}
+
+// I fogli del dati.xlsx di una persona.
+//
+// NESSUN foglio si costruisce con uno spread della riga del database, e non e'
+// una finezza: questo ZIP finisce in 01_Fascicoli, che e' una cartella
+// condivisa, NON nella cartella ad accesso ristretto del Backup app. Uno spread
+// ci metterebbe dentro `dipendenti.portal_prefix` (il segreto che autorizza gli
+// upload di quella persona), `iban` e `ral` (che dalla voce 0.5 l'app non tratta
+// piu' ma che restano nelle colonne) e `cedolini.url_firmato`, cioe'
+// collegamenti VIVI a tredici mesi ai cedolini di quella persona.
+// L'anagrafica esce da CAMPI_DIPENDENTE, che e' gia' l'elenco dei campi che la
+// scheda mostra: un campo nuovo entra qui da solo, uno riservato non ci entra.
+function datiDelFascicolo(dip, documenti) {
+  const anagrafica = { id: dip.id, matricola: dip.matricola || "" };
+  for (const c of CAMPI_DIPENDENTE) anagrafica[c.campo] = dip[c.campo] ?? "";
+
+  const mio = (righe) => righe.filter((r) => r.dipendente_id === dip.id);
+
+  return {
+    Anagrafica: [anagrafica],
+    Ruoli: mio(state.dipRuoli).map((dr) => ({
+      Ruolo: ruoloById(dr.ruolo_id)?.nome || dr.ruolo_id || "",
+      Tipo: ruoloById(dr.ruolo_id)?.tipo || "",
+      Dal: dr.dal ? fmtDate(dr.dal) : "",
+      Al: dr.al ? fmtDate(dr.al) : "",
+      Stato: assegnazioneAttiva(dr) ? "Attiva" : "Revocata",
+    })),
+    Adempimenti: mio(state.adempimenti).map((a) => ({
+      Requisito: tipoById(a.tipo_requisito_id)?.nome || a.tipo_requisito_id || "",
+      Rilascio: a.data_rilascio ? fmtDate(a.data_rilascio) : "",
+      Scadenza: a.data_scadenza ? fmtDate(a.data_scadenza) : "",
+      Ente: a.ente_erogatore || "",
+      Stato: a.corrente === false ? "Archiviato" : "Corrente",
+      Note: a.note || "",
+    })),
+    DPI: mio(state.dpiConsegne).map((c) => ({
+      DPI: state.dpiTipi.find((t) => t.id === c.dpi_tipo_id)?.nome || c.dpi_tipo_id || "",
+      Taglia: c.taglia || "",
+      Quantita: c.quantita ?? "",
+      Consegna: c.data_consegna ? fmtDate(c.data_consegna) : "",
+      Note: c.note || "",
+    })),
+    Provvedimenti: mio(state.provvedimenti).map((p) => ({
+      Tipo: (window.TIPI_PROVVEDIMENTO || []).find((t) => t.key === p.tipo)?.label || p.tipo || "",
+      Data: p.data ? fmtDate(p.data) : "",
+      Motivazione: p.motivazione || "",
+      Note: p.note || "",
+    })),
+    Onboarding: mio(state.onboardProgressi).map((pr) => ({
+      Voce: state.onboardItems.find((i) => i.id === pr.item_id)?.label || pr.item_id || "",
+      Fatto: pr.fatto ? "Si" : "No",
+      "Fatto il": pr.fatto_il ? fmtDate(pr.fatto_il) : "",
+      Note: pr.note || "",
+    })),
+    // Nessun url_firmato e nessun url_scade_il: sono collegamenti vivi.
+    Cedolini: mio(state.cedolini).map((c) => ({
+      Periodo: etichettaPeriodoCedolino(c),
+      Tipo: c.tipo || "",
+      Anno: c.anno ?? "",
+      Mese: c.mese ?? "",
+      "Caricato il": c.caricato_il ? fmtDateTime(c.caricato_il) : "",
+    })),
+    Eventi: mio(state.eventi).map((ev) => ({
+      Tipo: tipoEvento(ev.tipo).label,
+      Dal: ev.dal ? fmtDate(ev.dal) : "",
+      Al: ev.al ? fmtDate(ev.al) : "",
+      "Giorni di calendario": contaGiorniEvento(ev),
+      Ore: ev.ore ?? "",
+      Stato: statoEvento(ev.stato).label,
+      "Protocollo INPS": ev.protocollo_inps || "",
+      Origine: ev.origine || "",
+      Note: ev.note || "",
+    })),
+    Colloqui: mio(state.colloqui).map((c) => ({
+      Data: c.data ? fmtDate(c.data) : "",
+      "Condotto da": c.condotto_da || "",
+      Esito: c.esito || "",
+      Obiettivi: c.obiettivi || "",
+    })),
+    // `competenze` non ha nessuna colonna di data (id, dipendente_id,
+    // competenza_id, livello): una colonna "Aggiornato" sarebbe vuota per
+    // tutte le righe, e chi legge lo ZIP crederebbe che la data non sia mai
+    // stata registrata invece che inesistente.
+    Competenze: mio(state.competenze).map((c) => ({
+      Lavorazione: state.competenzeCatalogo.find((x) => x.id === c.competenza_id)?.nome || c.competenza_id || "",
+      Livello: c.livello ?? "",
+    })),
+    Documenti: documenti.map((d) => ({
+      Cartella: d.cartella,
+      File: d.nome,
+      "Tipo documento": d.tipoDoc,
+      Descrizione: d.descrizione,
+      Data: d.data ? fmtDate(d.data) : "",
+      Scaricato: d.scaricato ? "Si" : "No",
+      "Percorso nell'app": d.path,
+    })),
+  };
+}
+
+async function esportaFascicoli() {
+  if (!window.XLSX || !window.JSZip) { alert("Librerie Excel/ZIP non caricate. Ricarica la pagina."); return; }
+  const btn = bottoneOccupato("btn-esporta-fascicoli", "⏳ Preparazione…");
+  try {
+    // L'ordine finisce nei nomi delle cartelle degli omonimi ("Rossi Mario" e
+    // "Rossi Mario (2)"): l'id rompe la parita', cosi' due esportazioni di fila
+    // danno lo stesso risultato invece di scambiarle.
+    const persone = [...state.dipendenti].sort((a, b) =>
+      `${a.cognome || ""} ${a.nome || ""} ${a.id}`
+        .localeCompare(`${b.cognome || ""} ${b.nome || ""} ${b.id}`, "it"));
+    if (!persone.length) { alert("Non c'e' ancora nessuna persona da esportare."); return; }
+
+    const zip = new JSZip();
+    const cartelleUsate = new Set();
+    let falliti = 0;
+    let scaricati = 0;
+
+    for (let i = 0; i < persone.length; i++) {
+      const dip = persone[i];
+      const cartella = nomeUnicoNellaCartella(cartelleUsate, nomeFascicolo(dip));
+      const documenti = documentiDelFascicolo(dip);
+      btn.aggiorna(`⏳ ${i + 1}/${persone.length}…`);
+
+      for (const d of documenti) {
+        try {
+          const url = await getSignedDocUrl(d.path);
+          if (!url) throw new Error("nessun link firmato");
+          const blob = await fetch(url).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); });
+          zip.file(`${cartella}/${d.cartella}/${d.nome}`, blob);
+          d.scaricato = true;
+          scaricati++;
+        } catch (err) {
+          console.warn("Documento non scaricato:", d.path, err);
+          d.scaricato = false;
+          falliti++;
+        }
+      }
+
+      // Il dati.xlsx si scrive SEMPRE, anche per una persona i cui file non si
+      // sono scaricati: e' quello che dice cosa manca. E anche per chi non ha
+      // nessun documento, o la sua cartella non esisterebbe affatto.
+      const fogli = datiDelFascicolo(dip, documenti);
+      const wb = XLSX.utils.book_new();
+      for (const [nome, righe] of Object.entries(fogli)) {
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(appiattisciPerExcel(righe)), nome);
+      }
+      zip.file(`${cartella}/dati.xlsx`, XLSX.write(wb, { type: "array", bookType: "xlsx" }));
+    }
+
+    btn.aggiorna("⏳ Creazione ZIP…");
+    const blob = await zip.generateAsync({ type: "blob" });
+    scaricaBlob(blob, `HR-fascicoli-${localISO(new Date())}.zip`);
+    if (falliti) {
+      alert(`${falliti} documenti su ${falliti + scaricati} non sono stati scaricati.\nIn ogni cartella il file dati.xlsx li elenca con "Scaricato = No".`);
+    }
+  } catch (err) {
+    alert("Esportazione dei fascicoli non riuscita: " + (err?.message || err));
+  } finally {
+    btn.ripristina();
+  }
+}
+
+// ============================================================
 // NAVIGAZIONE / FILTRI / EVENTI
 // ============================================================
 function setView(v) {
@@ -5739,6 +5991,7 @@ function wireEvents() {
   $("btn-export").addEventListener("click", exportExcel);
   $("btn-backup-dati").addEventListener("click", backupDati);
   $("btn-backup-documenti").addEventListener("click", backupDocumenti);
+  $("btn-esporta-fascicoli").addEventListener("click", esportaFascicoli);
   $("btn-scarica-config").addEventListener("click", scaricaConfigurazione);
   $("btn-elimina-dati-prova").addEventListener("click", eliminaDatiDiProva);
   // 3.2 · Cedolini.
@@ -5979,7 +6232,6 @@ function wireEvents() {
     e.target.value = "";
     renderDipAdempimenti(dipId);
   });
-  $("dip-backup-zip").addEventListener("click", () => { const id = $("dip-id").value; if (id) exportBackupZip(id); });
   $("dip-invite").addEventListener("click", inviaInvitoSelfService);
   $("invite-close").addEventListener("click", () => closeModal("modal-invite"));
   $("invite-done").addEventListener("click", () => closeModal("modal-invite"));
