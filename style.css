@@ -1755,3 +1755,10 @@ body.self-service { background: var(--bg); }
    .view[hidden], .config-panel[hidden], .ro-field[hidden], .doc-current[hidden]
    e .dip-tab-panel[hidden]. */
 #ev-dip-wrap[hidden], #ev-ore-wrap[hidden], #ev-inps-wrap[hidden] { display: none; }
+/* Stessa trappola di `.modal-body label`, un piano piu' sopra: `.me-fieldset`
+   dichiara `display: flex` ed e' una regola d'autore, quindi le sezioni del
+   portale che il codice nasconde con `.hidden = true` resterebbero VISIBILI.
+   Per le due sezioni nuove della Fase 4 vorrebbe dire un riquadro "Ferie e
+   permessi" vuoto per chiunque non abbia ancora un saldo scritto sul cedolino,
+   e un modulo per chiedere ferie mostrato anche quando la RPC non risponde. */
+#me-saldo-section[hidden], #me-richieste-section[hidden] { display: none; }
