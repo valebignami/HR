@@ -1748,7 +1748,8 @@ body.self-service { background: var(--bg); }
 .ev-row .hist-note .stato { font-size: 11px; }
 /* ---------- 4b · L'attributo `hidden` deve nascondere davvero ----------
    `.modal-body label { display: flex }` (riga 833) e `.me-fieldset { display:
-   flex }` (riga 1109) sono regole d'AUTORE, e nella cascata l'origine autore
+   flex }` (blocco che apre a riga 1109, `display` alla 1115) sono regole
+   d'AUTORE, e nella cascata l'origine autore
    batte l'origine user-agent: vincono sull'`[hidden] { display: none }` del
    browser. Senza le due righe qui sotto, `elemento.hidden = true` scritto dal
    JavaScript non ha NESSUN effetto visibile su quegli elementi, e nessuno se ne
