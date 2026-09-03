@@ -1785,10 +1785,10 @@ body.self-service { background: var(--bg); }
    `flex`, #onboard-wf-adempimento e #onboard-wf-genera, e un `.me-doc-form`
    iniettato nella pagina dava `flex`.
    Cosa si vedeva: nel portale il modulo per allegare un documento era SEMPRE
-   aperto sotto ogni riga, e il bottone Carica/Sostituisci (me.js:283) non
+   aperto sotto ogni riga, e il bottone Carica/Sostituisci (me.js:284) non
    aveva nessun effetto visibile; nell'app comparivano tutti e due i moduli
    alternativi della voce di checklist d'ingresso, "Registra l'evento" e
-   "Genera documento aziendale", mentre app.js:1736-1745 ne mostra uno solo.
+   "Genera documento aziendale", mentre app.js:1737-1745 ne mostra uno solo.
    `.doc-block` e' scritta sulla CLASSE e non sui due id perche' gli altri sei
    `.doc-block` di index.html (righe 942, 984, 1025, 1083, 1124, 1178) non
    portano `hidden` e nessuno glielo mette: la stringa "doc-block" non compare
