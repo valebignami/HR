@@ -1003,10 +1003,112 @@ function candidatureDaCancellare(candidature, mesiConservazione, oggiISO) {
   });
 }
 
+// ============================================================
+// 6.1 · I nomi dei fascicoli, quelli veri dell'archivio.
+// L'export dei fascicoli ricostruisce `01_Fascicoli` come sta su disco:
+// una cartella per persona, cinque sottocartelle, e nomi di file come
+// "Bertani Mario - Carrelli elevatori 2022 (scad. 2027).pdf".
+//
+// Sta qui e non dentro il render perche' e' una regola su DATE e su STATI:
+// l'anno del rilascio, l'anno della scadenza, "(SUPERATO)" per gli archiviati.
+// Sbagliarla non da' nessun errore: da' un fascicolo in cui l'attestato scaduto
+// non si distingue da quello valido, o due file con lo stesso nome di cui lo ZIP
+// tiene solo l'ultimo.
+// ============================================================
+
+// I nomi ESATTI delle cinque sottocartelle, letti da
+// 11_Personale\01_Fascicoli\_MODELLO Cognome Nome. Non sono inventati e non
+// vanno "corretti": chi riceve lo ZIP deve poterlo versare nell'archivio senza
+// rinominare niente. Niente accenti, come nell'archivio ("idoneita").
+const CARTELLE_FASCICOLO = {
+  contratto:   "1_Contratto",
+  cedolini:    "2_Cedolini",
+  formazione:  "3_Formazione e idoneita",
+  assenze:     "4_Assenze e varie",
+  valutazioni: "5_Valutazioni",
+};
+
+// Un pezzo di nome che un file system accetta.
+// NON e' sanitizeName di app.js: quella sostituisce spazi e accenti con "_",
+// e serve ai nomi tecnici. Qui i nomi devono somigliare a quelli dell'archivio,
+// che gli spazi ce li hanno. Si tolgono solo i caratteri che Windows rifiuta
+// (\ / : * ? " < > |), i caratteri di controllo, e i punti o gli spazi in coda,
+// che Windows toglie da solo lasciando due nomi diversi che diventano uguali.
+function nomeFileSicuro(s) {
+  return String(s == null ? "" : s)
+    .replace(/[\\/:*?"<>|]/g, "")
+    // I caratteri di controllo (0x00-0x1f e 0x7f) scritti con la loro fuga:
+    // metterli nel sorgente per esteso renderebbe il file illeggibile.
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/, "")
+    .slice(0, 120)
+    .trim();
+}
+
+// La cartella della persona: "Cognome Nome", come nell'archivio.
+// Senza cognome o senza nome si usa quello che c'e'; senza nessuno dei due
+// "Senza nome", perche' una cartella con il nome vuoto nello ZIP sparisce e i
+// suoi file finirebbero nella radice, mescolati a quelli di un altro.
+function nomeFascicolo(dip) {
+  const parti = [nomeFileSicuro(dip?.cognome), nomeFileSicuro(dip?.nome)].filter(Boolean);
+  return parti.length ? parti.join(" ") : "Senza nome";
+}
+
+// "Bertani Mario - Carrelli elevatori 2022 (scad. 2027).pdf"
+//   persona      gia' passata da nomeFascicolo
+//   descrizione  il nome del corso, del provvedimento, della voce...
+//   data         l'anno finisce nel nome SOLO se questa c'e'. Per i cedolini e
+//                per gli eventi il periodo sta gia' nella descrizione
+//                ("Cedolino 2025-01"), e ripeterlo darebbe "... 2025-01 2025".
+//   scadenza     aggiunge " (scad. AAAA)"
+//   superato     aggiunge " (SUPERATO)", come i file archiviati dell'archivio
+//   path         il percorso nel bucket: da li' si legge l'estensione (ripiego "pdf")
+function nomeDocumentoFascicolo({ persona, descrizione, data, scadenza, superato, path }) {
+  const nome = nomeFileSicuro(persona) || "Senza nome";
+  const descr = nomeFileSicuro(descrizione) || "Documento";
+  const anno = (s) => {
+    const d = parseISO(s);
+    return d ? String(d.getFullYear()) : "";
+  };
+  const a = anno(data);
+  const s = anno(scadenza);
+  const p = String(path || "");
+  const ultimo = p.split("/").pop() || "";
+  const ext = ultimo.includes(".") ? nomeFileSicuro(ultimo.split(".").pop()).toLowerCase() : "";
+  return `${nome} - ${descr}${a ? " " + a : ""}${s ? ` (scad. ${s})` : ""}` +
+         `${superato ? " (SUPERATO)" : ""}.${ext || "pdf"}`;
+}
+
+// Due documenti con lo stesso nome nella stessa cartella: JSZip tiene SOLO
+// L'ULTIMO, senza dire niente. Due idoneita' dello stesso anno diventerebbero
+// una sola, e l'export sembrerebbe completo.
+// Il suffisso va PRIMA dell'estensione, o il file non si aprirebbe piu' con un
+// doppio clic. Un nome senza punto (le cartelle degli omonimi) lo riceve in coda.
+// `usati` e' un Set che questa funzione aggiorna: chi chiama ne tiene uno per
+// cartella.
+function nomeUnicoNellaCartella(usati, nome) {
+  const insieme = usati instanceof Set ? usati : new Set();
+  if (!insieme.has(nome)) { insieme.add(nome); return nome; }
+  const i = nome.lastIndexOf(".");
+  const base = i > 0 ? nome.slice(0, i) : nome;
+  const ext = i > 0 ? nome.slice(i) : "";
+  for (let n = 2; n < 10000; n++) {
+    const tentativo = `${base} (${n})${ext}`;
+    if (!insieme.has(tentativo)) { insieme.add(tentativo); return tentativo; }
+  }
+  const ripiego = `${base} (${Date.now()})${ext}`;
+  insieme.add(ripiego);
+  return ripiego;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
     statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
     conteggioColloquiAnno, scadenzaConservazioneCandidatura, candidatureDaCancellare,
+    CARTELLE_FASCICOLO, nomeFileSicuro, nomeFascicolo, nomeDocumentoFascicolo,
+    nomeUnicoNellaCartella,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,

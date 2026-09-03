@@ -18,6 +18,8 @@ globalThis.document = { addEventListener: () => {} };
 const { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
         statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
         conteggioColloquiAnno, scadenzaConservazioneCandidatura, candidatureDaCancellare,
+        CARTELLE_FASCICOLO, nomeFileSicuro, nomeFascicolo, nomeDocumentoFascicolo,
+        nomeUnicoNellaCartella,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
@@ -1166,5 +1168,100 @@ assert.deepEqual(candidatureDaCancellare([], 12, "2026-09-03"), []);
 assert.deepEqual(candidatureDaCancellare(null, 12, "2026-09-03"), []);
 // Cambiare il termine cambia l'elenco: con 24 mesi Ada non e' ancora scaduta.
 assert.deepEqual(candidatureDaCancellare(cands, 24, "2026-09-03").map((c) => c.id), []);
+
+// ============================================================
+// 6.1 · I nomi dei fascicoli.
+// Sono regole su date e su stati (l'anno del rilascio, l'anno della scadenza,
+// "(SUPERATO)" per gli archiviati) e su nomi che devono restare distinti: due
+// file con lo stesso nome nella stessa cartella, nello ZIP, diventano UNO.
+// Nessuno di questi test dipende dal giorno in cui gira.
+// ============================================================
+
+// --- nomeFileSicuro: toglie solo cio' che un file system rifiuta ---
+assert.equal(nomeFileSicuro("Rossi Ada"), "Rossi Ada");            // spazi e maiuscole restano
+assert.equal(nomeFileSicuro("Idoneita' 2026"), "Idoneita' 2026");  // l'apostrofo e' legittimo
+assert.equal(nomeFileSicuro("a/b" + "\\" + "c:d*e?f" + "\"" + "g<h>i|j"), "abcdefghij");
+assert.equal(nomeFileSicuro("Corso" + "\u0007" + "carrelli"), "Corsocarrelli"); // caratteri di controllo
+assert.equal(nomeFileSicuro("  due   spazi  "), "due spazi");      // spazi compressi e tagliati
+assert.equal(nomeFileSicuro("nome."), "nome");                     // il punto finale Windows lo toglie
+assert.equal(nomeFileSicuro("nome. . "), "nome");
+assert.equal(nomeFileSicuro(null), "");
+assert.equal(nomeFileSicuro(""), "");
+assert.equal(nomeFileSicuro("x".repeat(200)).length, 120);         // taglio a 120
+
+// --- nomeFascicolo: la cartella della persona ---
+assert.equal(nomeFascicolo({ cognome: "Bertani", nome: "Mario" }), "Bertani Mario");
+assert.equal(nomeFascicolo({ cognome: "Rossi", nome: "" }), "Rossi");
+assert.equal(nomeFascicolo({ cognome: "", nome: "Ada" }), "Ada");
+// Senza niente NON si torna la stringa vuota: nello ZIP una cartella senza nome
+// sparisce, e i file di quella persona finirebbero mescolati in radice.
+assert.equal(nomeFascicolo({}), "Senza nome");
+assert.equal(nomeFascicolo(null), "Senza nome");
+// Una barra nel cognome creerebbe una sottocartella in piu' dentro lo ZIP.
+assert.equal(nomeFascicolo({ cognome: "De/Santis", nome: "Ugo" }), "DeSantis Ugo");
+
+// --- nomeDocumentoFascicolo: il nome dell'esempio del piano, alla lettera ---
+assert.equal(nomeDocumentoFascicolo({
+  persona: "Bertani Mario", descrizione: "Carrelli elevatori",
+  data: "2022-06-14", scadenza: "2027-06-14", path: "adm-1/1750000000000.pdf",
+}), "Bertani Mario - Carrelli elevatori 2022 (scad. 2027).pdf");
+
+// Archiviato: "(SUPERATO)" PRIMA dell'estensione, o il file non si apre piu'.
+assert.equal(nomeDocumentoFascicolo({
+  persona: "Bertani Mario", descrizione: "Sicurezza generale",
+  data: "2019-03-01", scadenza: "2024-03-01", superato: true, path: "a/b.pdf",
+}), "Bertani Mario - Sicurezza generale 2019 (scad. 2024) (SUPERATO).pdf");
+
+// Senza scadenza non si scrive "(scad. )".
+assert.equal(nomeDocumentoFascicolo({
+  persona: "Rossi Ada", descrizione: "Consegna DPI", data: "2025-04-02", path: "x/y.docx",
+}), "Rossi Ada - Consegna DPI 2025.docx");
+
+// Senza data l'anno NON si mette: per i cedolini il periodo sta gia' nella
+// descrizione, e ripeterlo darebbe "Cedolino 2025-01 2025".
+assert.equal(nomeDocumentoFascicolo({
+  persona: "Rossi Ada", descrizione: "Cedolino 2025-01", path: "cedolini/d1/1.pdf",
+}), "Rossi Ada - Cedolino 2025-01.pdf");
+
+// Estensione: si legge dal path, si abbassa di caso, e senza punto si ripiega su pdf.
+assert.equal(nomeDocumentoFascicolo({ persona: "A B", descrizione: "X", path: "c/d.PDF" }),
+  "A B - X.pdf");
+assert.equal(nomeDocumentoFascicolo({ persona: "A B", descrizione: "X", path: "c/senza-punto" }),
+  "A B - X.pdf");
+assert.equal(nomeDocumentoFascicolo({ persona: "A B", descrizione: "X" }), "A B - X.pdf");
+// Una data illeggibile non diventa un anno inventato.
+assert.equal(nomeDocumentoFascicolo({ persona: "A B", descrizione: "X", data: "non-una-data" }),
+  "A B - X.pdf");
+// Ripieghi: senza persona e senza descrizione il nome resta un nome.
+assert.equal(nomeDocumentoFascicolo({ path: "a/b.pdf" }), "Senza nome - Documento.pdf");
+// I caratteri illegali passano da nomeFileSicuro anche qui.
+assert.equal(nomeDocumentoFascicolo({
+  persona: "A B", descrizione: "Corso 1/2", data: "2024-01-01", path: "a/b.pdf",
+}), "A B - Corso 12 2024.pdf");
+
+// --- nomeUnicoNellaCartella: due file uguali nello ZIP diventano uno ---
+const usati = new Set();
+assert.equal(nomeUnicoNellaCartella(usati, "A - Idoneita 2026.pdf"), "A - Idoneita 2026.pdf");
+assert.equal(nomeUnicoNellaCartella(usati, "A - Idoneita 2026.pdf"), "A - Idoneita 2026 (2).pdf");
+assert.equal(nomeUnicoNellaCartella(usati, "A - Idoneita 2026.pdf"), "A - Idoneita 2026 (3).pdf");
+// Il suffisso va PRIMA dell'estensione.
+assert.ok(nomeUnicoNellaCartella(usati, "A - Idoneita 2026.pdf").endsWith(".pdf"));
+// Un nome senza estensione (le cartelle degli omonimi) lo riceve in coda.
+const cartelle = new Set();
+assert.equal(nomeUnicoNellaCartella(cartelle, "Rossi Mario"), "Rossi Mario");
+assert.equal(nomeUnicoNellaCartella(cartelle, "Rossi Mario"), "Rossi Mario (2)");
+// Set condiviso: chi chiama ne tiene uno per cartella, e la funzione lo aggiorna.
+assert.equal(usati.size, 4);
+// Un nome che comincia per punto non si spezza sul punto sbagliato.
+const nascosti = new Set();
+assert.equal(nomeUnicoNellaCartella(nascosti, ".gitignore"), ".gitignore");
+assert.equal(nomeUnicoNellaCartella(nascosti, ".gitignore"), ".gitignore (2)");
+
+// --- Le cinque cartelle sono quelle dell'archivio, nome per nome ---
+assert.equal(CARTELLE_FASCICOLO.contratto, "1_Contratto");
+assert.equal(CARTELLE_FASCICOLO.cedolini, "2_Cedolini");
+assert.equal(CARTELLE_FASCICOLO.formazione, "3_Formazione e idoneita");
+assert.equal(CARTELLE_FASCICOLO.assenze, "4_Assenze e varie");
+assert.equal(CARTELLE_FASCICOLO.valutazioni, "5_Valutazioni");
 
 console.log("OK tutti i test common.js");
