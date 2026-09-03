@@ -25,11 +25,15 @@ const state = {
   parametri: [],          // 3.1 · i numeri che cambiano con le norme, editabili dall'app
   cedolini: [],           // 3.2 · cedolini caricati dall'HR, letti dal dipendente nel portale
   scambiConsulente: [],   // 3.3 · registro degli scambi con il consulente del lavoro
+  eventi: [],             // 4.1 · ferie, permessi, malattie, infortuni, straordinari
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   configTab: "ruoli",
   dipTab: "anagrafica",      // 2.3 · linguetta aperta nella scheda dipendente
   scambiAnno: new Date().getFullYear(),   // 3.3 · anno mostrato nella vista Consulente
+  eventiAnno: new Date().getFullYear(),   // 4.2 · mese mostrato nella vista Eventi
+  eventiMese: new Date().getMonth() + 1,
+  eventiFilter: { dipendente: "", tipo: "" },
   search: "",
   compFilter: { dipendente: "", mansione: "", incarico: "", stato: "" },
   storicoFilter: { dipendente: "", tipo: "", categoria: "", anno: "", mese: "" },
@@ -37,7 +41,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -45,7 +49,11 @@ const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipe
 // nuova entra in TABLES e NON qui, se non per una decisione motivata.
 // storico_modifiche non c'e': e' un registro, non una vista, e ogni salvataggio
 // ne produrrebbe una riga e un render in piu'.
-const REALTIME_TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne"];
+// `eventi` (4.1) SI', ed e' l'unica eccezione che tutto il piano prevede (§4
+// punto 2): e' l'unica tabella in cui scrive qualcun ALTRO — il dipendente, dal
+// portale — mentre l'HR ha l'app aperta, e il contatore delle richieste deve
+// muoversi senza ricaricare la pagina.
+const REALTIME_TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "eventi"];
 const STORE_BY_TABLE = {
   categorie: "categorie",
   ruoli: "ruoli",
@@ -69,6 +77,8 @@ const STORE_BY_TABLE = {
   parametri: "parametri",
   cedolini: "cedolini",
   scambi_consulente: "scambiConsulente",
+  // 4.1 · L'unica tabella nuova che entra ANCHE in REALTIME_TABLES, qui sopra.
+  eventi: "eventi",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -451,6 +461,7 @@ function renderAll() {
   _gapCache = null;
   renderCounts();
   if (state.view === "compliance") renderCompliance();
+  else if (state.view === "eventi") renderEventi();
   else if (state.view === "cariche") renderCariche();
   else if (state.view === "dipendenti") renderDipendenti();
   else if (state.view === "storico") renderStorico();
@@ -468,6 +479,9 @@ function renderCounts() {
   $("count-cariche").textContent = sottoSoglia;
   // Storico: totale eventi (correnti + archiviati).
   $("count-storico").textContent = collectStoricoEvents().length;
+  // 4.2 · Le richieste che aspettano una risposta. `eventi` e' in realtime:
+  // questo numero si muove da solo quando il dipendente chiede dal portale.
+  $("count-eventi").textContent = richiesteDaApprovare(state.eventi).length;
   // 3.2 · "Cedolini di luglio: 3/8" e i collegamenti da rinnovare.
   const pagheMese = mesePaghe();
   const quanti = conteggioCedoliniDelMese({
@@ -579,7 +593,7 @@ function renderCompliance() {
       a: r.adempimento, tipo: r.tipo, dip: r.dip, scadenza: r.scadenza,
     })).concat(contratti.map((r) => ({
       kind: "contratto", dip: r.dip, scadenza: r.data, etichetta: r.etichetta,
-    })));
+    }))).concat(eventiPerCalendario());
     renderCalendar(events);
     return;
   }
@@ -666,6 +680,40 @@ function renderDipendenti() {
   els(".dip-card", host).forEach((el2) => el2.addEventListener("click", () => openDipModal(el2.dataset.dip)));
 }
 
+// 4.2 · Ferie e permessi APPROVATI nel calendario che c'e' gia'.
+// Un evento occupa piu' giorni, quindi si disegna su ognuno: e' l'unico modo
+// perche' "due persone in ferie negli stessi giorni" si vedano prima di
+// approvare la seconda. La finestra e' il mese mostrato, e non e' un dettaglio:
+// senza, una riga con l'anno sbagliato genererebbe centinaia di caselle.
+//
+// Il piano diceva "con la squadra": la squadra NON esiste e non esistera' — la
+// Direzione ha risposto che i turni ruotano, quindi `dipendenti.squadra` non si
+// fa (decisione del 2 settembre, voce 5.3). Qui compaiono le persone per nome.
+function eventiPerCalendario() {
+  const ref = state.calRef;
+  // La griglia mostra sei settimane: comincia prima del primo del mese e
+  // finisce dopo l'ultimo. La finestra le comprende tutte e due.
+  const primo = new Date(ref.getFullYear(), ref.getMonth(), 1);
+  const dal = localISO(addDays(primo, -7));
+  const al = localISO(addDays(new Date(ref.getFullYear(), ref.getMonth() + 1, 0), 14));
+  const out = [];
+  for (const ev of state.eventi) {
+    if (ev.stato !== "approvato") continue;
+    if (ev.tipo !== "ferie" && ev.tipo !== "permesso") continue;
+    const dip = dipById(ev.dipendente_id);
+    if (!dip) continue;
+    // Gli stessi filtri della barra Scadenze: cercare "Rossi" deve nascondere
+    // anche le sue ferie. Lo stato passato e' "ok" perche' un evento approvato
+    // non ha un semaforo: filtrando per "scaduti" le ferie spariscono, ed e'
+    // giusto — in quel momento si sta guardando altro.
+    if (!passaFiltriCompliance(dip, "ok", tipoEvento(ev.tipo).label)) continue;
+    for (const giorno of giorniDiEvento(ev, dal, al)) {
+      out.push({ kind: "evento", ev, dip, scadenza: giorno });
+    }
+  }
+  return out;
+}
+
 // ---------- Scadenze ----------
 function renderCalendar(all) {
   const ref = state.calRef;
@@ -686,12 +734,19 @@ function renderCalendar(all) {
     const other = d.getMonth() !== m;
     const evs = byDay[iso] || [];
     const shown = evs.slice(0, 3);
-    const evHtml = shown.map((x) => x.kind === "contratto"
+    const evHtml = shown.map((x) => {
       // 1.7 · Un contratto non si "fa": cliccandolo si apre la scheda, dove si
       // proroga, si conferma o si trasforma.
-      ? `<div class="cal-event contratto" data-dipcard="${esc(x.dip.id)}" title="${esc(x.etichetta)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.etichetta)}</div>`
-      : `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a?.id || ""}" data-tipo="${x.tipo.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`
-    ).join("");
+      if (x.kind === "contratto") {
+        return `<div class="cal-event contratto" data-dipcard="${esc(x.dip.id)}" title="${esc(x.etichetta)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.etichetta)}</div>`;
+      }
+      // 4.2 · Ferie e permessi approvati: cliccandoli si apre l'evento.
+      if (x.kind === "evento") {
+        const t = tipoEvento(x.ev.tipo);
+        return `<div class="cal-event evento" data-evento="${esc(x.ev.id)}" title="${esc(t.label)} — ${esc(x.dip.cognome)} ${esc(x.dip.nome)}">${esc(t.icon)} ${esc(x.dip.cognome)}</div>`;
+      }
+      return `<div class="cal-event ${x.tipo.categoria}" data-ad="${x.a?.id || ""}" data-tipo="${x.tipo.id}" data-dip="${x.dip.id}" title="${esc(x.tipo.nome)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.tipo.nome)}</div>`;
+    }).join("");
     const more = evs.length > 3 ? `<div class="cal-more">+${evs.length - 3} altri</div>` : "";
     html += `<div class="cal-day ${other ? "other-month" : ""} ${iso === todayISO ? "today" : ""}">
       <div class="cal-day-num">${d.getDate()}</div>${evHtml}${more}</div>`;
@@ -700,6 +755,7 @@ function renderCalendar(all) {
   els(".cal-event", grid).forEach((ev) => ev.addEventListener("click", (e) => {
     e.stopPropagation();
     if (ev.dataset.dipcard) openDipModal(ev.dataset.dipcard);
+    else if (ev.dataset.evento) openEventoModal(null, ev.dataset.evento);
     else if (ev.dataset.ad) openAdmModal(ev.dataset.dip, ev.dataset.ad);
     else openAdmModal(ev.dataset.dip, null, ev.dataset.tipo);
   }));
@@ -1094,6 +1150,12 @@ const CAMPI_DIPENDENTE = [
   { idCampo: "dip-emerg-nome",      campo: "emergenza_nome",      tipo: "testo" },
   { idCampo: "dip-emerg-tel",       campo: "emergenza_telefono",  tipo: "testo" },
   { idCampo: "dip-emerg-parentela", campo: "emergenza_parentela", tipo: "scelta" },
+  // 4.5 · Il saldo che l'HR copia dal cedolino, con la data a cui si riferisce.
+  // L'app non calcola le ferie maturate: mostra questo numero e, accanto, cosa
+  // e' stato approvato dopo. Senza `saldo_al` non mostra niente.
+  { idCampo: "dip-saldo-ferie",     campo: "saldo_ferie", tipo: "numero" },
+  { idCampo: "dip-saldo-par",       campo: "saldo_par",   tipo: "numero" },
+  { idCampo: "dip-saldo-al",        campo: "saldo_al",    tipo: "data" },
   // Cessazione: si scrivono solo se la persona NON e' in forza.
   { idCampo: "dip-data-cessazione",   campo: "data_cessazione",   tipo: "data",   soloSe: dipCessato },
   { idCampo: "dip-motivo-cessazione", campo: "motivo_cessazione", tipo: "scelta", soloSe: dipCessato },
@@ -1268,6 +1330,16 @@ function openDipModal(id) {
   // 3.2 · Cedolini della persona.
   if (d) renderDipCedolini(d.id);
   else $("dip-cedolini-section").hidden = true;
+
+  // 4.2/4.5 · Eventi della persona, comporto e saldo dichiarato.
+  if (d) renderDipEventi(d.id);
+  else {
+    $("dip-eventi-section").hidden = true;
+    $("dip-saldo-section").hidden = true;
+  }
+  // Il saldo si scrive solo su una persona che esiste gia': su una scheda nuova
+  // non c'e' ancora nessun cedolino da cui copiarlo.
+  $("dip-saldo-section").hidden = !d;
 
   // Modifiche registrate dal database (1.6).
   if (d) renderDipModifiche(d.id);
@@ -2751,6 +2823,10 @@ const TABELLE_FIGLIE_DIP = [
   // 3.2 · Senza questa riga deleteDip cancellerebbe le righe dei cedolini
   // (per cascade) e lascerebbe i loro PDF nel bucket, orfani per sempre.
   { table: "cedolini",              store: "cedolini",         doc: "path" },
+  // 4.1 · Come sopra: la foreign key cancella la RIGA dell'evento, non il file.
+  // Senza questa riga la scheda di un infortunio resterebbe nel bucket per
+  // sempre, senza padrone — un dato sanitario orfano.
+  { table: "eventi",                store: "eventi",           doc: "documento_path" },
 ];
 
 // Tutti i PDF di un dipendente: cicli correnti, storico archiviato, moduli DPI,
@@ -3302,6 +3378,496 @@ async function deleteScambio() {
   if (!await sbDelete("scambi_consulente", id)) return;
   if (prec?.path) await deleteDoc(prec.path);
   closeModal("modal-scambio");
+}
+
+// ============================================================
+// 4.1-4.5 · EVENTI DEL MESE
+// Ferie, permessi, malattie, infortuni, straordinari, cambi turno. E' il modulo
+// con l'uso piu' alto dell'app: qualcosa da registrare ogni giorno lavorativo.
+//
+// Tre cose che non si vedono guardando lo schermo:
+//   - i NUMERI (quanti giorni, quante ore, quanti giorni di comporto) li
+//     calcola common.js, con i test. Qui c'e' solo come si disegnano;
+//   - il dipendente scrive in questa tabella dal portale, quindi `eventi` e'
+//     l'unica tabella nuova in realtime: il contatore delle richieste si muove
+//     da solo;
+//   - i giorni sono di CALENDARIO, e ogni etichetta lo dice. I giorni lavorativi
+//     l'app non puo' calcolarli: con tre turni in ciclo continuo il calendario
+//     dei riposi non e' qui dentro.
+// ============================================================
+
+const tipiEvento = () => window.TIPI_EVENTO || [];
+const tipoEvento = (k) => tipiEvento().find((t) => t.key === k)
+  || { key: k, label: k || "—", icon: "📌", misura: "giorni", richiedibile: false, protocolloInps: false, allegato: "no" };
+const statoEvento = (k) => (window.STATI_EVENTO || []).find((s) => s.key === k)
+  || { key: k, label: k || "—", icon: "" };
+const tipiEventoRichiedibili = () => tipiEvento().filter((t) => t.richiedibile).map((t) => t.key);
+
+// Gli eventi di una persona, i piu' recenti in cima. UN punto solo: da qui
+// passano la scheda, il comporto e il saldo, che devono guardare le stesse righe.
+function eventiDiDip(dipId) {
+  return state.eventi
+    .filter((e) => e.dipendente_id === dipId)
+    .sort((a, b) => String(b.dal || "").localeCompare(String(a.dal || "")));
+}
+
+// I numeri della fase, letti da `parametri` con il loro ripiego (3.1).
+const giorniDenunciaInail = () => parametroInt(state.parametri, "inail_giorni_denuncia", 2);
+const comportoSoglia = () => parametroInt(state.parametri, "comporto_giorni_soglia", 180);
+const comportoFinestra = () => parametroInt(state.parametri, "comporto_finestra_mesi", 12);
+const comportoPercentuale = () => parametroInt(state.parametri, "comporto_percentuale_avviso", 80);
+
+// Il comporto ha un vocabolario suo (ok / avviso / superato) e il semaforo
+// dell'app ne ha un altro (ok / in_scadenza / scaduto). La mappa si scrive UNA
+// volta, qui, invece di dedurla riga per riga.
+const CLASSE_COMPORTO = { ok: "ok", avviso: "in_scadenza", superato: "scaduto" };
+
+// Il primo e l'ultimo giorno del mese mostrato: la finestra che si passa a
+// giorniDiEvento, e senza la quale una riga con l'anno sbagliato riempirebbe il
+// calendario.
+function finestraMese(anno, mese) {
+  const ultimo = new Date(Number(anno), Number(mese), 0).getDate();
+  const mm = String(mese).padStart(2, "0");
+  return { dal: `${anno}-${mm}-01`, al: `${anno}-${mm}-${String(ultimo).padStart(2, "0")}` };
+}
+
+// "5 giorni" oppure "4 ore", secondo il tipo. E' l'etichetta che compare in ogni
+// elenco: dirla giusta e' l'unico modo perche' "3" non sia ambiguo.
+function misuraEvento(ev, daISO, aISO) {
+  const t = tipoEvento(ev.tipo);
+  if (t.misura === "ore") {
+    if (ev.ore == null || ev.ore === "") return "ore non indicate";
+    return `${Number(ev.ore)} ${Number(ev.ore) === 1 ? "ora" : "ore"}`;
+  }
+  const n = contaGiorniEvento(ev, daISO, aISO);
+  return `${n} ${n === 1 ? "giorno" : "giorni"} di calendario`;
+}
+
+function periodoEvento(ev) {
+  const fine = ev.al || ev.dal;
+  return fine === ev.dal ? fmtDate(ev.dal) : `${fmtDate(ev.dal)} – ${fmtDate(fine)}`;
+}
+
+// ---------- La vista "Eventi" ----------
+function renderEventi() {
+  const anno = state.eventiAnno;
+  const mese = state.eventiMese;
+  const f = state.eventiFilter;
+
+  // Le tendine: si riempiono qui perche' l'elenco delle persone cambia.
+  const dips = state.dipendenti.slice().sort((a, b) => (a.cognome || "").localeCompare(b.cognome || ""));
+  fillSelect($("ev-filter-dipendente"), dips, {
+    placeholder: "Tutti i dipendenti",
+    label: (d) => `${d.cognome} ${d.nome}${d.attivo === false ? " (cessato)" : ""}`,
+  });
+  fillSelect($("ev-filter-tipo"), tipiEvento().map((t) => ({ id: t.key, nome: `${t.icon} ${t.label}` })),
+    { placeholder: "Tutti i tipi" });
+  $("ev-filter-dipendente").value = f.dipendente;
+  $("ev-filter-tipo").value = f.tipo;
+  fillSelect($("ev-mese"), (window.MESI || []).map((nome, i) => ({ id: String(i + 1), nome })));
+  $("ev-mese").value = String(mese);
+  const corrente = new Date().getFullYear();
+  const anni = [];
+  for (let y = corrente + 1; y >= corrente - 4; y--) anni.push(y);
+  $("ev-anno").innerHTML = anni.map((y) =>
+    `<option value="${y}"${y === anno ? " selected" : ""}>${y}</option>`).join("");
+
+  const passa = (ev) => {
+    const dip = dipById(ev.dipendente_id);
+    if (!dip) return false;
+    if (f.dipendente && ev.dipendente_id !== f.dipendente) return false;
+    if (f.tipo && ev.tipo !== f.tipo) return false;
+    return matchSearch(`${dip.nome} ${dip.cognome} ${tipoEvento(ev.tipo).label} ${ev.note || ""}`);
+  };
+
+  // 1) Le richieste da approvare. FUORI dal filtro del mese, di proposito: una
+  //    richiesta per settembre non deve sparire perche' si sta guardando agosto.
+  const richieste = richiesteDaApprovare(state.eventi).filter(passa)
+    .sort((a, b) => String(a.dal || "").localeCompare(String(b.dal || "")));
+  $("ev-richieste-count").textContent = richieste.length;
+  $("ev-richieste-wrap").hidden = richieste.length === 0;
+  $("ev-richieste-rows").innerHTML = richieste.map((ev) => {
+    const dip = dipById(ev.dipendente_id);
+    const t = tipoEvento(ev.tipo);
+    return `<div class="comp-row ev-cols-req" data-ev="${esc(ev.id)}">
+      <div><strong>${esc(dip.cognome)} ${esc(dip.nome)}</strong></div>
+      <div><span class="chip">${esc(t.icon)} ${esc(t.label)}</span></div>
+      <div>${esc(periodoEvento(ev))}</div>
+      <div class="hist-note">${esc(ev.note || "—")}</div>
+      <div class="ev-azioni">
+        <button type="button" class="ghost-btn success ev-ok" data-ev="${esc(ev.id)}" title="Approva">✓ Approva</button>
+        <button type="button" class="ghost-btn danger ev-no" data-ev="${esc(ev.id)}" title="Rifiuta">✕ Rifiuta</button>
+      </div>
+    </div>`;
+  }).join("");
+  els(".ev-ok", $("ev-richieste-rows")).forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    approvaEvento(b.dataset.ev);
+  }));
+  els(".ev-no", $("ev-richieste-rows")).forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    rifiutaEvento(b.dataset.ev);
+  }));
+  els(".comp-row", $("ev-richieste-rows")).forEach((r) => r.addEventListener("click", () =>
+    openEventoModal(null, r.dataset.ev)));
+
+  // 2) Il mese, raggruppato per persona. E' anche la vista "Variabili di luglio"
+  //    della 4.4: sono le stesse righe che finiscono nell'Excel del consulente.
+  const finestra = finestraMese(anno, mese);
+  const delMese = eventiDelMese(state.eventi, anno, mese).filter(passa);
+  const perPersona = new Map();
+  for (const ev of delMese) {
+    const lista = perPersona.get(ev.dipendente_id) || [];
+    lista.push(ev);
+    perPersona.set(ev.dipendente_id, lista);
+  }
+  const persone = [...perPersona.keys()]
+    .map((id) => dipById(id))
+    .filter(Boolean)
+    .sort((a, b) => (a.cognome || "").localeCompare(b.cognome || ""));
+
+  const approvati = delMese.filter((e) => e.stato === "approvato").length;
+  const inAttesa = delMese.filter((e) => e.stato === "richiesto").length;
+  $("ev-riassunto").textContent = delMese.length === 0
+    ? `Nessun evento registrato per ${nomeMese(mese)} ${anno}.`
+    : `${delMese.length} eventi in ${nomeMese(mese)} ${anno}: ${approvati} approvati`
+      + (inAttesa ? `, ${inAttesa} ancora da approvare` : "") + ".";
+
+  $("ev-mese-empty").hidden = delMese.length > 0;
+  $("ev-mese-rows").innerHTML = persone.map((dip) => {
+    const righe = perPersona.get(dip.id)
+      .slice()
+      .sort((a, b) => String(a.dal || "").localeCompare(String(b.dal || "")));
+    return `<div class="ev-persona">
+      <div class="ev-persona-testa"><strong>${esc(dip.cognome)} ${esc(dip.nome)}</strong>
+        ${dip.matricola ? `<span class="hist-note">matricola ${esc(dip.matricola)}</span>` : ""}</div>
+      ${righe.map((ev) => {
+        const t = tipoEvento(ev.tipo);
+        const s = statoEvento(ev.stato);
+        const inail = promemoriaInail(ev, giorniDenunciaInail());
+        return `<div class="comp-row ev-cols" data-ev="${esc(ev.id)}">
+          <div><span class="chip">${esc(t.icon)} ${esc(t.label)}</span></div>
+          <div>${esc(periodoEvento(ev))}</div>
+          <div>${esc(misuraEvento(ev, finestra.dal, finestra.al))}</div>
+          <div><span class="stato ${esc(ev.stato === "approvato" ? "ok" : ev.stato === "richiesto" ? "in_scadenza" : "scaduto")}">${esc(s.icon)} ${esc(s.label)}</span></div>
+          <div class="hist-note">${esc(ev.note || "")}${ev.documento_path ? " 📎" : ""}</div>
+        </div>
+        ${inail ? `<div class="comp-row ev-inail" data-ev="${esc(ev.id)}">
+          <div class="ev-inail-testo">🚨 Denuncia INAIL entro il ${fmtDate(inail.scadenza)}
+            ${inail.stato === "ok" ? "— scheda allegata" : "— allega la scheda infortunio quando l'hai fatta"}</div>
+          <div><span class="stato ${esc(inail.stato)}">${esc(STATO_INFO[inail.stato].label)}</span></div>
+        </div>` : ""}`;
+      }).join("")}
+    </div>`;
+  }).join("");
+  els(".comp-row", $("ev-mese-rows")).forEach((r) => r.addEventListener("click", () =>
+    openEventoModal(null, r.dataset.ev)));
+}
+
+// ---------- Approva / rifiuta ----------
+// Una riga sola cambia: passa da sbUpsert come tutte le mutazioni, quindi
+// renderAll() e il rollback ottimistico valgono anche qui.
+async function approvaEvento(id) {
+  const ev = state.eventi.find((x) => x.id === id);
+  if (!ev) return;
+  // Una richiesta di permesso arriva dal portale SENZA le ore: il portale chiede
+  // tipo, giorni e nota, non un numero di ore. Approvarla con un click la
+  // lascerebbe a zero nel saldo e vuota nel file del consulente, senza che
+  // nessuno se ne accorga. Per i tipi a ore il ✓ apre la modale, dove il campo
+  // e' obbligatorio.
+  if (tipoEvento(ev.tipo).misura === "ore" && (ev.ore == null || ev.ore === "")) {
+    openEventoModal(null, id, { chiediOre: true });
+    return;
+  }
+  await sbUpsert("eventi", { ...ev, stato: "approvato" });
+}
+
+async function rifiutaEvento(id) {
+  const ev = state.eventi.find((x) => x.id === id);
+  if (!ev) return;
+  const dip = dipById(ev.dipendente_id);
+  if (!confirm(`Rifiutare la richiesta di ${tipoEvento(ev.tipo).label.toLowerCase()} di `
+    + `${dip ? dip.cognome + " " + dip.nome : "questa persona"} (${periodoEvento(ev)})?`
+    + NL + "Il dipendente la vedra' come non approvata nel suo portale.")) return;
+  await sbUpsert("eventi", { ...ev, stato: "rifiutato" });
+}
+
+// ---------- La modale dell'evento ----------
+let pendingEventoFile = null;
+
+function aggiornaCampiEvento() {
+  const t = tipoEvento($("ev-tipo").value);
+  const oreVisibili = t.misura === "ore";
+  $("ev-ore-wrap").hidden = !oreVisibili;
+  $("ev-inps-wrap").hidden = !t.protocolloInps;
+  $("ev-inail-hint").hidden = t.key !== "infortunio";
+  // Un campo `required` dentro un contenitore nascosto blocca l'invio E impedisce
+  // al browser di metterci il fuoco: il Salva smette di funzionare senza dire
+  // niente (trappola gia' pagata nella Fase 2.3). Qui l'attributo si TOGLIE
+  // insieme alla visibilita', invece di fidarsi che nessuno lo veda.
+  $("ev-ore").required = oreVisibili && $("ev-ore").dataset.obbligatorio === "1";
+  $("ev-inps").required = t.protocolloInps;
+}
+
+function openEventoModal(dipId, evId, { chiediOre = false } = {}) {
+  const ev = evId ? state.eventi.find((x) => x.id === evId) : null;
+  const idDip = ev ? ev.dipendente_id : dipId;
+  $("ev-id").value = ev?.id || "";
+  $("ev-dip-id").value = idDip || "";
+  $("ev-title").textContent = ev ? "Evento" : "Nuovo evento";
+
+  // Dalla scheda la persona e' gia' scelta e non si cambia; dalla vista Eventi
+  // si sceglie (ma solo per una riga nuova: spostare un evento da una persona
+  // all'altra non e' una correzione, e' un altro evento).
+  const dip = dipById(idDip);
+  $("ev-dip-wrap").hidden = !!dip;
+  $("ev-dip-nome").hidden = !dip;
+  $("ev-dip-nome").textContent = dip ? `${dip.cognome} ${dip.nome}` : "—";
+  if (!dip) {
+    fillSelect($("ev-dip"), state.dipendenti.slice().sort((a, b) => (a.cognome || "").localeCompare(b.cognome || "")), {
+      placeholder: "Scegli la persona…",
+      label: (d) => `${d.cognome} ${d.nome}${d.attivo === false ? " (cessato)" : ""}`,
+    });
+    $("ev-dip").value = "";
+  }
+
+  fillSelect($("ev-tipo"), tipiEvento().map((t) => ({ id: t.key, nome: `${t.icon} ${t.label}` })));
+  $("ev-tipo").value = ev?.tipo || "ferie";
+  $("ev-dal").value = ev?.dal || localISO(new Date());
+  $("ev-al").value = ev?.al || "";
+  $("ev-ore").value = ev?.ore == null ? "" : ev.ore;
+  // Le ore sono obbligatorie quando l'HR sta approvando una richiesta a ore
+  // arrivata dal portale senza: e' l'unico momento in cui il numero manca ed e'
+  // indispensabile.
+  $("ev-ore").dataset.obbligatorio = chiediOre ? "1" : "0";
+  $("ev-inps").value = ev?.protocollo_inps || "";
+  $("ev-note").value = ev?.note || "";
+  fillSelect($("ev-stato"), (window.STATI_EVENTO || []).map((s) => ({ id: s.key, nome: `${s.icon} ${s.label}` })));
+  $("ev-stato").value = ev?.stato || "approvato";
+  $("ev-delete").hidden = !ev;
+
+  pendingEventoFile = null;
+  $("ev-doc-file").value = "";
+  $("ev-doc-upload-label").textContent = "Carica un file";
+  $("ev-doc-progress").hidden = true;
+  $("ev-doc-current").hidden = !ev?.documento_path;
+  if (ev?.documento_path) {
+    $("ev-doc-current-name").textContent = `${tipoEvento(ev.tipo).label} — ${periodoEvento(ev)}`;
+  }
+  aggiornaCampiEvento();
+  if (chiediOre) {
+    $("ev-stato").value = "approvato";
+    alert("Questa richiesta si misura in ore, e il dipendente non le indica dal portale."
+      + NL + "Scrivi quante ore approvi, poi salva.");
+  }
+  openModal("modal-evento");
+}
+
+async function saveEvento(e) {
+  e.preventDefault();
+  const id = $("ev-id").value || uid();
+  const prec = state.eventi.find((x) => x.id === id) || null;
+  const dipendenteId = $("ev-dip-id").value || $("ev-dip").value;
+  if (!dipendenteId) { alert("Scegli prima la persona."); return; }
+  const tipo = $("ev-tipo").value;
+  const t = tipoEvento(tipo);
+  const dal = $("ev-dal").value;
+  if (!dal) { alert("Indica il primo giorno."); return; }
+  // `al` vuoto vuol dire UN GIORNO SOLO, e si scrive: le due letture possibili
+  // ("un giorno" / "ancora in corso") darebbero conteggi diversi al comporto, al
+  // calendario e alle variabili del mese. Vedi giorniDiEvento in common.js.
+  const al = $("ev-al").value || dal;
+  if (al < dal) { alert("L'ultimo giorno viene prima del primo."); return; }
+
+  const oldPath = prec?.documento_path || null;
+  let documentoPath = oldPath;
+  let caricato = null;
+  if (pendingEventoFile) {
+    $("ev-doc-progress").hidden = false;
+    try {
+      const ext = (pendingEventoFile.name.split(".").pop() || "bin").toLowerCase();
+      const nuovo = `eventi/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(nuovo, pendingEventoFile, {
+        upsert: false, contentType: pendingEventoFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      caricato = nuovo;
+      documentoPath = nuovo;
+    } catch (err) {
+      $("ev-doc-progress").hidden = true;
+      alert("Errore caricamento file: " + err.message);
+      return;
+    }
+    $("ev-doc-progress").hidden = true;
+  }
+
+  const row = {
+    ...(prec || {}),
+    id,
+    dipendente_id: dipendenteId,
+    tipo,
+    dal,
+    al,
+    ore: t.misura === "ore" && $("ev-ore").value !== "" ? Number($("ev-ore").value) : null,
+    stato: $("ev-stato").value || "approvato",
+    protocollo_inps: t.protocolloInps ? ($("ev-inps").value.trim() || null) : null,
+    documento_path: documentoPath,
+    origine: prec?.origine || "hr",
+    note: $("ev-note").value.trim() || null,
+  };
+  const ok = await sbUpsert("eventi", row);
+  if (!ok) { if (caricato) await deleteDoc(caricato); return; }
+  // Il file vecchio solo a salvataggio riuscito, mai prima.
+  if (caricato && oldPath && oldPath !== caricato) await deleteDoc(oldPath);
+  pendingEventoFile = null;
+  closeModal("modal-evento");
+  // La scheda, se e' aperta dietro la modale, deve mostrare la riga nuova.
+  if ($("dip-id").value === dipendenteId) renderDipEventi(dipendenteId);
+}
+
+async function deleteEvento() {
+  const id = $("ev-id").value;
+  if (!id) return;
+  const ev = state.eventi.find((x) => x.id === id);
+  if (!ev) return;
+  if (!confirm(`Eliminare questo evento (${tipoEvento(ev.tipo).label}, ${periodoEvento(ev)})?`
+    + (ev.documento_path ? NL + "Anche il file allegato viene cancellato." : ""))) return;
+  // Prima la riga, poi il file: nell'ordine inverso un errore lascerebbe una
+  // riga che punta a un file che non c'e' piu'.
+  if (!await sbDelete("eventi", id)) return;
+  if (ev.documento_path) await deleteDoc(ev.documento_path);
+  closeModal("modal-evento");
+  if ($("dip-id").value === ev.dipendente_id) renderDipEventi(ev.dipendente_id);
+}
+
+// ---------- 4.4 · Le variabili del mese per il consulente ----------
+// Il consulente riceve un file, come oggi: cambia solo che lo produce l'app.
+// Le colonne sono quelle decise il 2 settembre (nessun formato esistente da
+// imitare) e vanno CONFERMATE con lo studio prima del primo invio vero.
+async function esportaVariabiliMese() {
+  if (!window.XLSX) { alert("Libreria Excel non caricata."); return; }
+  const anno = state.eventiAnno;
+  const mese = state.eventiMese;
+  const finestra = finestraMese(anno, mese);
+  const delMese = eventiDelMese(state.eventi, anno, mese);
+  const attesa = richiesteDaApprovare(delMese).length;
+  const approvati = delMese.filter((e) => e.stato === "approvato");
+
+  if (!approvati.length) {
+    alert(`Non c'e' nessun evento approvato in ${nomeMese(mese)} ${anno}: non c'e' niente da mandare.`);
+    return;
+  }
+  // Il file partirebbe senza quelle righe, e la casella della griglia del
+  // consulente verrebbe spuntata come fatta.
+  if (attesa && !confirm(`Ci sono ancora ${attesa} richieste da approvare per ${nomeMese(mese)}.`
+    + NL + "Non finiranno nel file. Esporto lo stesso?")) return;
+
+  const righe = approvati
+    .map((ev) => ({ ev, dip: dipById(ev.dipendente_id) }))
+    .filter((r) => r.dip)
+    .sort((a, b) => (a.dip.cognome || "").localeCompare(b.dip.cognome || "")
+      || String(a.ev.dal || "").localeCompare(String(b.ev.dal || "")))
+    .map(({ ev, dip }) => ({
+      Cognome: dip.cognome || "",
+      Nome: dip.nome || "",
+      Matricola: dip.matricola || "",
+      Tipo: tipoEvento(ev.tipo).label,
+      Dal: fmtDate(ev.dal),
+      Al: fmtDate(ev.al || ev.dal),
+      // L'unita' e' scritta nell'intestazione: l'app conta giorni di CALENDARIO,
+      // il cedolino di solito ragiona in giorni lavorativi.
+      "Giorni di calendario nel mese": contaGiorniEvento(ev, finestra.dal, finestra.al),
+      Ore: ev.ore == null ? "" : Number(ev.ore),
+      Note: ev.note || "",
+    }));
+
+  const ws = XLSX.utils.json_to_sheet(righe);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, `Variabili ${nomeMese(mese)}`.slice(0, 31));
+  XLSX.writeFile(wb, `Variabili-${anno}-${String(mese).padStart(2, "0")}.xlsx`);
+
+  // Spuntata la casella "variabili / uscita" della griglia del consulente (3.3),
+  // cosi' quella vista dice da sola cosa e' stato mandato.
+  // Lo SPREAD della riga esistente non e' un vezzo: sbUpsert scrive la riga
+  // intera, e senza di lui il file e le note di una casella gia' compilata a
+  // mano tornerebbero vuoti.
+  const prec = state.scambiConsulente.find((r) => Number(r.anno) === Number(anno)
+    && Number(r.mese) === Number(mese) && r.tipo === "variabili" && r.direzione === "uscita") || null;
+  await sbUpsert("scambi_consulente", {
+    ...(prec || {}),
+    id: prec?.id || uid(),
+    anno: Number(anno), mese: Number(mese), tipo: "variabili", direzione: "uscita",
+    data: localISO(new Date()),
+    note: prec?.note || null,
+  });
+
+  alert(`File pronto: ${righe.length} righe.`
+    + NL + NL + "Ricordati che le colonne di questo file non sono ancora state confermate"
+    + NL + "dal consulente del lavoro: mandagliele una prima volta e chiedigli se vanno bene."
+    + NL + "I giorni sono di CALENDARIO, non lavorativi.");
+}
+
+// ---------- Gli eventi nella scheda della persona (linguetta Registro) ----------
+function renderDipEventi(dipId) {
+  const righe = eventiDiDip(dipId);
+  const dip = dipById(dipId);
+  $("dip-eventi-count").textContent = righe.length;
+  $("dip-eventi-section").hidden = false;
+  $("dip-eventi-list").hidden = true;
+  el(".history-arrow", $("dip-eventi-toggle"))?.classList.remove("expanded");
+  $("dip-eventi-toggle").setAttribute("aria-expanded", "false");
+
+  // 4.5 · "Malattia: 23 giorni negli ultimi 12 mesi (soglia 180)".
+  // L'app CONTA, non decide: nessun blocco, nessun automatismo.
+  const comp = conteggioComporto({
+    eventiDellaPersona: righe,
+    finestraMesi: comportoFinestra(), soglia: comportoSoglia(), percentuale: comportoPercentuale(),
+  });
+  $("dip-comporto").innerHTML =
+    `<span class="stato ${esc(CLASSE_COMPORTO[comp.stato] || "ok")}">🤒 Malattia: ${comp.giorni} `
+    + `${comp.giorni === 1 ? "giorno" : "giorni"} di calendario negli ultimi ${comportoFinestra()} mesi`
+    + (comp.soglia ? ` (soglia ${comp.soglia})` : "") + `</span>`
+    + `<div class="hist-note">Dal ${fmtDate(comp.dal)} a oggi. L'app conta i giorni, non decide: `
+    + `soglia, finestra e avviso si cambiano in Configurazione → Parametri.</div>`;
+
+  // 4.5 · Il saldo dichiarato dal cedolino e i movimenti successivi, MAI sommati.
+  const saldo = saldoDichiarato({ dip, eventiDellaPersona: righe });
+  $("dip-saldo-riepilogo").innerHTML = !saldo
+    ? `<div class="hist-note">Scrivi qui sopra il saldo che leggi sul cedolino e la data a cui si `
+      + `riferisce: l'app mostrera' quello che e' stato approvato dopo, senza sommarlo.</div>`
+    : `<div class="hist-note"><strong>Secondo il cedolino al ${fmtDate(saldo.al)}:</strong> `
+      + `ferie ${saldo.ferie == null ? "—" : saldo.ferie}, PAR ${saldo.par == null ? "—" : saldo.par}.</div>`
+      + `<div class="hist-note"><strong>Approvato dopo quella data:</strong> `
+      + `${saldo.ferieDopo} ${saldo.ferieDopo === 1 ? "giorno" : "giorni"} di ferie (di calendario), `
+      + `${saldo.oreDopo} ${saldo.oreDopo === 1 ? "ora" : "ore"} di permesso.</div>`
+      + `<div class="hist-note">I due numeri <strong>non si sommano</strong>: l'app non calcola le `
+      + `ferie maturate e le unita' possono non coincidere con quelle del cedolino.</div>`;
+
+  $("dip-eventi-list").innerHTML = righe.length === 0
+    ? '<div class="muted" style="padding:8px 0">Nessun evento registrato.</div>'
+    : righe.map((ev) => {
+        const t = tipoEvento(ev.tipo);
+        const s = statoEvento(ev.stato);
+        const inail = promemoriaInail(ev, giorniDenunciaInail());
+        return `<div class="hist-row ev-row" data-id="${esc(ev.id)}">
+          <div><strong>${esc(t.icon)} ${esc(t.label)}</strong> — ${esc(periodoEvento(ev))}
+            <div class="hist-note">${esc(misuraEvento(ev))} · ${esc(s.icon)} ${esc(s.label)}`
+            + `${ev.origine === "portale" ? " · chiesto dal portale" : ""}`
+            + `${ev.protocollo_inps ? " · protocollo " + esc(ev.protocollo_inps) : ""}`
+            + `${ev.documento_path ? " · 📎" : ""}</div>`
+            + (inail ? `<div class="hist-note"><span class="stato ${esc(inail.stato)}">🚨 Denuncia INAIL `
+              + `entro il ${fmtDate(inail.scadenza)}</span></div>` : "")
+            + `</div>
+          <div class="row-actions">
+            <button type="button" class="icon-btn ev-edit-btn" data-id="${esc(ev.id)}" title="Apri">✏️</button>
+          </div>
+        </div>`;
+      }).join("");
+
+  els(".ev-edit-btn", $("dip-eventi-list")).forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openEventoModal(dipId, b.dataset.id);
+  }));
 }
 
 // ---------- Adempimento ----------
@@ -4123,6 +4689,12 @@ function collegaDocumentiAiDati(prefissoDip) {
     segna(s.path, null, "Scambio consulente",
       `${tipoScambio(s.tipo).label} ${etichettaPeriodoScambio(s.mese, s.anno)}`, s.data, "corrente");
   }
+  // 4.1 · Le schede infortunio e i certificati allegati agli eventi. Senza
+  // questo ciclo l'indice del backup li darebbe per "non collegati".
+  for (const ev of state.eventi) {
+    segna(ev.documento_path, dipById(ev.dipendente_id), "Evento",
+      `${tipoEvento(ev.tipo).label} del ${fmtDate(ev.dal)}`, ev.dal, "corrente");
+  }
 
   // Fallback per i file del portale: portal/{prefisso}/... . Serve ai documenti
   // caricati dal dipendente e non ancora validati dall'HR, che non sono
@@ -4222,6 +4794,7 @@ function setView(v) {
   state.view = v;
   els(".module-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   $("view-compliance").hidden = v !== "compliance";
+  $("view-eventi").hidden = v !== "eventi";
   $("view-cariche").hidden = v !== "cariche";
   $("view-dipendenti").hidden = v !== "dipendenti";
   $("view-storico").hidden = v !== "storico";
@@ -4231,6 +4804,7 @@ function setView(v) {
   $("comp-view-toggle").hidden = v !== "compliance";
   const addBtn = $("btn-add");
   if (v === "dipendenti") { addBtn.hidden = false; addBtn.textContent = "+ Nuovo dipendente"; }
+  else if (v === "eventi") { addBtn.hidden = false; addBtn.textContent = "+ Nuovo evento"; }
   else { addBtn.hidden = true; }
   // La ricerca non ha niente da cercare in Configurazione ne' nella griglia del
   // consulente: un campo che non fa niente e' peggio di un campo assente.
@@ -4331,8 +4905,32 @@ function wireEvents() {
     await openSignedDoc(r?.path);
   });
 
+  // 4.1-4.5 · Eventi del mese.
+  $("ev-anno").addEventListener("change", (e) => { state.eventiAnno = Number(e.target.value); renderEventi(); });
+  $("ev-mese").addEventListener("change", (e) => { state.eventiMese = Number(e.target.value); renderEventi(); });
+  $("ev-filter-dipendente").addEventListener("change", (e) => { state.eventiFilter.dipendente = e.target.value; renderEventi(); });
+  $("ev-filter-tipo").addEventListener("change", (e) => { state.eventiFilter.tipo = e.target.value; renderEventi(); });
+  $("btn-variabili-excel").addEventListener("click", esportaVariabiliMese);
+  $("ev-form").addEventListener("submit", saveEvento);
+  $("ev-close").addEventListener("click", () => closeModal("modal-evento"));
+  $("ev-cancel").addEventListener("click", () => closeModal("modal-evento"));
+  $("ev-delete").addEventListener("click", deleteEvento);
+  $("ev-tipo").addEventListener("change", aggiornaCampiEvento);
+  $("ev-doc-file").addEventListener("change", (e) => {
+    const file = e.target.files?.[0] || null;
+    pendingEventoFile = file;
+    $("ev-doc-upload-label").textContent = file ? `📄 ${file.name} (salva per caricare)` : "Carica un file";
+  });
+  $("ev-doc-open").addEventListener("click", async () => {
+    const ev = state.eventi.find((x) => x.id === $("ev-id").value);
+    await openSignedDoc(ev?.documento_path);
+  });
+  $("dip-eventi-toggle").addEventListener("click", () => toggleSection("dip-eventi-toggle", "dip-eventi-list"));
+  $("dip-eventi-add").addEventListener("click", () => openEventoModal($("dip-id").value, null));
+
   $("btn-add").addEventListener("click", () => {
     if (state.view === "dipendenti") openDipModal(null);
+    else if (state.view === "eventi") openEventoModal(null, null);
   });
 
   // Compliance filtri + KPI.

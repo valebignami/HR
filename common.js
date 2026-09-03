@@ -576,6 +576,191 @@ function scambiMancanti(griglia) {
 }
 
 // ============================================================
+// 4.1-4.5 · Eventi del mese — le regole che decidono dei NUMERI.
+// Nessuna di queste da' un errore quando e' sbagliata: da' un giorno di ferie in
+// piu' o in meno sul file che va al consulente del lavoro, un contatore del
+// comporto che dice 140 invece di 160, o un promemoria della denuncia INAIL che
+// resta rosso per sempre. Per questo stanno qui, con i loro test.
+// ============================================================
+
+// Oltre questo, non e' un evento: e' un errore di battitura nell'anno. Serve
+// solo a non far girare un ciclo per un milione di giorni bloccando la pagina;
+// tutte le chiamate dell'app passano comunque una finestra (il mese, o la
+// finestra del comporto), quindi in pratica non si raggiunge mai.
+const MAX_GIORNI_EVENTO = 1100;
+
+// I giorni ISO occupati da un evento, dentro una finestra.
+//
+// `al` VUOTO VUOL DIRE UN GIORNO SOLO, non "evento ancora in corso": le due
+// letture danno numeri diversi nel calendario, nelle variabili del mese e nel
+// comporto, e li mostrano tutti e tre come fatti. La RPC del portale scrive
+// gia' `coalesce(p_al, p_dal)` e la modale dell'HR scrive `al = dal` quando il
+// campo e' vuoto: qui si legge allo stesso modo, cosi' la regola e' una sola
+// anche per le righe che arrivassero da altre strade.
+//
+// La finestra e' facoltativa (senza, vale tutto l'evento) ma l'app la passa
+// sempre: e' quella che impedisce a una richiesta con l'anno sbagliato di
+// riempire il calendario di un mese intero.
+function giorniDiEvento(ev, daISO, aISO) {
+  if (!ev || !ev.dal) return [];
+  const inizio = String(ev.dal).slice(0, 10);
+  const fine = String(ev.al || ev.dal).slice(0, 10);
+  if (fine < inizio) return [];                      // riga incoerente: nessun giorno
+  const primo = daISO && String(daISO).slice(0, 10) > inizio ? String(daISO).slice(0, 10) : inizio;
+  const ultimo = aISO && String(aISO).slice(0, 10) < fine ? String(aISO).slice(0, 10) : fine;
+  if (primo > ultimo) return [];
+  let d = parseISO(primo);
+  const stop = parseISO(ultimo);
+  if (!d || !stop) return [];
+  const out = [];
+  while (d <= stop && out.length < MAX_GIORNI_EVENTO) {
+    out.push(localISO(d));
+    d = addDays(d, 1);
+  }
+  return out;
+}
+
+// Quanti sono. Sono GIORNI DI CALENDARIO: una settimana di ferie da lunedi' a
+// domenica vale 7. I giorni lavorativi l'app non puo' calcolarli — con tre turni
+// in ciclo continuo il calendario dei riposi non e' nell'app — quindi l'unita' si
+// dichiara ovunque compaia il numero, invece di far finta.
+function contaGiorniEvento(ev, daISO, aISO) {
+  return giorniDiEvento(ev, daISO, aISO).length;
+}
+
+// Gli eventi che TOCCANO un mese, non quelli che ci cominciano: una malattia dal
+// 28 giugno al 4 luglio sta nelle variabili di giugno e in quelle di luglio, per
+// i giorni che le competono.
+function eventiDelMese(eventi, anno, mese) {
+  const m = Number(mese);
+  if (!Number.isInteger(m) || m < 1 || m > 12) return [];
+  const ultimo = new Date(Number(anno), m, 0).getDate();
+  const mm = String(m).padStart(2, "0");
+  const inizio = `${anno}-${mm}-01`;
+  const fine = `${anno}-${mm}-${String(ultimo).padStart(2, "0")}`;
+  return (eventi || []).filter((e) => e && e.dal
+    && String(e.dal).slice(0, 10) <= fine
+    && String(e.al || e.dal).slice(0, 10) >= inizio);
+}
+
+// Le richieste ancora in attesa. UNA lista sola, come dipendentiDiProva: il
+// numero sul contatore in barra laterale e l'elenco che si approva devono venire
+// dallo stesso filtro, o il contatore dice tre e l'elenco ne mostra due.
+function richiesteDaApprovare(eventi) {
+  return (eventi || []).filter((e) => e && e.stato === "richiesto");
+}
+
+// 4.2 · "Denuncia INAIL entro N giorni".
+// Il promemoria e' DERIVATO: non c'e' nessuna colonna "denuncia fatta". Quello
+// che lo spegne e' la scheda infortunio allegata, come dice il piano in M4.
+//
+// Con l'allegato lo stato e' `ok` e basta. NON si usa
+// classificaStato(true, scadenza): la soglia "in scadenza" dell'app e' 60 giorni
+// e il termine INAIL e' 2, quindi ogni infortunio resterebbe arancione fino al
+// termine e ROSSO PER SEMPRE dopo — allegato o no. L'allegato non cambierebbe
+// niente e ogni infortunio dell'anno scorso resterebbe rosso in eterno.
+function promemoriaInail(ev, giorniDenuncia) {
+  if (!ev || ev.tipo !== "infortunio" || !ev.dal) return null;
+  const d = parseISO(String(ev.dal).slice(0, 10));
+  if (!d) return null;
+  // `Number(null)` fa 0, non NaN: senza questo controllo un parametro mancante
+  // diventerebbe "denuncia entro zero giorni", cioe' scaduta il giorno stesso.
+  const n = giorniDenuncia == null || giorniDenuncia === "" ? NaN : Number(giorniDenuncia);
+  const scadenza = localISO(addDays(d, Number.isFinite(n) ? n : 2));
+  return { scadenza, stato: ev.documento_path ? "ok" : classificaStato(false, scadenza) };
+}
+
+// 4.3 · La richiesta dal portale e' accettabile? null = si'.
+// E' la stessa regola di self_richiedi_evento, dal lato di chi la scrive: serve
+// a dire subito e in italiano cosa non va, non a fidarsi. La guardia resta la
+// RPC, che ricontrolla tutto.
+// `giorniIndietro` arriva da self_get (il portale gira come anon e non legge
+// `parametri`): NON va scritto un numero qui dentro ne' in me.js.
+function validaRichiesta({ tipo, dal, al, tipiConsentiti, giorniIndietro, oggiISO }) {
+  const consentiti = tipiConsentiti || [];
+  if (!tipo || !consentiti.includes(tipo)) return "Scegli che cosa vuoi chiedere.";
+  if (!dal) return "Indica il primo giorno.";
+  const d1 = String(dal).slice(0, 10);
+  if (!parseISO(d1)) return "Il primo giorno non e' una data valida.";
+  const d2 = al ? String(al).slice(0, 10) : d1;
+  if (d2 < d1) return "L'ultimo giorno viene prima del primo.";
+  const oggi = oggiISO ? String(oggiISO).slice(0, 10) : localISO(new Date());
+  // Come sopra: `Number(null)` fa 0, e un limite "zero giorni indietro"
+  // rifiuterebbe anche una richiesta per ieri. Limite assente = nessun limite:
+  // lo dira' la RPC, che il numero ce l'ha davvero.
+  const gg = giorniIndietro == null || giorniIndietro === "" ? NaN : Number(giorniIndietro);
+  if (Number.isFinite(gg)) {
+    const limite = localISO(addDays(parseISO(oggi), -gg));
+    if (d1 < limite) {
+      return `Non si puo' chiedere prima del ${fmtDate(limite)}: parlane con l'ufficio del personale.`;
+    }
+  }
+  // Stesso limite della RPC: al oltre dal + 366 giorni.
+  if (d2 > localISO(addDays(parseISO(d1), 366))) return "Il periodo e' troppo lungo.";
+  return null;
+}
+
+// 4.5 · "Malattia: 23 giorni negli ultimi 12 mesi (soglia 180)".
+// L'app CONTA, non decide (regola 1 del piano): nessun blocco, nessun
+// automatismo, una riga che dice un numero.
+//
+// `eventiDellaPersona` sono gia' filtrati da chi chiama: nel portale gli eventi
+// arrivano da una RPC che non restituisce affatto il dipendente_id, quindi un
+// filtro qui dentro scarterebbe tutto in silenzio.
+// I giorni si contano in un Set: due malattie che si sovrappongono non valgono
+// due volte lo stesso giorno.
+function conteggioComporto({ eventiDellaPersona, finestraMesi, soglia, percentuale, oggiISO }) {
+  const oggi = oggiISO ? String(oggiISO).slice(0, 10) : localISO(new Date());
+  const mesi = Number(finestraMesi);
+  const dal = addMonths(oggi, -(Number.isFinite(mesi) && mesi > 0 ? mesi : 12));
+  const giorni = new Set();
+  for (const e of eventiDellaPersona || []) {
+    if (!e || e.tipo !== "malattia" || e.stato !== "approvato") continue;
+    for (const g of giorniDiEvento(e, dal, oggi)) giorni.add(g);
+  }
+  const s = Number(soglia);
+  const p = Number(percentuale);
+  const n = giorni.size;
+  let stato = "ok";
+  if (Number.isFinite(s) && s > 0) {
+    if (n >= s) stato = "superato";
+    else if (Number.isFinite(p) && p > 0 && n * 100 >= s * p) stato = "avviso";
+  }
+  return {
+    giorni: n, dal, al: oggi, stato,
+    soglia: Number.isFinite(s) && s > 0 ? s : null,
+    percentuale: Number.isFinite(p) && p > 0 ? p : null,
+  };
+}
+
+// 4.5 · Il saldo che l'HR ha copiato dal cedolino, e cosa e' successo DOPO.
+// I due numeri NON si sommano, e la ragione e' scritta nel piano: l'app non
+// calcola ferie maturate. Mostra il numero dichiarato, con la data a cui si
+// riferisce, e accanto i movimenti approvati successivi. Chi guarda fa la
+// sottrazione se vuole, sapendo che le unita' possono non coincidere.
+// Senza `saldo_al` non si mostra niente: un saldo senza la sua data e' un numero
+// che mente. `eventiDellaPersona` gia' filtrati, come sopra.
+function saldoDichiarato({ dip, eventiDellaPersona }) {
+  if (!dip || !dip.saldo_al) return null;
+  const al = String(dip.saldo_al).slice(0, 10);
+  let ferieDopo = 0;
+  let oreDopo = 0;
+  for (const e of eventiDellaPersona || []) {
+    if (!e || e.stato !== "approvato" || !e.dal) continue;
+    if (String(e.dal).slice(0, 10) <= al) continue;
+    if (e.tipo === "ferie") ferieDopo += contaGiorniEvento(e);
+    else if (e.tipo === "permesso") oreDopo += Number(e.ore) || 0;
+  }
+  return {
+    al,
+    ferie: dip.saldo_ferie == null || dip.saldo_ferie === "" ? null : Number(dip.saldo_ferie),
+    par: dip.saldo_par == null || dip.saldo_par === "" ? null : Number(dip.saldo_par),
+    ferieDopo,
+    oreDopo,
+  };
+}
+
+// ============================================================
 // Motore gap — nucleo puro.
 // Estratto da app.js nel 2026-09 per una ragione sola: era la logica piu'
 // importante dell'app e l'unica non testabile, perche' leggeva lo stato
@@ -639,5 +824,7 @@ if (typeof module !== "undefined" && module.exports) {
     contieneDelimitato, abbinaCedoliniPerMatricola, inForzaNelMese, inForzaNellAnno, conteggioCedoliniDelMese,
     MESE_TREDICESIMA, MESE_CU,
     grigliaScambi, scambiMancanti,
+    giorniDiEvento, contaGiorniEvento, eventiDelMese, richiesteDaApprovare,
+    promemoriaInail, validaRichiesta, conteggioComporto, saldoDichiarato,
     daysUntil, parseISO, localISO, fmtDate, fmtDateTime, addDays, addMonths, esc, uid, GG_SCAD, GG_ONBOARD };
 }

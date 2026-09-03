@@ -63,6 +63,41 @@ window.TIPI_SCAMBIO_CONSULENTE = [
   { key: "mod770",    label: "Modello 770",                  direzione: "entrata", periodicita: "annuale" }
 ];
 
+// 4.1 · Gli eventi del mese. Vocabolario stabile: sono NOMI di cose, non numeri
+// che cambiano con le norme — quelli (comporto, denuncia INAIL, quanto indietro
+// si puo' chiedere) stanno in `parametri` e si cambiano da Configurazione.
+//
+//   misura            "giorni" oppure "ore": decide quale campo chiede la modale
+//                     e quale colonna riempie l'export delle variabili.
+//   richiedibile      il dipendente puo' chiederlo dal portale.
+//                     ATTENZIONE: questo e' il VOCABOLARIO, non la guardia. La
+//                     guardia e' dentro self_richiedi_evento, che ha lo stesso
+//                     elenco scritto a mano ('ferie', 'permesso'), perche'
+//                     data.js e' codice del browser e chiunque puo' riscriverlo.
+//                     Se cambia uno, va cambiato l'altro.
+//   protocolloInps    il numero di protocollo e' obbligatorio (solo malattia).
+//                     MAI la diagnosi: e' un dato sanitario e nell'app non ci va.
+//   allegato          "no" | "facoltativo" | "atteso" (l'infortunio ha la scheda,
+//                     ed e' quella che spegne il promemoria della denuncia INAIL).
+window.TIPI_EVENTO = [
+  { key: "malattia",      label: "Malattia",        icon: "🤒", misura: "giorni", richiedibile: false, protocolloInps: true,  allegato: "facoltativo" },
+  { key: "infortunio",    label: "Infortunio",      icon: "🩹", misura: "giorni", richiedibile: false, protocolloInps: false, allegato: "atteso" },
+  { key: "ferie",         label: "Ferie",           icon: "🏖", misura: "giorni", richiedibile: true,  protocolloInps: false, allegato: "no" },
+  { key: "permesso",      label: "Permesso / PAR",  icon: "🕒", misura: "ore",    richiedibile: true,  protocolloInps: false, allegato: "no" },
+  { key: "straordinario", label: "Straordinario",   icon: "⏱", misura: "ore",    richiedibile: false, protocolloInps: false, allegato: "no" },
+  { key: "cambio_turno",  label: "Cambio turno",    icon: "🔄", misura: "giorni", richiedibile: false, protocolloInps: false, allegato: "no" },
+  { key: "altro",         label: "Altro",           icon: "📌", misura: "giorni", richiedibile: false, protocolloInps: false, allegato: "facoltativo" },
+];
+
+// Gli stati di un evento, con l'etichetta che legge l'HR e quella che legge il
+// dipendente nel portale: "rifiutata" detto a chi l'ha chiesta e' piu' chiaro di
+// "rifiutato" detto di una riga.
+window.STATI_EVENTO = [
+  { key: "richiesto",  label: "Da approvare", labelPortale: "In attesa di risposta", icon: "⏳" },
+  { key: "approvato",  label: "Approvato",    labelPortale: "Approvata",             icon: "✅" },
+  { key: "rifiutato",  label: "Rifiutato",    labelPortale: "Non approvata",         icon: "✕" },
+];
+
 // Tipi di provvedimento disciplinare (art. 7 Statuto dei Lavoratori, CCNL).
 window.TIPI_PROVVEDIMENTO = [
   { key: "richiamo_verbale",  label: "Richiamo verbale",  icon: "💬" },

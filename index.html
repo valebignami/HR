@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HR Overland — Compliance personale</title>
-<link rel="stylesheet" href="style.css?v=b8">
+<link rel="stylesheet" href="style.css?v=b9">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous" defer></script>
 </head>
@@ -60,6 +60,10 @@
       <button class="module-btn active" data-view="compliance">
         <span class="mod-ico">📅</span><span>Scadenze</span>
         <span class="mod-count" id="count-gap">0</span>
+      </button>
+      <button class="module-btn" data-view="eventi">
+        <span class="mod-ico">🗓</span><span>Eventi</span>
+        <span class="mod-count" id="count-eventi" title="Richieste di ferie o permesso che aspettano una risposta">0</span>
       </button>
       <button class="module-btn" data-view="cariche">
         <span class="mod-ico">🏛</span><span>Cariche aziendali</span>
@@ -184,6 +188,7 @@
             <span class="leg"><i class="leg-chip abilitazione"></i>Abilitazione</span>
             <span class="leg"><i class="leg-chip dpi"></i>DPI</span>
             <span class="leg"><i class="leg-chip contratto"></i>Contratti</span>
+            <span class="leg"><i class="leg-chip evento"></i>Ferie e permessi</span>
           </div>
         </div>
         <div class="cal-weekdays">
@@ -191,6 +196,51 @@
         </div>
         <div class="cal-grid" id="cal-grid"></div>
       </section>
+    </section>
+
+    <!-- ============ VISTA EVENTI DEL MESE (4.2 e 4.4) ============ -->
+    <section class="view" id="view-eventi" hidden>
+      <div class="config-toolbar">
+        <h3>Eventi del mese</h3>
+        <div class="ev-barra">
+          <label class="sc-anno-label"><span>Mese</span><select id="ev-mese"></select></label>
+          <label class="sc-anno-label"><span>Anno</span><select id="ev-anno"></select></label>
+          <select id="ev-filter-dipendente"><option value="">Tutti i dipendenti</option></select>
+          <select id="ev-filter-tipo"><option value="">Tutti i tipi</option></select>
+          <button class="ghost-btn" id="btn-variabili-excel" title="Esporta in Excel gli eventi approvati del mese, per il consulente del lavoro. Spunta anche la casella «variabili» nella vista Consulente.">📥 Variabili del mese → Excel</button>
+        </div>
+      </div>
+
+      <!-- Le richieste in attesa stanno in cima e NON seguono il mese scelto:
+           una richiesta per settembre non deve sparire guardando agosto. -->
+      <div class="contratti-wrap" id="ev-richieste-wrap" hidden>
+        <div class="list">
+          <div class="contratti-titolo">
+            <span>⏳ Richieste da approvare</span>
+            <span class="history-count" id="ev-richieste-count">0</span>
+          </div>
+          <div class="comp-head ev-cols-req">
+            <div>Dipendente</div><div>Tipo</div><div>Quando</div><div>Nota</div><div></div>
+          </div>
+          <div id="ev-richieste-rows"></div>
+        </div>
+      </div>
+
+      <p class="cfg-hint sc-mancanti" id="ev-riassunto">—</p>
+      <p class="cfg-hint">I giorni contati dall'app sono <strong>giorni di calendario</strong>:
+        una settimana di ferie da lunedì a domenica vale 7. Il cedolino di solito ragiona in
+        giorni lavorativi o in ore: prima del primo invio, fai confermare le colonne del file
+        al consulente del lavoro.</p>
+
+      <div class="comp-wrap">
+        <div class="list">
+          <div id="ev-mese-rows"></div>
+          <div id="ev-mese-empty" class="empty" hidden>
+            <div class="empty-ico">🗓</div>
+            <div>Nessun evento in questo mese. Usa "+ Nuovo evento" per registrarne uno.</div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ============ VISTA CARICHE AZIENDALI ============ -->
@@ -583,6 +633,41 @@
           <span class="history-count" id="dip-cedolini-count">0</span>
         </button>
         <div id="dip-cedolini-list" hidden></div>
+      </div>
+
+      <!-- 4.5 · Il saldo che l'HR copia dal cedolino. L'app NON calcola le ferie
+           maturate: mostra questo numero, con la sua data, e accanto quello che
+           e' stato approvato dopo. I due non si sommano. -->
+      <div id="dip-saldo-section" class="dip-section" hidden>
+        <button type="button" class="history-toggle dip-section-toggle">
+          <span class="history-arrow">▸</span>
+          <span>🏖 Saldo ferie e permessi, secondo il cedolino</span>
+        </button>
+        <div class="dip-section-body" hidden>
+          <p class="cfg-hint">Copia qui i saldi che leggi sull'ultimo cedolino, con la data a cui
+            si riferiscono. L'app non calcola le ferie maturate: mostra questo numero e, accanto,
+            quello che è stato approvato dopo quella data, <strong>senza sommarli</strong>.</p>
+          <div class="row">
+            <label><span>Ferie residue (dal cedolino)</span>
+              <input type="number" id="dip-saldo-ferie" step="0.5" placeholder="es. 12,5"></label>
+            <label><span>PAR / permessi residui (dal cedolino)</span>
+              <input type="number" id="dip-saldo-par" step="0.5" placeholder="es. 8"></label>
+          </div>
+          <label><span>Saldo aggiornato al</span><input type="date" id="dip-saldo-al"></label>
+          <div id="dip-saldo-riepilogo"></div>
+        </div>
+      </div>
+
+      <!-- 4.2 · Gli eventi della persona, con il conteggio del comporto sopra. -->
+      <div id="dip-eventi-section" class="history-section" hidden>
+        <p class="cfg-hint" id="dip-comporto"></p>
+        <button type="button" class="history-toggle" id="dip-eventi-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>🗓 Eventi (ferie, permessi, malattie, infortuni)</span>
+          <span class="history-count" id="dip-eventi-count">0</span>
+          <button type="button" class="ghost-btn" id="dip-eventi-add" style="margin-left:8px">+ Nuovo evento</button>
+        </button>
+        <div id="dip-eventi-list" hidden></div>
       </div>
 
       </div><!-- /registro -->
@@ -1062,6 +1147,59 @@
   </div>
 </div>
 
+<!-- ============ MODALE EVENTO (4.2) ============ -->
+<div id="modal-evento" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="ev-title">Nuovo evento</h2>
+      <button class="icon-btn" id="ev-close">✕</button>
+    </div>
+    <form id="ev-form" class="modal-body">
+      <input type="hidden" id="ev-id">
+      <input type="hidden" id="ev-dip-id">
+      <div class="done-target" id="ev-dip-nome" hidden>—</div>
+      <label id="ev-dip-wrap" hidden><span>Dipendente *</span><select id="ev-dip"></select></label>
+      <label><span>Tipo *</span><select id="ev-tipo" required></select></label>
+      <div class="row">
+        <label><span>Dal *</span><input type="date" id="ev-dal" required></label>
+        <label><span>Al (vuoto = un giorno solo)</span><input type="date" id="ev-al"></label>
+      </div>
+      <label id="ev-ore-wrap" hidden><span>Ore</span>
+        <input type="number" id="ev-ore" min="0" step="0.5" placeholder="es. 4"></label>
+      <label id="ev-inps-wrap" hidden><span>Protocollo INPS *</span>
+        <input type="text" id="ev-inps" placeholder="es. 1234567890">
+        <span class="cfg-hint">Solo il numero di protocollo del certificato.
+          <strong>Mai la diagnosi</strong>: è un dato sanitario e nell'app non ci va.</span>
+      </label>
+      <p class="cfg-hint" id="ev-inail-hint" hidden>🚨 Ricordati la <strong>denuncia INAIL</strong>:
+        il termine compare nell'elenco. Quando l'hai fatta, allega qui la scheda infortunio:
+        è quella che spegne il promemoria.</p>
+      <label><span>Stato</span><select id="ev-stato"></select></label>
+      <fieldset class="recur doc-block">
+        <legend>Documento (facoltativo)</legend>
+        <div id="ev-doc-current" class="doc-current" hidden>
+          <span id="ev-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="ev-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="ev-doc-upload-label">Carica un file</span>
+          <input type="file" id="ev-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="ev-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <label><span>Nota</span><textarea id="ev-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="ev-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="ev-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ============ MODALE PARAMETRO (3.1) ============ -->
 <div id="modal-parametro" class="modal" hidden>
   <div class="modal-card small">
@@ -1146,8 +1284,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
-<script src="data.js?v=c3"></script>
-<script src="common.js?v=c8"></script>
-<script src="app.js?v=c10"></script>
+<script src="data.js?v=c4"></script>
+<script src="common.js?v=c9"></script>
+<script src="app.js?v=c11"></script>
 </body>
 </html>
