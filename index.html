@@ -69,6 +69,10 @@
         <span class="mod-ico">🏛</span><span>Cariche aziendali</span>
         <span class="mod-count" id="count-cariche">0</span>
       </button>
+      <button class="module-btn" data-view="competenze">
+        <span class="mod-ico">🎓</span><span>Competenze</span>
+        <span class="mod-count" id="count-competenze" title="Lavorazioni con meno di due persone autonome">0</span>
+      </button>
       <button class="module-btn" data-view="dipendenti">
         <span class="mod-ico">👥</span><span>Dipendenti</span>
         <span class="mod-count" id="count-dip">0</span>
@@ -298,6 +302,22 @@
     </section>
 
     <!-- ============ VISTA DIPENDENTI ============ -->
+    <!-- ============ VISTA COMPETENZE (5.3) ============
+         Il piano la chiamava "per squadra": le squadre ruotano (decisione del
+         2 settembre), quindi la copertura e' per AZIENDA, che e' il ramo
+         previsto dal piano stesso in questo caso. -->
+    <section class="view" id="view-competenze" hidden>
+      <div class="cariche-wrap">
+        <p class="cfg-hint" id="competenze-legenda">—</p>
+        <div class="cariche-list" id="competenze-list"></div>
+        <div id="competenze-empty" class="empty" hidden>
+          <div class="empty-ico">🎓</div>
+          <div>Nessuna competenza nel catalogo.</div>
+          <div class="muted">Aggiungile da Configurazione → Competenze.</div>
+        </div>
+      </div>
+    </section>
+
     <section class="view" id="view-dipendenti" hidden>
       <div class="cards-grid" id="dip-cards"></div>
       <div id="dip-empty" class="empty" hidden>
@@ -365,6 +385,7 @@
         <button class="ct-btn" data-ctab="matrice">🔗 Matrice ruolo → requisiti</button>
         <button class="ct-btn" data-ctab="onboarding">✅ Onboarding</button>
         <button class="ct-btn" data-ctab="modelli">📄 Modelli documento</button>
+        <button class="ct-btn" data-ctab="competenze">🎓 Competenze</button>
         <button class="ct-btn" data-ctab="parametri">🎚 Parametri</button>
       </div>
 
@@ -421,6 +442,17 @@
         <div class="cfg-table" id="onboard-items-table"></div>
       </div>
 
+      <div class="config-panel" id="cfg-competenze" hidden>
+        <div class="config-toolbar">
+          <h3>Competenze operative</h3>
+          <button class="primary-btn" id="add-competenza">+ Nuova competenza</button>
+        </div>
+        <p class="cfg-hint">Il catalogo delle lavorazioni su cui si registra il livello di
+          ognuno, nella scheda della persona, linguetta <strong>Crescita</strong>.
+          0 = non formato · 1 = in affiancamento · 2 = autonomo · 3 = autonomo e forma gli altri.</p>
+        <div class="cfg-table" id="competenze-table"></div>
+      </div>
+
       <div class="config-panel" id="cfg-parametri" hidden>
         <div class="config-toolbar">
           <h3>Parametri</h3>
@@ -461,6 +493,7 @@
         <button type="button" class="dt-btn" data-dtab="sicurezza">🦺 Sicurezza</button>
         <button type="button" class="dt-btn" data-dtab="ingresso-uscita">✅ Ingresso/Uscita</button>
         <button type="button" class="dt-btn" data-dtab="registro">📋 Registro</button>
+        <button type="button" class="dt-btn" data-dtab="crescita">🎓 Crescita</button>
         <button type="button" class="dt-btn" data-dtab="storia">📜 Storia</button>
       </div>
 
@@ -713,6 +746,27 @@
       </div>
 
       </div><!-- /registro -->
+
+      <!-- 5.3 e 5.4 · Crescita: la griglia delle competenze e i colloqui.
+           Nessun campo `required` qui dentro: la trappola della 2.3 (un campo
+           obbligatorio in una linguetta chiusa blocca il Salva senza dire
+           niente) non si presenta perche' la griglia usa select senza
+           `required` e i colloqui stanno in una modale separata. -->
+      <div class="dip-tab-panel" id="dip-tab-crescita" data-dtab="crescita" hidden>
+      <div id="dip-competenze-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-competenze-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>🎓 Competenze operative</span>
+          <span class="history-count" id="dip-competenze-count">0</span>
+        </button>
+        <div id="dip-competenze-list" hidden>
+          <p class="cfg-hint">0 = non formato · 1 = in affiancamento · 2 = autonomo ·
+            3 = autonomo e forma gli altri. Ogni livello si salva da solo appena lo cambi.</p>
+          <div id="dip-competenze-grid"></div>
+        </div>
+      </div>
+
+      </div><!-- /crescita -->
 
       <div class="dip-tab-panel" id="dip-tab-storia" data-dtab="storia" hidden>
       <div id="dip-modifiche-section" class="history-section" hidden>
@@ -1083,6 +1137,30 @@
         <button type="button" class="ghost-btn danger" id="provv-delete" hidden>🗑 Elimina</button>
         <div class="modal-foot-spacer"></div>
         <button type="button" class="ghost-btn" id="provv-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE COMPETENZA DEL CATALOGO (5.3) ============ -->
+<div id="modal-competenza" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="competenza-title">Nuova competenza</h2>
+      <button class="icon-btn" id="competenza-close">✕</button>
+    </div>
+    <form id="competenza-form" class="modal-body">
+      <input type="hidden" id="competenza-id">
+      <label><span>Nome *</span>
+        <input type="text" id="competenza-nome" required placeholder="Es. Conduzione Imp1500"></label>
+      <label><span>Ordine</span>
+        <input type="number" id="competenza-ordine" min="0" max="999" step="1" placeholder="0"></label>
+      <label><span>Note</span><textarea id="competenza-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="competenza-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="competenza-cancel">Annulla</button>
         <button type="submit" class="primary-btn">Salva</button>
       </div>
     </form>

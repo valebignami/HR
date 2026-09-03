@@ -895,9 +895,50 @@ function prossimaEsecuzioneAzienda({ dataFatto, periodicitaMesi }) {
   return addMonths(dataFatto, Number(periodicitaMesi));
 }
 
+// ============================================================
+// 5.3 · Competenze: chi sa fare cosa, e dove non lo sa fare nessuno.
+// Il piano prevedeva la vista "per squadra"; la Direzione ha risposto che i
+// turni ruotano, quindi la squadra non esiste e la vista e' PER AZIENDA — e' il
+// ramo che il piano stesso prevede in quel caso.
+//
+// Sta qui perche' e' la regola che decide un rosso, e sbagliarla non da' nessun
+// errore: da' una lavorazione che sembra coperta e non lo e'.
+//
+// `sogliaAutonomi` e' 2 perche' il piano dice "in rosso dove e' zero o uno".
+// Il foglio Competenze dell'archivio dice invece "meno di 3 autonomi = un turno
+// scoperto": e' un argomento apposta, cosi' cambiare idea e' una riga sola.
+// ============================================================
+function coperturaCompetenze({ dipendenti, competenze, catalogo, sogliaAutonomi = 2 }) {
+  // I CESSATI non contano: una lavorazione coperta da chi non lavora piu' non
+  // e' coperta. E' la stessa regola del motore gap e delle cariche.
+  const inForza = new Map();
+  for (const d of dipendenti || []) {
+    if (!d || d.attivo === false) continue;
+    inForza.set(d.id, d);
+  }
+  const autonomiPerCompetenza = new Map();
+  for (const c of competenze || []) {
+    if (!c || Number(c.livello) < 2) continue;
+    const dip = inForza.get(c.dipendente_id);
+    if (!dip) continue;
+    const elenco = autonomiPerCompetenza.get(c.competenza_id) || [];
+    elenco.push(dip);
+    autonomiPerCompetenza.set(c.competenza_id, elenco);
+  }
+  return (catalogo || []).map((competenza) => {
+    const persone = autonomiPerCompetenza.get(competenza.id) || [];
+    return {
+      competenza,
+      autonomi: persone.length,
+      persone,
+      scoperta: persone.length < sogliaAutonomi,
+    };
+  });
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
-    statoAdempimentoAzienda, prossimaEsecuzioneAzienda,
+    statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,

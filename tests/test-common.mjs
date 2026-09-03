@@ -16,7 +16,7 @@ globalThis.window = {
 globalThis.document = { addEventListener: () => {} };
 
 const { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
-        statoAdempimentoAzienda, prossimaEsecuzioneAzienda,
+        statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
@@ -1008,5 +1008,54 @@ assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-10-20", periodicitaMes
 // Il clamp a fine mese di addMonths vale anche qui: 31/01 + 1 mese = 28/02.
 assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-01-31", periodicitaMesi: 1 }), "2026-02-28");
 assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2028-01-31", periodicitaMesi: 1 }), "2028-02-29");
+
+// ============================================================
+// 5.3 · coperturaCompetenze. Decide un rosso, e sbagliata non da' nessun
+// errore: da' una lavorazione che sembra coperta e non lo e'.
+// ============================================================
+const catalogoCmp = [
+  { id: "c-imp", nome: "Conduzione Imp1500", ordine: 1 },
+  { id: "c-car", nome: "Carroponte", ordine: 2 },
+  { id: "c-lab", nome: "Controlli di laboratorio", ordine: 3 },
+];
+const dipCmp = [
+  { id: "d1", cognome: "Rossi", nome: "Ada", attivo: true },
+  { id: "d2", cognome: "Bianchi", nome: "Bea", attivo: true },
+  { id: "d3", cognome: "Verdi", nome: "Ciro", attivo: false },   // cessato
+];
+const livelli = [
+  { dipendente_id: "d1", competenza_id: "c-imp", livello: 3 },   // autonomo e forma
+  { dipendente_id: "d2", competenza_id: "c-imp", livello: 2 },   // autonomo
+  { dipendente_id: "d1", competenza_id: "c-car", livello: 1 },   // in affiancamento: NON autonomo
+  { dipendente_id: "d3", competenza_id: "c-car", livello: 3 },   // cessato: non conta
+];
+const cop = coperturaCompetenze({ dipendenti: dipCmp, competenze: livelli, catalogo: catalogoCmp });
+assert.equal(cop.length, 3);
+// L'ordine del catalogo e' rispettato: la vista non rimescola le lavorazioni.
+assert.deepEqual(cop.map((x) => x.competenza.id), ["c-imp", "c-car", "c-lab"]);
+// Due autonomi (livello 2 e livello 3): esattamente alla soglia, NON scoperta.
+assert.equal(cop[0].autonomi, 2);
+assert.equal(cop[0].scoperta, false);
+assert.deepEqual(cop[0].persone.map((p) => p.id).sort(), ["d1", "d2"]);
+// Un livello 1 non e' autonomo, e un livello 3 di un CESSATO non conta.
+assert.equal(cop[1].autonomi, 0);
+assert.equal(cop[1].scoperta, true);
+// Una competenza senza nessuna riga: zero autonomi, scoperta.
+assert.equal(cop[2].autonomi, 0);
+assert.equal(cop[2].scoperta, true);
+// Un solo autonomo e' ancora scoperto ("in rosso dove e' zero o uno").
+const unSolo = coperturaCompetenze({
+  dipendenti: dipCmp, catalogo: [catalogoCmp[0]],
+  competenze: [{ dipendente_id: "d1", competenza_id: "c-imp", livello: 2 }],
+});
+assert.equal(unSolo[0].autonomi, 1);
+assert.equal(unSolo[0].scoperta, true);
+// La soglia e' un argomento: con 3 (il criterio del foglio) due autonomi non bastano.
+const soglia3 = coperturaCompetenze({
+  dipendenti: dipCmp, competenze: livelli, catalogo: catalogoCmp, sogliaAutonomi: 3,
+});
+assert.equal(soglia3[0].scoperta, true);
+// Elenchi vuoti o mancanti non fanno cadere la pagina.
+assert.deepEqual(coperturaCompetenze({ dipendenti: null, competenze: null, catalogo: null }), []);
 
 console.log("OK tutti i test common.js");

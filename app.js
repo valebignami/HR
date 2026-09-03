@@ -27,6 +27,8 @@ const state = {
   scambiConsulente: [],   // 3.3 · registro degli scambi con il consulente del lavoro
   eventi: [],             // 4.1 · ferie, permessi, malattie, infortuni, straordinari
   adempAzienda: [],       // 5.2 · le scadenze dell'AZIENDA, non delle persone
+  competenzeCatalogo: [], // 5.3 · il catalogo delle lavorazioni
+  competenze: [],         // 5.3 · il livello di ogni persona su ogni lavorazione
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   compGroup: "persona",      // 5.1 · "persona" | "corso" — le stesse righe, raggruppate
@@ -43,7 +45,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi", "adempimenti_azienda"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi", "adempimenti_azienda", "competenze_catalogo", "competenze"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -84,6 +86,9 @@ const STORE_BY_TABLE = {
   // 5.2 · Gli adempimenti dell'azienda. In TABLES e qui, NON in REALTIME_TABLES:
   // li scrive solo l'HR, dalla sua app.
   adempimenti_azienda: "adempAzienda",
+  // 5.3 · Competenze: catalogo e livelli. Nessuna delle due in realtime.
+  competenze_catalogo: "competenzeCatalogo",
+  competenze: "competenze",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -468,6 +473,7 @@ function renderAll() {
   if (state.view === "compliance") renderCompliance();
   else if (state.view === "eventi") renderEventi();
   else if (state.view === "cariche") renderCariche();
+  else if (state.view === "competenze") renderCompetenze();
   else if (state.view === "dipendenti") renderDipendenti();
   else if (state.view === "storico") renderStorico();
   else if (state.view === "consulente") renderConsulente();
@@ -482,6 +488,8 @@ function renderCounts() {
   // Cariche aziendali sotto soglia.
   const sottoSoglia = caricheStato().filter((c) => c.sottoSoglia).length;
   $("count-cariche").textContent = sottoSoglia;
+  // 5.3 · Le lavorazioni con meno di due persone autonome.
+  $("count-competenze").textContent = coperturaAziendale().filter((c) => c.scoperta).length;
   // Storico: totale eventi (correnti + archiviati).
   $("count-storico").textContent = collectStoricoEvents().length;
   // 4.2 · Le richieste che aspettano una risposta. `eventi` e' in realtime:
@@ -530,6 +538,170 @@ function renderCariche() {
       ${nominati}
     </div>`;
   }).join("");
+}
+
+// ============================================================
+// 5.3 · COMPETENZE — chi sa fare cosa, e dove non lo sa fare nessuno.
+// Il piano la chiamava "per squadra": le squadre ruotano (decisione del
+// 2 settembre), quindi la copertura e' PER AZIENDA — il ramo che il piano
+// stesso prevede in questo caso.
+// Adattatore: la regola sta in common.js con i test, qui restano l'ordine
+// (che e' presentazione) e il disegno.
+// ============================================================
+const SOGLIA_AUTONOMI = 2;   // "in rosso dove e' zero o uno" (piano, voce 5.3)
+
+function catalogoCompetenze() {
+  return state.competenzeCatalogo.slice().sort((a, b) =>
+    (a.ordine ?? 0) - (b.ordine ?? 0) || (a.nome || "").localeCompare(b.nome || ""));
+}
+
+function coperturaAziendale() {
+  return coperturaCompetenze({
+    dipendenti: state.dipendenti,
+    competenze: state.competenze,
+    catalogo: catalogoCompetenze(),
+    sogliaAutonomi: SOGLIA_AUTONOMI,
+  });
+}
+
+function renderCompetenze() {
+  const righe = coperturaAziendale()
+    .filter((c) => matchSearch(c.competenza.nome || ""))
+    // Ordine: prima le scoperte, poi chi ha meno gente. E' presentazione.
+    .sort((a, b) => (a.scoperta === b.scoperta ? a.autonomi - b.autonomi : (a.scoperta ? -1 : 1)));
+  const scoperte = righe.filter((c) => c.scoperta).length;
+  $("competenze-legenda").innerHTML =
+    `Una lavorazione è <strong>scoperta</strong> quando le persone autonome (livello 2 o 3) sono
+     meno di ${SOGLIA_AUTONOMI}. I cessati non contano.
+     ${scoperte ? `<strong>${scoperte}</strong> scoperte su ${righe.length}.` : "Nessuna scoperta."}`;
+  $("competenze-empty").hidden = righe.length > 0;
+  $("competenze-list").innerHTML = righe.map((c) => {
+    const persone = c.persone.length
+      ? `<div class="nominati">${c.persone
+          .slice().sort((x, y) => (x.cognome || "").localeCompare(y.cognome || ""))
+          .map((d) => `<span class="chip">${esc(d.cognome)} ${esc(d.nome)}</span>`).join("")}</div>`
+      : `<div class="vuoto">Nessuna persona autonoma su questa lavorazione.</div>`;
+    return `<div class="carica-card ${c.scoperta ? "warn" : "ok"}">
+      <div>
+        <div class="nome">${esc(c.competenza.nome)}</div>
+        <div class="meta">Persone autonome: ${c.autonomi}${c.competenza.note ? " · " + esc(c.competenza.note) : ""}</div>
+      </div>
+      <div class="stato">${c.scoperta ? "⚠️ " : "✅ "}${c.autonomi}/${SOGLIA_AUTONOMI} — ${c.scoperta ? "scoperta" : "coperta"}</div>
+      ${persone}
+    </div>`;
+  }).join("");
+}
+
+// ---------- Il catalogo, in Configurazione ----------
+function renderCompetenzeTable() {
+  const righe = catalogoCompetenze();
+  $("competenze-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-comp"><div>Competenza</div><div>Ordine</div><div>Persone autonome</div><div>Note</div></div>` +
+    (righe.length === 0
+      ? '<div class="muted" style="padding:14px">Nessuna competenza nel catalogo.</div>'
+      : coperturaAziendale().map((c) => `<div class="cfg-row cfg-cols-comp" data-id="${esc(c.competenza.id)}">
+          <div><strong>${esc(c.competenza.nome)}</strong></div>
+          <div>${c.competenza.ordine ?? 0}</div>
+          <div>${c.autonomi}</div>
+          <div class="muted">${esc(c.competenza.note || "—")}</div>
+        </div>`).join(""));
+  els("#competenze-table .cfg-row:not(.head)").forEach((el2) =>
+    el2.addEventListener("click", () => openCompetenzaModal(el2.dataset.id)));
+}
+
+function openCompetenzaModal(id) {
+  const c = id ? state.competenzeCatalogo.find((x) => x.id === id) : null;
+  $("competenza-title").textContent = c ? c.nome : "Nuova competenza";
+  $("competenza-id").value = c ? c.id : "";
+  $("competenza-nome").value = c?.nome || "";
+  $("competenza-ordine").value = c?.ordine ?? (righeOrdineSuccessivo());
+  $("competenza-note").value = c?.note || "";
+  $("competenza-delete").hidden = !c;
+  openModal("modal-competenza");
+}
+
+function righeOrdineSuccessivo() {
+  const max = state.competenzeCatalogo.reduce((m, c) => Math.max(m, Number(c.ordine) || 0), 0);
+  return max + 1;
+}
+
+async function saveCompetenza(e) {
+  e.preventDefault();
+  const nome = $("competenza-nome").value.trim();
+  if (!nome) { alert("Il nome della competenza è obbligatorio."); return; }
+  const id = $("competenza-id").value || uid();
+  const row = {
+    id,
+    nome,
+    ordine: parseInt($("competenza-ordine").value, 10) || 0,
+    note: $("competenza-note").value.trim() || null,
+  };
+  if (await sbUpsert("competenze_catalogo", row)) closeModal("modal-competenza");
+}
+
+async function deleteCompetenza() {
+  const id = $("competenza-id").value;
+  if (!id) return;
+  // I livelli seguono per cascade nel database, ma vanno detti prima: sono il
+  // lavoro fatto con il Responsabile Produzione, e sparirebbero in silenzio.
+  const livelli = state.competenze.filter((c) => c.competenza_id === id).length;
+  const avviso = livelli
+    ? `Eliminare questa competenza? Spariranno anche i livelli registrati per ${livelli} ${livelli === 1 ? "persona" : "persone"}.`
+    : "Eliminare questa competenza dal catalogo?";
+  if (!confirm(avviso)) return;
+  if (!await sbDelete("competenze_catalogo", id)) return;
+  // Le righe figlie le toglie il database (cascade): qui si allinea la memoria,
+  // o la vista continuerebbe a contare persone autonome su una riga che non c'e'.
+  state.competenze = state.competenze.filter((c) => c.competenza_id !== id);
+  closeModal("modal-competenza");
+  renderAll();
+}
+
+// ---------- La griglia nella scheda della persona ----------
+function renderDipCompetenze(dipId) {
+  const catalogo = catalogoCompetenze();
+  const section = $("dip-competenze-section");
+  section.hidden = catalogo.length === 0;   // senza catalogo non c'e' niente da compilare
+  if (catalogo.length === 0) return;
+  const miei = new Map(state.competenze.filter((c) => c.dipendente_id === dipId)
+    .map((c) => [c.competenza_id, c]));
+  $("dip-competenze-count").textContent =
+    `${[...miei.values()].filter((c) => Number(c.livello) >= 2).length}/${catalogo.length} autonomo`;
+  $("dip-competenze-grid").innerHTML = catalogo.map((c) => {
+    const liv = Number(miei.get(c.id)?.livello ?? 0);
+    const opzioni = [0, 1, 2, 3].map((n) =>
+      `<option value="${n}"${n === liv ? " selected" : ""}>${n} — ${ETICHETTE_LIVELLO[n]}</option>`).join("");
+    return `<div class="cmp-riga liv-${liv}">
+      <div class="cmp-nome">${esc(c.nome)}</div>
+      <select class="cmp-liv" data-cmp="${esc(c.id)}">${opzioni}</select>
+    </div>`;
+  }).join("");
+  els(".cmp-liv", $("dip-competenze-grid")).forEach((sel) =>
+    sel.addEventListener("change", () => salvaLivelloCompetenza(dipId, sel.dataset.cmp, Number(sel.value))));
+}
+
+const ETICHETTE_LIVELLO = ["non formato", "in affiancamento", "autonomo", "autonomo e forma gli altri"];
+
+// Il livello si salva da solo al cambio del select: la griglia non fa parte del
+// form del dipendente e non passa da saveDip.
+// L'id si RIUSA, non si genera: la tabella ha unique (dipendente, competenza), e
+// con un id nuovo ogni volta il secondo salvataggio della stessa casella
+// fallirebbe sull'indice — la stessa trappola gia' scritta in CLAUDE.md per la
+// riga `variabili` degli scambi con il consulente.
+async function salvaLivelloCompetenza(dipId, competenzaId, livello) {
+  const esistente = state.competenze.find(
+    (c) => c.dipendente_id === dipId && c.competenza_id === competenzaId);
+  const row = {
+    id: esistente?.id || uid(),
+    dipendente_id: dipId,
+    competenza_id: competenzaId,
+    livello,
+  };
+  await sbUpsert("competenze", row);
+  // Sempre, riuscito o no: sbUpsert in errore rimette a posto `state` ma non la
+  // modale aperta, e senza ridisegnare il select resterebbe sul valore che il
+  // database ha rifiutato.
+  renderDipCompetenze(dipId);
 }
 
 // ---------- Compliance ----------
@@ -1027,6 +1199,7 @@ function renderConfig() {
   $("cfg-onboarding").hidden = state.configTab !== "onboarding";
   $("cfg-modelli").hidden = state.configTab !== "modelli";
   $("cfg-parametri").hidden = state.configTab !== "parametri";
+  $("cfg-competenze").hidden = state.configTab !== "competenze";
   if (state.configTab === "ruoli") renderRuoliTable();
   else if (state.configTab === "categorie") renderCategorieTable();
   else if (state.configTab === "tipi") renderTipiTable();
@@ -1034,6 +1207,7 @@ function renderConfig() {
   else if (state.configTab === "onboarding") renderOnboardingItemsTable();
   else if (state.configTab === "modelli") renderModelliTable();
   else if (state.configTab === "parametri") renderParametriTable();
+  else if (state.configTab === "competenze") renderCompetenzeTable();
 }
 
 // ============================================================
@@ -1576,6 +1750,11 @@ function openDipModal(id) {
   // Provvedimenti disciplinari del dipendente.
   if (d) renderDipProvvedimenti(d.id);
   else $("dip-provv-section").hidden = true;
+
+  // 5.3 · La griglia delle competenze. Su una scheda nuova non si mostra: i
+  // livelli sono righe di un'altra tabella e vogliono una persona che esista.
+  if (d) renderDipCompetenze(d.id);
+  else $("dip-competenze-section").hidden = true;
 
   // 3.2 · Cedolini della persona.
   if (d) renderDipCedolini(d.id);
@@ -3077,6 +3256,10 @@ const TABELLE_FIGLIE_DIP = [
   // Senza questa riga la scheda di un infortunio resterebbe nel bucket per
   // sempre, senza padrone — un dato sanitario orfano.
   { table: "eventi",                store: "eventi",           doc: "documento_path" },
+  // 5.3 · Nessun documento (doc: null, come accettazioni): serve comunque, o
+  // eliminaDipendenteCompleto lascerebbe i livelli in memoria dopo aver
+  // cancellato la persona.
+  { table: "competenze",            store: "competenze",       doc: null },
 ];
 
 // Tutti i PDF di un dipendente: cicli correnti, storico archiviato, moduli DPI,
@@ -4842,6 +5025,7 @@ const TABELLE_CONFIGURAZIONE = [
   ["onboarding_items", "onboardItems"],
   ["documenti_template", "modelli"],
   ["dpi_tipi", "dpiTipi"],
+  ["competenze_catalogo", "competenzeCatalogo"],   // 5.3 · e' un catalogo come gli altri
 ];
 
 function scaricaConfigurazione() {
@@ -5054,6 +5238,7 @@ function setView(v) {
   $("view-compliance").hidden = v !== "compliance";
   $("view-eventi").hidden = v !== "eventi";
   $("view-cariche").hidden = v !== "cariche";
+  $("view-competenze").hidden = v !== "competenze";
   $("view-dipendenti").hidden = v !== "dipendenti";
   $("view-storico").hidden = v !== "storico";
   $("view-consulente").hidden = v !== "consulente";
@@ -5203,6 +5388,14 @@ function wireEvents() {
     state.compFilter.stato = (s === "all") ? "" : (state.compFilter.stato === s ? "" : s);
     updateClearBtn(); renderCompliance();
   }));
+
+  // 5.3 · Catalogo delle competenze (Configurazione) e vista Competenze.
+  $("add-competenza").addEventListener("click", () => openCompetenzaModal(null));
+  $("competenza-close").addEventListener("click", () => closeModal("modal-competenza"));
+  $("competenza-cancel").addEventListener("click", () => closeModal("modal-competenza"));
+  $("competenza-form").addEventListener("submit", saveCompetenza);
+  $("competenza-delete").addEventListener("click", deleteCompetenza);
+  $("dip-competenze-toggle").addEventListener("click", () => toggleSection("dip-competenze-toggle", "dip-competenze-list"));
 
   // 5.2 · Adempimenti dell'azienda.
   $("azienda-add").addEventListener("click", () => openAziendaModal(null));

@@ -1501,6 +1501,12 @@ body.self-service { background: var(--bg); }
   .ced-file-label input[type=file] { max-width: 100%; }
   .cfg-cols-param { grid-template-columns: 1fr auto; }
   .cfg-cols-param > *:nth-child(3) { display: none; }
+  .cfg-cols-comp { grid-template-columns: 1fr auto; }
+  .cfg-cols-comp > *:nth-child(2), .cfg-cols-comp > *:nth-child(4) { display: none; }
+  .comp-head.azienda-cols, .comp-row.azienda-cols { grid-template-columns: 1fr auto; }
+  .azienda-cols > *:nth-child(2), .azienda-cols > *:nth-child(3) { display: none; }
+  #comp-corsi-rows { grid-template-columns: 1fr; padding: 0 14px 18px; }
+  .comp-group-toggle { margin: 0 14px 10px; }
   .cfg-cols-onb { grid-template-columns: 1fr auto; }
   .cfg-cols-onb > *:nth-child(3), .cfg-cols-onb > *:nth-child(4),
   .cfg-cols-onb > *:nth-child(5) { display: none; }
@@ -1820,6 +1826,39 @@ body.self-service { background: var(--bg); }
   border-left-color: #075985;
 }
 .az-doc-btn { margin-left: 6px; }
+
+/* ============================================================
+   5.3 · Competenze: la vista riusa .carica-card (stessa cosa: una copertura
+   aziendale), la griglia della scheda e' nuova.
+   Nessun contenitore nuovo dichiara un `display` proprio: #dip-competenze-section
+   e' .history-section come le altre sezioni della scheda, che gia' si nascondono.
+   ============================================================ */
+.cfg-row.cfg-cols-comp {
+  grid-template-columns: minmax(200px, 2.2fr) 90px 150px minmax(160px, 2fr);
+}
+#dip-competenze-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+.cmp-riga {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.cmp-riga .cmp-nome { font-size: 13px; }
+.cmp-riga select { max-width: 210px; }
+.cmp-riga.liv-0 { border-left-color: var(--line-strong); }
+.cmp-riga.liv-1 { border-left-color: var(--orange); }
+.cmp-riga.liv-2 { border-left-color: var(--green); }
+.cmp-riga.liv-3 { border-left-color: var(--brand); }
 
 /* ---------- 4b · L'attributo `hidden` deve nascondere davvero ----------
    `.modal-body label { display: flex }` (riga 833) e `.me-fieldset { display:
