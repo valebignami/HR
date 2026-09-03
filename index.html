@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HR Overland — Compliance personale</title>
-<link rel="stylesheet" href="style.css?v=b11">
+<link rel="stylesheet" href="style.css?v=b12">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous" defer></script>
 </head>
@@ -69,6 +69,10 @@
         <span class="mod-ico">🏛</span><span>Cariche aziendali</span>
         <span class="mod-count" id="count-cariche">0</span>
       </button>
+      <button class="module-btn" data-view="competenze">
+        <span class="mod-ico">🎓</span><span>Competenze</span>
+        <span class="mod-count" id="count-competenze" title="Lavorazioni con meno di due persone autonome">0</span>
+      </button>
       <button class="module-btn" data-view="dipendenti">
         <span class="mod-ico">👥</span><span>Dipendenti</span>
         <span class="mod-count" id="count-dip">0</span>
@@ -91,6 +95,10 @@
       <div class="sidebar-cedolini">
         <button class="ghost-btn" id="btn-cedolini-mese" title="Carica i cedolini di un mese: una riga per dipendente, un file per riga.">🧾 Cedolini</button>
         <span class="mod-count" id="count-link-cedolini" title="Collegamenti dei cedolini scaduti o in scadenza: rinnovali da Configurazione." hidden>0</span>
+      </div>
+      <div class="sidebar-cedolini">
+        <button class="ghost-btn" id="btn-candidature" title="Il registro dei CV ricevuti: serve a poterli cancellare alla scadenza del termine di conservazione.">📄 Candidature</button>
+        <span class="mod-count" id="count-candidature" title="Candidature oltre il termine di conservazione, da cancellare." hidden>0</span>
       </div>
       <button class="ghost-btn" id="btn-backup-dati" title="Tutti i dati dell'app in Excel + JSON. Salvalo nella cartella Backup app dell'archivio.">💾 Backup dati</button>
       <button class="ghost-btn" id="btn-backup-documenti" title="Tutti i documenti caricati nell'app, con l'indice di chi e cosa. Salvalo nella cartella Backup app dell'archivio.">📦 Backup documenti</button>
@@ -141,6 +149,25 @@
         <select id="filter-incarico"><option value="">Tutti gli incarichi</option></select>
       </div>
 
+      <!-- 5.1 · Le stesse righe, per persona o per corso. Sta QUI e non nella
+           topbar perche' ha senso solo dentro le Scadenze, e in modalita'
+           Calendario non ne ha nessuno: li' si nasconde. -->
+      <div class="view-toggle comp-group-toggle" id="comp-group-toggle">
+        <button type="button" class="vt-btn active" data-cgroup="persona">👤 Per persona</button>
+        <button type="button" class="vt-btn" data-cgroup="corso">📚 Per corso</button>
+      </div>
+
+      <!-- 5.1 · Il piano formativo: un gruppo per corso, con quante persone,
+           i tre conteggi e la scadenza piu' vicina — la data con cui si
+           prenota un'edizione con l'ente per tutti insieme. -->
+      <div class="comp-wrap" id="comp-corsi-wrap" hidden>
+        <div id="comp-corsi-rows"></div>
+        <div id="comp-corsi-empty" class="empty" hidden>
+          <div class="empty-ico">📚</div>
+          <div>Nessun corso da programmare per i filtri scelti.</div>
+        </div>
+      </div>
+
       <div class="comp-wrap" id="comp-wrap">
         <div class="list">
           <div class="comp-head">
@@ -176,6 +203,28 @@
         </div>
       </div>
 
+      <!-- 5.2 · Gli adempimenti dell'AZIENDA. Blocco e contatore PROPRI: le sue
+           righe non entrano nei KPI delle persone, o il semaforo della
+           sicurezza mescolerebbe cose diverse. -->
+      <div class="contratti-wrap azienda-wrap" id="azienda-wrap" hidden>
+        <div class="list">
+          <div class="contratti-titolo">
+            <span>🏢 Adempimenti dell'azienda</span>
+            <span class="history-count" id="azienda-count">0</span>
+            <button type="button" class="ghost-btn" id="azienda-add" style="margin-left:8px">+ Nuova voce</button>
+          </div>
+          <div id="azienda-colloqui"></div>
+          <div class="comp-head azienda-cols">
+            <div>Adempimento</div>
+            <div>Ogni</div>
+            <div>Ultima volta</div>
+            <div>Prossima</div>
+            <div>Stato</div>
+          </div>
+          <div id="azienda-rows"></div>
+        </div>
+      </div>
+
       <section class="calendar-wrap" id="comp-cal-wrap" hidden>
         <div class="cal-toolbar">
           <button class="icon-btn cal-nav" id="cal-prev">‹</button>
@@ -189,6 +238,7 @@
             <span class="leg"><i class="leg-chip dpi"></i>DPI</span>
             <span class="leg"><i class="leg-chip contratto"></i>Contratti</span>
             <span class="leg"><i class="leg-chip evento"></i>Ferie e permessi</span>
+            <span class="leg"><i class="leg-chip azienda"></i>Azienda</span>
           </div>
         </div>
         <div class="cal-weekdays">
@@ -251,6 +301,22 @@
         <div id="cariche-empty" class="empty" hidden>
           <div class="empty-ico">🏛</div>
           <div>Nessun incarico ha un "minimo richiesto" impostato. Vai in Configurazione → Ruoli per definirlo.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ VISTA COMPETENZE (5.3) ============
+         Il piano la chiamava "per squadra": le squadre ruotano (decisione del
+         2 settembre), quindi la copertura e' per AZIENDA, che e' il ramo
+         previsto dal piano stesso in questo caso. -->
+    <section class="view" id="view-competenze" hidden>
+      <div class="cariche-wrap">
+        <p class="cfg-hint" id="competenze-legenda">—</p>
+        <div class="cariche-list" id="competenze-list"></div>
+        <div id="competenze-empty" class="empty" hidden>
+          <div class="empty-ico">🎓</div>
+          <div>Nessuna competenza nel catalogo.</div>
+          <div class="muted">Aggiungile da Configurazione → Competenze.</div>
         </div>
       </div>
     </section>
@@ -323,6 +389,7 @@
         <button class="ct-btn" data-ctab="matrice">🔗 Matrice ruolo → requisiti</button>
         <button class="ct-btn" data-ctab="onboarding">✅ Onboarding</button>
         <button class="ct-btn" data-ctab="modelli">📄 Modelli documento</button>
+        <button class="ct-btn" data-ctab="competenze">🎓 Competenze</button>
         <button class="ct-btn" data-ctab="parametri">🎚 Parametri</button>
       </div>
 
@@ -379,6 +446,17 @@
         <div class="cfg-table" id="onboard-items-table"></div>
       </div>
 
+      <div class="config-panel" id="cfg-competenze" hidden>
+        <div class="config-toolbar">
+          <h3>Competenze operative</h3>
+          <button class="primary-btn" id="add-competenza">+ Nuova competenza</button>
+        </div>
+        <p class="cfg-hint">Il catalogo delle lavorazioni su cui si registra il livello di
+          ognuno, nella scheda della persona, linguetta <strong>Crescita</strong>.
+          0 = non formato · 1 = in affiancamento · 2 = autonomo · 3 = autonomo e forma gli altri.</p>
+        <div class="cfg-table" id="competenze-table"></div>
+      </div>
+
       <div class="config-panel" id="cfg-parametri" hidden>
         <div class="config-toolbar">
           <h3>Parametri</h3>
@@ -419,6 +497,7 @@
         <button type="button" class="dt-btn" data-dtab="sicurezza">🦺 Sicurezza</button>
         <button type="button" class="dt-btn" data-dtab="ingresso-uscita">✅ Ingresso/Uscita</button>
         <button type="button" class="dt-btn" data-dtab="registro">📋 Registro</button>
+        <button type="button" class="dt-btn" data-dtab="crescita">🎓 Crescita</button>
         <button type="button" class="dt-btn" data-dtab="storia">📜 Storia</button>
       </div>
 
@@ -671,6 +750,37 @@
       </div>
 
       </div><!-- /registro -->
+
+      <!-- 5.3 e 5.4 · Crescita: la griglia delle competenze e i colloqui.
+           Nessun campo `required` qui dentro: la trappola della 2.3 (un campo
+           obbligatorio in una linguetta chiusa blocca il Salva senza dire
+           niente) non si presenta perche' la griglia usa select senza
+           `required` e i colloqui stanno in una modale separata. -->
+      <div class="dip-tab-panel" id="dip-tab-crescita" data-dtab="crescita" hidden>
+      <div id="dip-competenze-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-competenze-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>🎓 Competenze operative</span>
+          <span class="history-count" id="dip-competenze-count">0</span>
+        </button>
+        <div id="dip-competenze-list" hidden>
+          <p class="cfg-hint">0 = non formato · 1 = in affiancamento · 2 = autonomo ·
+            3 = autonomo e forma gli altri. Ogni livello si salva da solo appena lo cambi.</p>
+          <div id="dip-competenze-grid"></div>
+        </div>
+      </div>
+
+      <div id="dip-colloqui-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-colloqui-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>🗣 Colloqui annuali</span>
+          <span class="history-count" id="dip-colloqui-count">0</span>
+          <button type="button" class="ghost-btn" id="dip-colloqui-add" style="margin-left:8px">+ Nuovo colloquio</button>
+        </button>
+        <div id="dip-colloqui-list" hidden></div>
+      </div>
+
+      </div><!-- /crescita -->
 
       <div class="dip-tab-panel" id="dip-tab-storia" data-dtab="storia" hidden>
       <div id="dip-modifiche-section" class="history-section" hidden>
@@ -1047,6 +1157,171 @@
   </div>
 </div>
 
+<!-- ============ MODALE CANDIDATURE (5.5) ============
+     Una modale sola, con il modulo dentro: e' la forma della modale Cedolini,
+     l'unico altro posto dell'app dove si lavora su un elenco che non appartiene
+     a una persona. -->
+<div id="modal-candidature" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>📄 Candidature ricevute</h2>
+      <button class="icon-btn" id="candidature-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="cfg-hint" id="candidature-riassunto">—</p>
+      <form id="candidature-form" class="cand-form">
+        <input type="hidden" id="candidature-id">
+        <div class="row">
+          <label><span>Ricevuta il *</span><input type="date" id="candidature-ricevuto" required></label>
+          <label><span>Nome e cognome *</span><input type="text" id="candidature-nominativo" required></label>
+        </div>
+        <div class="row">
+          <label><span>Posizione</span><input type="text" id="candidature-posizione" placeholder="Es. Operatore di produzione"></label>
+          <label><span>Canale</span><select id="candidature-canale"><option value="">—</option></select></label>
+        </div>
+        <div class="row">
+          <label><span>Esito</span><select id="candidature-esito"><option value="">—</option></select></label>
+          <label class="doc-upload">
+            <span id="candidature-doc-upload-label">Allega il CV</span>
+            <input type="file" id="candidature-doc-file" accept=".pdf,image/*,.doc,.docx">
+          </label>
+        </div>
+        <label><span>Note</span><textarea id="candidature-note" rows="2"></textarea></label>
+        <div id="candidature-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+        <div class="cand-form-foot">
+          <button type="button" class="ghost-btn" id="candidature-annulla-modifica" hidden>Annulla la modifica</button>
+          <button type="submit" class="primary-btn" id="candidature-salva">Aggiungi</button>
+        </div>
+      </form>
+      <div class="cand-lista">
+        <div id="candidature-rows"></div>
+        <div id="candidature-empty" class="empty" hidden>
+          <div class="empty-ico">📄</div>
+          <div>Nessuna candidatura registrata.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODALE COLLOQUIO ANNUALE (5.4) ============ -->
+<div id="modal-colloquio" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="colloquio-title">Nuovo colloquio</h2>
+      <button class="icon-btn" id="colloquio-close">✕</button>
+    </div>
+    <form id="colloquio-form" class="modal-body">
+      <input type="hidden" id="colloquio-id">
+      <input type="hidden" id="colloquio-dip-id">
+      <div class="done-target" id="colloquio-target">—</div>
+      <div class="row">
+        <label><span>Data *</span><input type="date" id="colloquio-data" required></label>
+        <label><span>Condotto da</span>
+          <input type="text" id="colloquio-condotto" placeholder="Es. Resp. Produzione"></label>
+      </div>
+      <label><span>Esito sintetico</span>
+        <input type="text" id="colloquio-esito" placeholder="Es. Positivo"></label>
+      <label><span>Formazione concordata e obiettivi</span>
+        <textarea id="colloquio-obiettivi" rows="3" placeholder="Es. Carroponte; aggiornamento agenti chimici"></textarea></label>
+      <p class="cfg-hint">Le valutazioni e il verbale per esteso stanno nel documento allegato e
+        nel fascicolo della persona: qui si registra <strong>che</strong> il colloquio è
+        avvenuto e cosa se ne è concordato.</p>
+      <fieldset class="recur doc-block">
+        <legend>Verbale del colloquio (PDF / immagine)</legend>
+        <div id="colloquio-doc-current" class="doc-current" hidden>
+          <span id="colloquio-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="colloquio-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="colloquio-doc-upload-label">Carica un file</span>
+          <input type="file" id="colloquio-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="colloquio-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="colloquio-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="colloquio-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE COMPETENZA DEL CATALOGO (5.3) ============ -->
+<div id="modal-competenza" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="competenza-title">Nuova competenza</h2>
+      <button class="icon-btn" id="competenza-close">✕</button>
+    </div>
+    <form id="competenza-form" class="modal-body">
+      <input type="hidden" id="competenza-id">
+      <label><span>Nome *</span>
+        <input type="text" id="competenza-nome" required placeholder="Es. Conduzione Imp1500"></label>
+      <label><span>Ordine</span>
+        <input type="number" id="competenza-ordine" min="0" max="999" step="1" placeholder="0"></label>
+      <label><span>Note</span><textarea id="competenza-note" rows="2"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="competenza-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="competenza-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE ADEMPIMENTO AZIENDALE (5.2) ============ -->
+<div id="modal-azienda" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="azienda-title">Nuovo adempimento dell'azienda</h2>
+      <button class="icon-btn" id="azienda-close">✕</button>
+    </div>
+    <form id="azienda-form" class="modal-body">
+      <input type="hidden" id="azienda-id">
+      <label><span>Adempimento *</span>
+        <input type="text" id="azienda-nome" required placeholder="Es. Prova di evacuazione"></label>
+      <div class="row">
+        <label><span>Si ripete ogni (mesi)</span>
+          <input type="number" id="azienda-periodicita" min="1" max="120" step="1" placeholder="12 = una volta l'anno"></label>
+        <label><span>Prossima scadenza</span><input type="date" id="azienda-prossima"></label>
+      </div>
+      <p class="cfg-hint">Lascia vuoto «si ripete ogni» per le cose che si fanno
+        <strong>una volta sola</strong>. Senza una prossima scadenza la voce resta in cima,
+        come una cosa da fare di cui non si sa ancora la data.</p>
+      <label><span>Ultima volta che è stata fatta</span>
+        <input type="date" id="azienda-ultima" readonly></label>
+      <fieldset class="recur doc-block">
+        <legend>Documento (verbale, ricevuta, attestato)</legend>
+        <div id="azienda-doc-current" class="doc-current" hidden>
+          <span id="azienda-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="azienda-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="azienda-doc-upload-label">Carica un file</span>
+          <input type="file" id="azienda-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="azienda-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <label><span>Note</span><textarea id="azienda-note" rows="3"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="azienda-delete" hidden>🗑 Elimina</button>
+        <button type="button" class="ghost-btn" id="azienda-fatto">✔ Segna come fatta</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="azienda-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ============ MODALE INVITO SELF-SERVICE ============ -->
 <div id="modal-invite" class="modal" hidden>
   <div class="modal-card small">
@@ -1284,8 +1559,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
-<script src="data.js?v=c4"></script>
-<script src="common.js?v=c9"></script>
-<script src="app.js?v=c11"></script>
+<script src="data.js?v=c5"></script>
+<script src="common.js?v=c10"></script>
+<script src="app.js?v=c12"></script>
 </body>
 </html>

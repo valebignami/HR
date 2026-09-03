@@ -74,10 +74,23 @@ function todayMid() {
   const n = new Date();
   return new Date(n.getFullYear(), n.getMonth(), n.getDate());
 }
-function daysUntil(s) {
+// Giorni che mancano a una data. `oggiISO` e' facoltativo e serve SOLO ai test
+// (Fase 5): senza, si legge la data vera, come ha sempre fatto. Esiste perche'
+// tre regole della Fase 5 passano di qui, e un test che dipende dal giorno in
+// cui gira e' un test che un giorno fallisce da solo — "tutti i colloqui fatti
+// entro novembre 2026 e' verde" e' vero a settembre e falso a ottobre.
+// Una data di riferimento illeggibile NON diventa "oggi": diventa null, perche'
+// rispondere "mancano 40 giorni" partendo da una data che non si e' capita e'
+// peggio che non rispondere.
+function daysUntil(s, oggiISO) {
   const d = parseISO(s);
   if (!d) return null;
-  return Math.round((d - todayMid()) / 86400000);
+  let base = todayMid();
+  if (oggiISO != null) {
+    base = parseISO(oggiISO);
+    if (!base) return null;
+  }
+  return Math.round((d - base) / 86400000);
 }
 
 // Timestamp con orario (timestamptz): converte al fuso locale.
@@ -92,13 +105,16 @@ function fmtDateTime(ts) {
 
 // Classificazione unica dello stato di un adempimento (era duplicata in 3 punti).
 // hasRilascio: il ciclo è stato registrato dall'HR. scadenza: ISO o null.
-function classificaStato(hasRilascio, scadenza) {
+// `oggiISO` (Fase 5) e' facoltativo e in coda: tutte le chiamate che esistevano
+// prima ne passano due e continuano a leggere la data vera. Non e' una regola
+// nuova, e' la stessa regola resa provabile.
+function classificaStato(hasRilascio, scadenza, oggiISO) {
   if (!hasRilascio) {
     if (!scadenza) return "scaduto";                 // nessuna scadenza nota: visibile subito
-    return daysUntil(scadenza) < 0 ? "scaduto" : "in_scadenza"; // mai "ok" se non registrato
+    return daysUntil(scadenza, oggiISO) < 0 ? "scaduto" : "in_scadenza"; // mai "ok" se non registrato
   }
   if (!scadenza) return "ok";                        // rilasciato e non scade
-  const gg = daysUntil(scadenza);
+  const gg = daysUntil(scadenza, oggiISO);
   if (gg < 0) return "scaduto";
   if (gg <= GG_SCAD) return "in_scadenza";
   return "ok";
@@ -814,8 +830,183 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
   return rows;
 }
 
+// ============================================================
+// 5.1 · Il piano formativo: le stesse righe del motore gap, raggruppate per
+// corso invece che per persona. Serve a prenotare un'edizione con l'ente per
+// tutte le persone insieme, e a gennaio e' il piano formativo dell'anno.
+//
+// Sta qui e non in app.js per una ragione sola: "la scadenza piu' vicina" e' una
+// regola su date, e sbagliarla non da' nessun errore — da' una data di
+// prenotazione sbagliata all'ente, e nessuno se ne accorge.
+//
+// NON ordina: l'ordinamento per gravita' e' presentazione e resta in app.js,
+// come gia' per calcolaGap e calcolaCariche. L'ordine dei gruppi qui e' quello
+// di prima apparizione, cioe' deterministico ma senza significato.
+// ============================================================
+function raggruppaGapPerTipo(righe) {
+  const byTipo = new Map();
+  for (const r of righe || []) {
+    if (!r || !r.tipo) continue;
+    let g = byTipo.get(r.tipo.id);
+    if (!g) {
+      g = { tipo: r.tipo, righe: [], totale: 0, scaduti: 0, inScadenza: 0, ok: 0, primaScadenza: null };
+      byTipo.set(r.tipo.id, g);
+    }
+    g.righe.push(r);
+    g.totale++;
+    if (r.stato === "scaduto") g.scaduti++;
+    else if (r.stato === "in_scadenza") g.inScadenza++;
+    else if (r.stato === "ok") g.ok++;
+    // Le righe senza scadenza non abbassano la prima scadenza del gruppo: una
+    // persona per cui la data non si sa ancora non anticipa il corso di tutti.
+    if (r.scadenza && (g.primaScadenza === null || r.scadenza < g.primaScadenza)) {
+      g.primaScadenza = r.scadenza;
+    }
+  }
+  return [...byTipo.values()];
+}
+
+// ============================================================
+// 5.2 · Gli adempimenti dell'AZIENDA, non delle persone.
+// Non passano dal motore gap (che e' per persona) e non ne hanno bisogno: sono
+// una lista con date. Ma il semaforo e' LO STESSO delle persone, come chiede il
+// piano, e per questo passa da classificaStato e non da un confronto scritto a
+// mano dentro il render.
+// ============================================================
+
+// `prossima` e' la data che comanda; `ultima_esecuzione` dice se e' mai stata
+// fatta. Conseguenza voluta, ereditata da classificaStato: una voce MAI segnata
+// come fatta non e' mai verde, nemmeno se la sua data e' lontana. Vuol dire
+// "non me l'hai ancora detto", non "sei fuori legge".
+// Mai fatta e senza data => "scaduto": e' una cosa da fare senza scadenza nota,
+// e deve restare in cima finche' qualcuno non la guarda.
+function statoAdempimentoAzienda(riga, oggiISO) {
+  if (!riga) return "scaduto";
+  return classificaStato(!!riga.ultima_esecuzione, riga.prossima || null, oggiISO);
+}
+
+// Quando torna, dopo che e' stata fatta. Periodicita' nulla = una tantum: fatta
+// una volta, non torna, e la prossima e' null (che per una voce gia' fatta
+// classificaStato legge come "ok, non scade").
+// Passa da addMonths, quindi eredita il clamp a fine mese gia' testato.
+function prossimaEsecuzioneAzienda({ dataFatto, periodicitaMesi }) {
+  if (!dataFatto) return null;
+  if (periodicitaMesi == null || !Number.isFinite(Number(periodicitaMesi))) return null;
+  return addMonths(dataFatto, Number(periodicitaMesi));
+}
+
+// ============================================================
+// 5.3 · Competenze: chi sa fare cosa, e dove non lo sa fare nessuno.
+// Il piano prevedeva la vista "per squadra"; la Direzione ha risposto che i
+// turni ruotano, quindi la squadra non esiste e la vista e' PER AZIENDA — e' il
+// ramo che il piano stesso prevede in quel caso.
+//
+// Sta qui perche' e' la regola che decide un rosso, e sbagliarla non da' nessun
+// errore: da' una lavorazione che sembra coperta e non lo e'.
+//
+// `sogliaAutonomi` e' 2 perche' il piano dice "in rosso dove e' zero o uno".
+// Il foglio Competenze dell'archivio dice invece "meno di 3 autonomi = un turno
+// scoperto": e' un argomento apposta, cosi' cambiare idea e' una riga sola.
+// ============================================================
+function coperturaCompetenze({ dipendenti, competenze, catalogo, sogliaAutonomi = 2 }) {
+  // I CESSATI non contano: una lavorazione coperta da chi non lavora piu' non
+  // e' coperta. E' la stessa regola del motore gap e delle cariche.
+  const inForza = new Map();
+  for (const d of dipendenti || []) {
+    if (!d || d.attivo === false) continue;
+    inForza.set(d.id, d);
+  }
+  const autonomiPerCompetenza = new Map();
+  for (const c of competenze || []) {
+    if (!c || Number(c.livello) < 2) continue;
+    const dip = inForza.get(c.dipendente_id);
+    if (!dip) continue;
+    const elenco = autonomiPerCompetenza.get(c.competenza_id) || [];
+    elenco.push(dip);
+    autonomiPerCompetenza.set(c.competenza_id, elenco);
+  }
+  return (catalogo || []).map((competenza) => {
+    const persone = autonomiPerCompetenza.get(competenza.id) || [];
+    return {
+      competenza,
+      autonomi: persone.length,
+      persone,
+      scoperta: persone.length < sogliaAutonomi,
+    };
+  });
+}
+
+// ============================================================
+// 5.4 · «Colloqui dell'anno: 9/15 fatti», con l'elenco di chi manca.
+// Sta nel blocco degli adempimenti aziendali e NON fra le scadenze di
+// sicurezza, come chiede il piano: e' un impegno dell'azienda verso tutti, non
+// un obbligo di legge su una persona.
+// ============================================================
+function conteggioColloquiAnno({ dipendenti, colloqui, anno, meseLimite, oggiISO }) {
+  const attesiList = (dipendenti || []).filter((d) => d && d.attivo !== false);
+  const annoNum = Number(anno);
+  // Chi ha ALMENO un colloquio nell'anno conta UNO: si contano le persone, non
+  // le righe, o due colloqui alla stessa persona coprirebbero un collega.
+  const conColloquio = new Set();
+  for (const c of colloqui || []) {
+    if (!c || !c.data) continue;
+    if (Number(String(c.data).slice(0, 4)) !== annoNum) continue;
+    conColloquio.add(c.dipendente_id);
+  }
+  const mancanti = attesiList.filter((d) => !conColloquio.has(d.id));
+  const fatti = attesiList.length - mancanti.length;
+
+  // L'ULTIMO giorno del mese limite: "entro novembre" vuol dire fino al 30
+  // compreso. new Date(anno, mese, 0) e' l'ultimo giorno del mese `mese`
+  // contato da 1, e passa da localISO — mai new Date("YYYY-MM-DD"), che e' UTC.
+  const m = Number(meseLimite);
+  const scadenza = (Number.isFinite(annoNum) && Number.isFinite(m) && m >= 1 && m <= 12)
+    ? localISO(new Date(annoNum, m, 0))
+    : null;
+
+  return {
+    fatti,
+    attesi: attesiList.length,
+    mancanti,
+    scadenza,
+    // Zero persone in forza non e' "tutto fatto": e' niente da fare, e la riga
+    // non deve diventare verde raccontando un lavoro che nessuno ha svolto.
+    stato: classificaStato(attesiList.length > 0 && mancanti.length === 0, scadenza, oggiISO),
+  };
+}
+
+// ============================================================
+// 5.5 · Candidature: il registro serve a UNA cosa sola, cancellare i CV alla
+// scadenza del termine di conservazione. Il foglio dell'archivio lo dice
+// meglio di chiunque: «Se non e' programmata non avviene mai».
+// La colonna "da cancellare entro" non si memorizza: si calcola, cosi'
+// cambiare il termine nei parametri aggiorna TUTTE le righe insieme invece di
+// lasciarne indietro qualcuna con il numero vecchio.
+// ============================================================
+function scadenzaConservazioneCandidatura(ricevutoIl, mesiConservazione) {
+  if (!ricevutoIl) return null;
+  return addMonths(ricevutoIl, mesiConservazione);
+}
+
+// Da cancellare = il termine e' PASSATO e nessuno l'ha ancora cancellata.
+// Il giorno esatto della scadenza NON e' ancora da cancellare: quel giorno il
+// CV e' stato tenuto esattamente il tempo dichiarato, non di piu'. E' la stessa
+// soglia di classificaStato, che chiama "scaduto" solo cio' che ha
+// daysUntil < 0.
+function candidatureDaCancellare(candidature, mesiConservazione, oggiISO) {
+  return (candidature || []).filter((c) => {
+    if (!c || c.cancellato_il) return false;
+    const scadenza = scadenzaConservazioneCandidatura(c.ricevuto_il, mesiConservazione);
+    if (!scadenza) return false;                  // senza data di ricezione non si sa
+    const gg = daysUntil(scadenza, oggiISO);
+    return gg != null && gg < 0;
+  });
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { classificaStato, calcolaGap, avvisoScadenza,
+  module.exports = { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
+    statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
+    conteggioColloquiAnno, scadenzaConservazioneCandidatura, candidatureDaCancellare,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,

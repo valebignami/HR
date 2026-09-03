@@ -106,3 +106,13 @@ window.TIPI_PROVVEDIMENTO = [
   { key: "sospensione",       label: "Sospensione",       icon: "⏸" },
   { key: "licenziamento",     label: "Licenziamento",     icon: "🚫" }
 ];
+
+// 5.5 · Candidature: due vocabolari stabili per due select. Sono NOMI di cose,
+// non numeri che cambiano con le norme — il termine di conservazione dei CV
+// sta in `parametri` (candidature_mesi_conservazione), non qui.
+// Il database non forza questo vocabolario, come per QUALIFICHE e
+// MOTIVI_CESSAZIONE: sono etichette dell'interfaccia.
+window.CANALI_CANDIDATURA = ["Sito web", "Email", "LinkedIn", "Segnalazione", "Agenzia",
+                             "Centro per l'impiego", "Consegna a mano", "Altro"];
+window.ESITI_CANDIDATURA = ["Ricevuta", "In valutazione", "Colloquio fissato",
+                            "Non idonea", "Idonea non assunta", "Assunta"];

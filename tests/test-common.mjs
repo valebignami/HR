@@ -15,7 +15,9 @@ globalThis.window = {
 };
 globalThis.document = { addEventListener: () => {} };
 
-const { classificaStato, calcolaGap, avvisoScadenza,
+const { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
+        statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
+        conteggioColloquiAnno, scadenzaConservazioneCandidatura, candidatureDaCancellare,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
@@ -45,6 +47,31 @@ assert.equal(classificaStato(true, iso(-1)), "scaduto");
 assert.equal(classificaStato(false, null), "scaduto");
 assert.equal(classificaStato(false, iso(40)), "in_scadenza");
 assert.equal(classificaStato(false, iso(-5)), "scaduto");
+// ============================================================
+// 5 · Il terzo argomento "oggi" di daysUntil e classificaStato.
+// Serve ai test delle regole nuove della Fase 5, che altrimenti dipenderebbero
+// dal giorno in cui girano. Qui si prova che NON cambia niente per chi non lo
+// passa: e' la stessa regola, resa provabile.
+// ============================================================
+const oggiVero = localISO(new Date());
+assert.equal(daysUntil("2026-11-30", "2026-11-20"), 10);
+assert.equal(daysUntil("2026-11-30", "2026-12-01"), -1);
+assert.equal(daysUntil("2026-11-30", "2026-11-30"), 0);
+// Senza il terzo argomento si legge la data vera, esattamente come prima.
+assert.equal(daysUntil("2026-11-30"), daysUntil("2026-11-30", oggiVero));
+// Una data di riferimento illeggibile non diventa "oggi": diventa null.
+assert.equal(daysUntil("2026-11-30", "non-una-data"), null);
+// classificaStato: passare la data vera da' lo stesso risultato che non passarla.
+for (const gg of [-5, 0, 10, GG_SCAD, GG_SCAD + 1]) {
+  assert.equal(classificaStato(true, iso(gg)), classificaStato(true, iso(gg), oggiVero));
+  assert.equal(classificaStato(false, iso(gg)), classificaStato(false, iso(gg), oggiVero));
+}
+// E con una data fissata risponde su quella, non su oggi.
+assert.equal(classificaStato(true, "2026-11-30", "2026-01-01"), "ok");            // lontano
+assert.equal(classificaStato(true, "2026-11-30", "2026-10-01"), "in_scadenza");   // dentro i 60gg
+assert.equal(classificaStato(true, "2026-11-30", "2026-12-01"), "scaduto");
+assert.equal(classificaStato(false, "2026-11-30", "2026-01-01"), "in_scadenza");  // mai "ok"
+
 // date
 assert.equal(fmtDate("2026-07-16"), "16/07/2026");
 assert.equal(fmtDate(null), "—");
@@ -902,5 +929,242 @@ const s2 = saldoDichiarato({ dip: { id: "d1", saldo_al: "2026-06-30" },
 assert.equal(s2.ferie, null);
 assert.equal(s2.par, null);
 assert.equal(s2.ferieDopo, 2);
+
+// ============================================================
+// 5.1 · raggruppaGapPerTipo — le righe del motore gap, per corso.
+// La cosa che si puo' sbagliare in silenzio e' "la scadenza piu' vicina":
+// sbagliata, da' all'ente una data di prenotazione sbagliata e nessuno se ne
+// accorge, perche' la pagina si disegna lo stesso.
+// ============================================================
+const tCarr = { id: "t-carr", nome: "Carrelli", categoria: "abilitazione" };
+const tVis = { id: "t-vis", nome: "Visita medica", categoria: "sanitario" };
+const righeGap = [
+  { dip: { id: "d1" }, tipo: tCarr, stato: "scaduto",     scadenza: "2026-03-01" },
+  { dip: { id: "d2" }, tipo: tCarr, stato: "in_scadenza", scadenza: "2026-10-15" },
+  { dip: { id: "d3" }, tipo: tCarr, stato: "ok",          scadenza: null },
+  { dip: { id: "d1" }, tipo: tVis,  stato: "ok",          scadenza: "2027-01-01" },
+];
+const gruppi = raggruppaGapPerTipo(righeGap);
+assert.equal(gruppi.length, 2);                       // due corsi, non quattro righe
+const gCarr = gruppi.find((g) => g.tipo.id === "t-carr");
+assert.equal(gCarr.totale, 3);
+assert.equal(gCarr.righe.length, 3);
+assert.equal(gCarr.scaduti, 1);
+assert.equal(gCarr.inScadenza, 1);
+assert.equal(gCarr.ok, 1);
+// I conteggi per stato sommano al totale: nessuna riga si perde per strada.
+assert.equal(gCarr.scaduti + gCarr.inScadenza + gCarr.ok, gCarr.totale);
+// La prima scadenza e' la minore, e la riga SENZA scadenza non la abbassa.
+assert.equal(gCarr.primaScadenza, "2026-03-01");
+// Un gruppo di sole righe senza scadenza non ne ha una.
+const soloSenzaData = raggruppaGapPerTipo([
+  { dip: { id: "d1" }, tipo: tVis, stato: "scaduto", scadenza: null },
+  { dip: { id: "d2" }, tipo: tVis, stato: "scaduto", scadenza: null },
+]);
+assert.equal(soloSenzaData.length, 1);
+assert.equal(soloSenzaData[0].primaScadenza, null);
+assert.equal(soloSenzaData[0].totale, 2);
+// L'ordine in cui arrivano le righe non cambia la prima scadenza.
+const alContrario = raggruppaGapPerTipo(righeGap.slice().reverse());
+assert.equal(alContrario.find((g) => g.tipo.id === "t-carr").primaScadenza, "2026-03-01");
+// Elenco vuoto, e input strani, non fanno cadere la pagina.
+assert.deepEqual(raggruppaGapPerTipo([]), []);
+assert.deepEqual(raggruppaGapPerTipo(null), []);
+assert.deepEqual(raggruppaGapPerTipo([null, { dip: {} }]), []);   // righe senza tipo: ignorate
+
+// ============================================================
+// 5.2 · Adempimenti aziendali. Tutti i casi con una data passano `oggiISO`
+// esplicito: senza, questi test comincerebbero a fallire da soli il giorno in
+// cui la scadenza scritta qui entra nei 60 giorni.
+// ============================================================
+const OGGI_AZ = "2026-09-03";
+// Mai fatta e senza data: e' una cosa da fare, e sta in cima.
+assert.equal(statoAdempimentoAzienda({ nome: "x" }, OGGI_AZ), "scaduto");
+assert.equal(statoAdempimentoAzienda(null, OGGI_AZ), "scaduto");
+// Mai fatta ma con una data: MAI verde, come per le persone.
+assert.equal(statoAdempimentoAzienda({ prossima: "2027-01-31" }, OGGI_AZ), "in_scadenza");
+assert.equal(statoAdempimentoAzienda({ prossima: "2026-01-31" }, OGGI_AZ), "scaduto");
+// Fatta, con la prossima lontana: verde.
+assert.equal(statoAdempimentoAzienda(
+  { ultima_esecuzione: "2026-01-31", prossima: "2027-01-31" }, OGGI_AZ), "ok");
+// Fatta, con la prossima dentro i 60 giorni: gialla.
+assert.equal(statoAdempimentoAzienda(
+  { ultima_esecuzione: "2025-10-31", prossima: "2026-10-31" }, OGGI_AZ), "in_scadenza");
+// Fatta, con la prossima passata: rossa.
+assert.equal(statoAdempimentoAzienda(
+  { ultima_esecuzione: "2025-01-31", prossima: "2026-01-31" }, OGGI_AZ), "scaduto");
+// Una tantum gia' fatta: nessuna prossima, ed e' a posto.
+assert.equal(statoAdempimentoAzienda(
+  { ultima_esecuzione: "2025-06-01", prossima: null }, OGGI_AZ), "ok");
+
+// prossimaEsecuzioneAzienda
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-10-20", periodicitaMesi: 12 }), "2027-10-20");
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-09-03", periodicitaMesi: 6 }), "2027-03-03");
+// Una tantum: fatta una volta, non torna.
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-10-20", periodicitaMesi: null }), null);
+// Senza la data del fatto non c'e' niente da calcolare.
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: null, periodicitaMesi: 12 }), null);
+// Una periodicita' non numerica non diventa "fra zero mesi": non si calcola.
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-10-20", periodicitaMesi: "boh" }), null);
+// Il clamp a fine mese di addMonths vale anche qui: 31/01 + 1 mese = 28/02.
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-01-31", periodicitaMesi: 1 }), "2026-02-28");
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2028-01-31", periodicitaMesi: 1 }), "2028-02-29");
+
+// ============================================================
+// 5.3 · coperturaCompetenze. Decide un rosso, e sbagliata non da' nessun
+// errore: da' una lavorazione che sembra coperta e non lo e'.
+// ============================================================
+const catalogoCmp = [
+  { id: "c-imp", nome: "Conduzione Imp1500", ordine: 1 },
+  { id: "c-car", nome: "Carroponte", ordine: 2 },
+  { id: "c-lab", nome: "Controlli di laboratorio", ordine: 3 },
+];
+const dipCmp = [
+  { id: "d1", cognome: "Rossi", nome: "Ada", attivo: true },
+  { id: "d2", cognome: "Bianchi", nome: "Bea", attivo: true },
+  { id: "d3", cognome: "Verdi", nome: "Ciro", attivo: false },   // cessato
+];
+const livelli = [
+  { dipendente_id: "d1", competenza_id: "c-imp", livello: 3 },   // autonomo e forma
+  { dipendente_id: "d2", competenza_id: "c-imp", livello: 2 },   // autonomo
+  { dipendente_id: "d1", competenza_id: "c-car", livello: 1 },   // in affiancamento: NON autonomo
+  { dipendente_id: "d3", competenza_id: "c-car", livello: 3 },   // cessato: non conta
+];
+const cop = coperturaCompetenze({ dipendenti: dipCmp, competenze: livelli, catalogo: catalogoCmp });
+assert.equal(cop.length, 3);
+// L'ordine del catalogo e' rispettato: la vista non rimescola le lavorazioni.
+assert.deepEqual(cop.map((x) => x.competenza.id), ["c-imp", "c-car", "c-lab"]);
+// Due autonomi (livello 2 e livello 3): esattamente alla soglia, NON scoperta.
+assert.equal(cop[0].autonomi, 2);
+assert.equal(cop[0].scoperta, false);
+assert.deepEqual(cop[0].persone.map((p) => p.id).sort(), ["d1", "d2"]);
+// Un livello 1 non e' autonomo, e un livello 3 di un CESSATO non conta.
+assert.equal(cop[1].autonomi, 0);
+assert.equal(cop[1].scoperta, true);
+// Una competenza senza nessuna riga: zero autonomi, scoperta.
+assert.equal(cop[2].autonomi, 0);
+assert.equal(cop[2].scoperta, true);
+// Un solo autonomo e' ancora scoperto ("in rosso dove e' zero o uno").
+const unSolo = coperturaCompetenze({
+  dipendenti: dipCmp, catalogo: [catalogoCmp[0]],
+  competenze: [{ dipendente_id: "d1", competenza_id: "c-imp", livello: 2 }],
+});
+assert.equal(unSolo[0].autonomi, 1);
+assert.equal(unSolo[0].scoperta, true);
+// La soglia e' un argomento: con 3 (il criterio del foglio) due autonomi non bastano.
+const soglia3 = coperturaCompetenze({
+  dipendenti: dipCmp, competenze: livelli, catalogo: catalogoCmp, sogliaAutonomi: 3,
+});
+assert.equal(soglia3[0].scoperta, true);
+// Elenchi vuoti o mancanti non fanno cadere la pagina.
+assert.deepEqual(coperturaCompetenze({ dipendenti: null, competenze: null, catalogo: null }), []);
+
+// ============================================================
+// 5.4 · conteggioColloquiAnno. Tutti i casi passano `oggiISO`: senza, il caso
+// "tutti fatti prima del limite e' verde" comincerebbe a fallire da solo il
+// giorno in cui il 30 novembre entra nei 60 giorni della soglia.
+// ============================================================
+const dipColl = [
+  { id: "d1", cognome: "Rossi", nome: "Ada", attivo: true },
+  { id: "d2", cognome: "Bianchi", nome: "Bea", attivo: true },
+  { id: "d3", cognome: "Verdi", nome: "Ciro", attivo: false },   // cessato
+];
+// Nessun colloquio: nessuno fatto, e non e' verde.
+const c0 = conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [], anno: 2026, meseLimite: 11, oggiISO: "2026-09-03" });
+assert.equal(c0.attesi, 2);          // il cessato non e' atteso
+assert.equal(c0.fatti, 0);
+assert.deepEqual(c0.mancanti.map((d) => d.id), ["d1", "d2"]);
+assert.equal(c0.scadenza, "2026-11-30");   // ULTIMO giorno del mese limite
+assert.notEqual(c0.stato, "ok");
+
+// Tutti fatti, ben prima del limite: verde.
+const c1 = conteggioColloquiAnno({
+  dipendenti: dipColl,
+  colloqui: [{ dipendente_id: "d1", data: "2026-03-10" }, { dipendente_id: "d2", data: "2026-04-02" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-05-01" });
+assert.equal(c1.fatti, 2);
+assert.equal(c1.mancanti.length, 0);
+assert.equal(c1.stato, "ok");
+
+// Due colloqui alla STESSA persona non coprono il collega: si contano le
+// persone, non le righe.
+const c2 = conteggioColloquiAnno({
+  dipendenti: dipColl,
+  colloqui: [{ dipendente_id: "d1", data: "2026-03-10" }, { dipendente_id: "d1", data: "2026-09-01" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-09-03" });
+assert.equal(c2.fatti, 1);
+assert.deepEqual(c2.mancanti.map((d) => d.id), ["d2"]);
+
+// Un colloquio dell'anno PRECEDENTE non copre quest'anno.
+const c3 = conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [{ dipendente_id: "d1", data: "2025-11-20" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-09-03" });
+assert.equal(c3.fatti, 0);
+
+// Il colloquio di un CESSATO non conta ne' come fatto ne' come mancante.
+const c4 = conteggioColloquiAnno({
+  dipendenti: dipColl,
+  colloqui: [{ dipendente_id: "d1", data: "2026-01-10" }, { dipendente_id: "d2", data: "2026-01-11" },
+             { dipendente_id: "d3", data: "2026-01-12" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-05-01" });
+assert.equal(c4.attesi, 2);
+assert.equal(c4.fatti, 2);
+
+// Nessuno in forza: non e' "tutto fatto", e la riga non diventa verde.
+const c5 = conteggioColloquiAnno({
+  dipendenti: [{ id: "d3", attivo: false }], colloqui: [], anno: 2026, meseLimite: 11,
+  oggiISO: "2026-05-01" });
+assert.equal(c5.attesi, 0);
+assert.notEqual(c5.stato, "ok");
+
+// Passato il limite con qualcuno che manca: rossa.
+const c6 = conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [{ dipendente_id: "d1", data: "2026-02-02" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-12-15" });
+assert.equal(c6.stato, "scaduto");
+
+// La scadenza in un anno bisestile, con febbraio come limite: 29, non 28.
+assert.equal(conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [], anno: 2028, meseLimite: 2, oggiISO: "2028-01-01" }).scadenza,
+  "2028-02-29");
+// Un mese limite fuori scala non inventa una data.
+assert.equal(conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [], anno: 2026, meseLimite: 0, oggiISO: "2026-01-01" }).scadenza, null);
+
+// ============================================================
+// 5.5 · Candidature da cancellare. La riga sbagliata qui non da' nessun
+// errore: da' un CV conservato oltre il termine dichiarato al candidato,
+// oppure uno cancellato prima del tempo.
+// ============================================================
+assert.equal(scadenzaConservazioneCandidatura("2026-01-15", 12), "2027-01-15");
+// Il clamp a fine mese di addMonths vale anche qui.
+assert.equal(scadenzaConservazioneCandidatura("2028-02-29", 12), "2029-02-28");
+assert.equal(scadenzaConservazioneCandidatura("2026-08-31", 12), "2027-08-31");
+// Senza data di ricezione non si sa niente: non si inventa una scadenza.
+assert.equal(scadenzaConservazioneCandidatura(null, 12), null);
+assert.equal(scadenzaConservazioneCandidatura("2026-01-15", null), null);
+
+const cands = [
+  { id: "k1", nominativo: "Ada",  ricevuto_il: "2025-01-10" },                        // scaduta da un pezzo
+  { id: "k2", nominativo: "Bea",  ricevuto_il: "2025-09-03" },                         // scade OGGI
+  { id: "k3", nominativo: "Ciro", ricevuto_il: "2026-06-01" },                         // ancora in corso
+  { id: "k4", nominativo: "Dina", ricevuto_il: "2024-01-01", cancellato_il: "2025-02-01" }, // gia' cancellata
+  { id: "k5", nominativo: "Ezio", ricevuto_il: null },                                 // senza data
+];
+const daCanc = candidatureDaCancellare(cands, 12, "2026-09-03");
+// Solo la prima: quella che scade oggi NON e' ancora da cancellare, quella
+// gia' cancellata non torna mai, e quella senza data non si puo' giudicare.
+assert.deepEqual(daCanc.map((c) => c.id), ["k1"]);
+// Il giorno DOPO la scadenza, quella di Bea entra.
+assert.deepEqual(
+  candidatureDaCancellare(cands, 12, "2026-09-04").map((c) => c.id).sort(), ["k1", "k2"]);
+// Una gia' cancellata non compare nemmeno se scaduta da anni.
+assert.equal(candidatureDaCancellare([cands[3]], 12, "2030-01-01").length, 0);
+// Elenco vuoto o mancante: nessun errore.
+assert.deepEqual(candidatureDaCancellare([], 12, "2026-09-03"), []);
+assert.deepEqual(candidatureDaCancellare(null, 12, "2026-09-03"), []);
+// Cambiare il termine cambia l'elenco: con 24 mesi Ada non e' ancora scaduta.
+assert.deepEqual(candidatureDaCancellare(cands, 24, "2026-09-03").map((c) => c.id), []);
 
 console.log("OK tutti i test common.js");

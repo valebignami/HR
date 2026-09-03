@@ -26,8 +26,14 @@ const state = {
   cedolini: [],           // 3.2 · cedolini caricati dall'HR, letti dal dipendente nel portale
   scambiConsulente: [],   // 3.3 · registro degli scambi con il consulente del lavoro
   eventi: [],             // 4.1 · ferie, permessi, malattie, infortuni, straordinari
+  adempAzienda: [],       // 5.2 · le scadenze dell'AZIENDA, non delle persone
+  competenzeCatalogo: [], // 5.3 · il catalogo delle lavorazioni
+  competenze: [],         // 5.3 · il livello di ogni persona su ogni lavorazione
+  colloqui: [],           // 5.4 · i colloqui annuali, uno per persona per anno
+  candidature: [],        // 5.5 · i CV ricevuti, per poterli cancellare a scadenza
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
+  compGroup: "persona",      // 5.1 · "persona" | "corso" — le stesse righe, raggruppate
   configTab: "ruoli",
   dipTab: "anagrafica",      // 2.3 · linguetta aperta nella scheda dipendente
   scambiAnno: new Date().getFullYear(),   // 3.3 · anno mostrato nella vista Consulente
@@ -41,7 +47,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi", "adempimenti_azienda", "competenze_catalogo", "competenze", "colloqui", "candidature"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -79,6 +85,17 @@ const STORE_BY_TABLE = {
   scambi_consulente: "scambiConsulente",
   // 4.1 · L'unica tabella nuova che entra ANCHE in REALTIME_TABLES, qui sopra.
   eventi: "eventi",
+  // 5.2 · Gli adempimenti dell'azienda. In TABLES e qui, NON in REALTIME_TABLES:
+  // li scrive solo l'HR, dalla sua app.
+  adempimenti_azienda: "adempAzienda",
+  // 5.3 · Competenze: catalogo e livelli. Nessuna delle due in realtime.
+  competenze_catalogo: "competenzeCatalogo",
+  competenze: "competenze",
+  // 5.4 · I colloqui annuali. Nemmeno questa in realtime.
+  colloqui: "colloqui",
+  // 5.5 · Le candidature. Non e' una tabella di persone: nessun dipendente_id,
+  // quindi resta fuori da TABELLE_FIGLIE_DIP, come scambi_consulente.
+  candidature: "candidature",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -463,6 +480,7 @@ function renderAll() {
   if (state.view === "compliance") renderCompliance();
   else if (state.view === "eventi") renderEventi();
   else if (state.view === "cariche") renderCariche();
+  else if (state.view === "competenze") renderCompetenze();
   else if (state.view === "dipendenti") renderDipendenti();
   else if (state.view === "storico") renderStorico();
   else if (state.view === "consulente") renderConsulente();
@@ -477,6 +495,10 @@ function renderCounts() {
   // Cariche aziendali sotto soglia.
   const sottoSoglia = caricheStato().filter((c) => c.sottoSoglia).length;
   $("count-cariche").textContent = sottoSoglia;
+  // 5.5 · I CV oltre il termine di conservazione, da cancellare.
+  renderContatoreCandidature();
+  // 5.3 · Le lavorazioni con meno di due persone autonome.
+  $("count-competenze").textContent = coperturaAziendale().filter((c) => c.scoperta).length;
   // Storico: totale eventi (correnti + archiviati).
   $("count-storico").textContent = collectStoricoEvents().length;
   // 4.2 · Le richieste che aspettano una risposta. `eventi` e' in realtime:
@@ -525,6 +547,534 @@ function renderCariche() {
       ${nominati}
     </div>`;
   }).join("");
+}
+
+// ============================================================
+// 5.3 · COMPETENZE — chi sa fare cosa, e dove non lo sa fare nessuno.
+// Il piano la chiamava "per squadra": le squadre ruotano (decisione del
+// 2 settembre), quindi la copertura e' PER AZIENDA — il ramo che il piano
+// stesso prevede in questo caso.
+// Adattatore: la regola sta in common.js con i test, qui restano l'ordine
+// (che e' presentazione) e il disegno.
+// ============================================================
+const SOGLIA_AUTONOMI = 2;   // "in rosso dove e' zero o uno" (piano, voce 5.3)
+
+function catalogoCompetenze() {
+  return state.competenzeCatalogo.slice().sort((a, b) =>
+    (a.ordine ?? 0) - (b.ordine ?? 0) || (a.nome || "").localeCompare(b.nome || ""));
+}
+
+function coperturaAziendale() {
+  return coperturaCompetenze({
+    dipendenti: state.dipendenti,
+    competenze: state.competenze,
+    catalogo: catalogoCompetenze(),
+    sogliaAutonomi: SOGLIA_AUTONOMI,
+  });
+}
+
+function renderCompetenze() {
+  const righe = coperturaAziendale()
+    .filter((c) => matchSearch(c.competenza.nome || ""))
+    // Ordine: prima le scoperte, poi chi ha meno gente. E' presentazione.
+    .sort((a, b) => (a.scoperta === b.scoperta ? a.autonomi - b.autonomi : (a.scoperta ? -1 : 1)));
+  const scoperte = righe.filter((c) => c.scoperta).length;
+  $("competenze-legenda").innerHTML =
+    `Una lavorazione è <strong>scoperta</strong> quando le persone autonome (livello 2 o 3) sono
+     meno di ${SOGLIA_AUTONOMI}. I cessati non contano.
+     ${scoperte ? `<strong>${scoperte}</strong> scoperte su ${righe.length}.` : "Nessuna scoperta."}`;
+  $("competenze-empty").hidden = righe.length > 0;
+  $("competenze-list").innerHTML = righe.map((c) => {
+    const persone = c.persone.length
+      ? `<div class="nominati">${c.persone
+          .slice().sort((x, y) => (x.cognome || "").localeCompare(y.cognome || ""))
+          .map((d) => `<span class="chip">${esc(d.cognome)} ${esc(d.nome)}</span>`).join("")}</div>`
+      : `<div class="vuoto">Nessuna persona autonoma su questa lavorazione.</div>`;
+    return `<div class="carica-card ${c.scoperta ? "warn" : "ok"}">
+      <div>
+        <div class="nome">${esc(c.competenza.nome)}</div>
+        <div class="meta">Persone autonome: ${c.autonomi}${c.competenza.note ? " · " + esc(c.competenza.note) : ""}</div>
+      </div>
+      <div class="stato">${c.scoperta ? "⚠️ " : "✅ "}${c.autonomi}/${SOGLIA_AUTONOMI} — ${c.scoperta ? "scoperta" : "coperta"}</div>
+      ${persone}
+    </div>`;
+  }).join("");
+}
+
+// ---------- Il catalogo, in Configurazione ----------
+function renderCompetenzeTable() {
+  const righe = catalogoCompetenze();
+  $("competenze-table").innerHTML =
+    `<div class="cfg-row head cfg-cols-comp"><div>Competenza</div><div>Ordine</div><div>Persone autonome</div><div>Note</div></div>` +
+    (righe.length === 0
+      ? '<div class="muted" style="padding:14px">Nessuna competenza nel catalogo.</div>'
+      : coperturaAziendale().map((c) => `<div class="cfg-row cfg-cols-comp" data-id="${esc(c.competenza.id)}">
+          <div><strong>${esc(c.competenza.nome)}</strong></div>
+          <div>${c.competenza.ordine ?? 0}</div>
+          <div>${c.autonomi}</div>
+          <div class="muted">${esc(c.competenza.note || "—")}</div>
+        </div>`).join(""));
+  els("#competenze-table .cfg-row:not(.head)").forEach((el2) =>
+    el2.addEventListener("click", () => openCompetenzaModal(el2.dataset.id)));
+}
+
+function openCompetenzaModal(id) {
+  const c = id ? state.competenzeCatalogo.find((x) => x.id === id) : null;
+  $("competenza-title").textContent = c ? c.nome : "Nuova competenza";
+  $("competenza-id").value = c ? c.id : "";
+  $("competenza-nome").value = c?.nome || "";
+  $("competenza-ordine").value = c?.ordine ?? (righeOrdineSuccessivo());
+  $("competenza-note").value = c?.note || "";
+  $("competenza-delete").hidden = !c;
+  openModal("modal-competenza");
+}
+
+function righeOrdineSuccessivo() {
+  const max = state.competenzeCatalogo.reduce((m, c) => Math.max(m, Number(c.ordine) || 0), 0);
+  return max + 1;
+}
+
+async function saveCompetenza(e) {
+  e.preventDefault();
+  const nome = $("competenza-nome").value.trim();
+  if (!nome) { alert("Il nome della competenza è obbligatorio."); return; }
+  const id = $("competenza-id").value || uid();
+  const row = {
+    id,
+    nome,
+    ordine: parseInt($("competenza-ordine").value, 10) || 0,
+    note: $("competenza-note").value.trim() || null,
+  };
+  if (await sbUpsert("competenze_catalogo", row)) closeModal("modal-competenza");
+}
+
+async function deleteCompetenza() {
+  const id = $("competenza-id").value;
+  if (!id) return;
+  // I livelli seguono per cascade nel database, ma vanno detti prima: sono il
+  // lavoro fatto con il Responsabile Produzione, e sparirebbero in silenzio.
+  const livelli = state.competenze.filter((c) => c.competenza_id === id).length;
+  const avviso = livelli
+    ? `Eliminare questa competenza? Spariranno anche i livelli registrati per ${livelli} ${livelli === 1 ? "persona" : "persone"}.`
+    : "Eliminare questa competenza dal catalogo?";
+  if (!confirm(avviso)) return;
+  if (!await sbDelete("competenze_catalogo", id)) return;
+  // Le righe figlie le toglie il database (cascade): qui si allinea la memoria,
+  // o la vista continuerebbe a contare persone autonome su una riga che non c'e'.
+  state.competenze = state.competenze.filter((c) => c.competenza_id !== id);
+  closeModal("modal-competenza");
+  renderAll();
+}
+
+// ---------- La griglia nella scheda della persona ----------
+function renderDipCompetenze(dipId) {
+  const catalogo = catalogoCompetenze();
+  const section = $("dip-competenze-section");
+  section.hidden = catalogo.length === 0;   // senza catalogo non c'e' niente da compilare
+  if (catalogo.length === 0) return;
+  const miei = new Map(state.competenze.filter((c) => c.dipendente_id === dipId)
+    .map((c) => [c.competenza_id, c]));
+  $("dip-competenze-count").textContent =
+    `${[...miei.values()].filter((c) => Number(c.livello) >= 2).length}/${catalogo.length} autonomo`;
+  $("dip-competenze-grid").innerHTML = catalogo.map((c) => {
+    const liv = Number(miei.get(c.id)?.livello ?? 0);
+    const opzioni = [0, 1, 2, 3].map((n) =>
+      `<option value="${n}"${n === liv ? " selected" : ""}>${n} — ${ETICHETTE_LIVELLO[n]}</option>`).join("");
+    return `<div class="cmp-riga liv-${liv}">
+      <div class="cmp-nome">${esc(c.nome)}</div>
+      <select class="cmp-liv" data-cmp="${esc(c.id)}">${opzioni}</select>
+    </div>`;
+  }).join("");
+  els(".cmp-liv", $("dip-competenze-grid")).forEach((sel) =>
+    sel.addEventListener("change", () => salvaLivelloCompetenza(dipId, sel.dataset.cmp, Number(sel.value))));
+}
+
+const ETICHETTE_LIVELLO = ["non formato", "in affiancamento", "autonomo", "autonomo e forma gli altri"];
+
+// Il livello si salva da solo al cambio del select: la griglia non fa parte del
+// form del dipendente e non passa da saveDip.
+// L'id si RIUSA, non si genera: la tabella ha unique (dipendente, competenza), e
+// con un id nuovo ogni volta il secondo salvataggio della stessa casella
+// fallirebbe sull'indice — la stessa trappola gia' scritta in CLAUDE.md per la
+// riga `variabili` degli scambi con il consulente.
+async function salvaLivelloCompetenza(dipId, competenzaId, livello) {
+  const esistente = state.competenze.find(
+    (c) => c.dipendente_id === dipId && c.competenza_id === competenzaId);
+  const row = {
+    id: esistente?.id || uid(),
+    dipendente_id: dipId,
+    competenza_id: competenzaId,
+    livello,
+  };
+  await sbUpsert("competenze", row);
+  // Sempre, riuscito o no: sbUpsert in errore rimette a posto `state` ma non la
+  // modale aperta, e senza ridisegnare il select resterebbe sul valore che il
+  // database ha rifiutato.
+  renderDipCompetenze(dipId);
+}
+
+// ============================================================
+// 5.4 · COLLOQUI ANNUALI
+// "Colloqui dell'anno: 9/15 fatti", con chi manca, nel blocco degli
+// adempimenti aziendali e NON fra le scadenze di sicurezza (piano, voce 5.4).
+// ============================================================
+function meseLimiteColloqui() { return parametroInt(state.parametri, "colloqui_mese_limite", 11); }
+
+// La riga calcolata in cima al blocco aziendale. Restituisce null quando non
+// c'e' niente da dire (nessuna persona in forza e nessun colloquio).
+function rigaColloquiDellAnno() {
+  const anno = new Date().getFullYear();
+  const c = conteggioColloquiAnno({
+    dipendenti: state.dipendenti,
+    colloqui: state.colloqui,
+    anno,
+    meseLimite: meseLimiteColloqui(),
+  });
+  if (c.attesi === 0 && state.colloqui.length === 0) return null;
+  const chiManca = c.mancanti.length
+    ? `<div class="colloqui-mancanti">Mancano:
+        ${c.mancanti.slice().sort((a, b) => (a.cognome || "").localeCompare(b.cognome || ""))
+          .map((d) => `<span class="chip colloqui-chip" data-dipcolloquio="${esc(d.id)}"
+             title="Apri la scheda di ${esc(d.cognome)} ${esc(d.nome)}">${esc(d.cognome)} ${esc(d.nome)}</span>`).join("")}
+       </div>`
+    : "";
+  return {
+    stato: c.stato,
+    html: `<div class="comp-row azienda-cols colloqui-riga">
+        <div><strong>🗣 Colloqui dell'anno ${anno}</strong>: ${c.fatti}/${c.attesi} fatti${chiManca}</div>
+        <div>ogni anno</div>
+        <div><span class="muted">—</span></div>
+        <div>${c.scadenza ? fmtDate(c.scadenza) : '<span class="muted">senza data</span>'}</div>
+        <div><span class="stato ${c.stato}">${STATO_INFO[c.stato].label}</span></div>
+      </div>`,
+  };
+}
+
+// I cognomi di chi manca aprono la sua scheda, sulla linguetta Crescita.
+function collegaClickColloqui() {
+  els(".colloqui-chip", $("azienda-colloqui")).forEach((chip) => chip.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    openDipModal(chip.dataset.dipcolloquio);
+    mostraLinguetta("crescita");
+  }));
+}
+
+function renderDipColloqui(dipId) {
+  const list = state.colloqui
+    .filter((c) => c.dipendente_id === dipId)
+    .sort((a, b) => (b.data || "").localeCompare(a.data || ""));
+  $("dip-colloqui-section").hidden = false;
+  $("dip-colloqui-count").textContent = list.length;
+  const host = $("dip-colloqui-list");
+  host.innerHTML = list.length === 0
+    // "Non si inventano colloqui mai avvenuti": la sezione parte vuota, e lo dice.
+    ? '<div class="muted" style="padding:8px 0">Nessun colloquio registrato.</div>'
+    : list.map((c) => `<div class="hist-row colloquio-row" data-id="${esc(c.id)}">
+        <div class="hist-date">${fmtDate(c.data)}</div>
+        <div><strong>${esc(c.esito || "Colloquio")}</strong>${c.condotto_da ? ` <span class="muted">— ${esc(c.condotto_da)}</span>` : ""}</div>
+        <div class="hist-meta">${c.obiettivi ? `<span class="hist-note">${esc(c.obiettivi.slice(0, 80))}${c.obiettivi.length > 80 ? "…" : ""}</span>` : ""}</div>
+        ${c.documento_path ? `<button type="button" class="hist-doc colloquio-doc-btn" data-path="${esc(c.documento_path)}" title="Apri il verbale">📎</button>` : '<span class="hist-doc disabled">—</span>'}
+      </div>`).join("");
+  els(".colloquio-row", host).forEach((row) =>
+    row.addEventListener("click", () => openColloquioModal(dipId, row.dataset.id)));
+  els(".colloquio-doc-btn", host).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await openSignedDoc(btn.dataset.path);
+  }));
+}
+
+let pendingColloquioFile = null;
+
+function openColloquioModal(dipId, colloquioId) {
+  const c = colloquioId ? state.colloqui.find((x) => x.id === colloquioId) : null;
+  const dip = dipById(dipId);
+  $("colloquio-title").textContent = c ? "Colloquio annuale" : "Nuovo colloquio";
+  $("colloquio-id").value = c ? c.id : "";
+  $("colloquio-dip-id").value = dipId;
+  $("colloquio-target").textContent = dip ? `${dip.cognome} ${dip.nome}` : "—";
+  $("colloquio-data").value = c?.data || localISO(new Date());
+  $("colloquio-condotto").value = c?.condotto_da || "";
+  $("colloquio-esito").value = c?.esito || "";
+  $("colloquio-obiettivi").value = c?.obiettivi || "";
+  $("colloquio-delete").hidden = !c;
+  pendingColloquioFile = null;
+  $("colloquio-doc-file").value = "";
+  $("colloquio-doc-upload-label").textContent = "Carica un file";
+  $("colloquio-doc-progress").hidden = true;
+  $("colloquio-doc-current").hidden = !c?.documento_path;
+  if (c?.documento_path) $("colloquio-doc-current-name").textContent = `Verbale ${fmtDate(c.data)}`;
+  openModal("modal-colloquio");
+}
+
+async function saveColloquio(e) {
+  e.preventDefault();
+  const id = $("colloquio-id").value || uid();
+  const dipId = $("colloquio-dip-id").value;
+  const prev = state.colloqui.find((x) => x.id === id) || null;
+  const data = $("colloquio-data").value;
+  if (!data) { alert("La data del colloquio è obbligatoria."); return; }
+
+  const oldPath = prev?.documento_path || null;
+  let documento_path = oldPath;
+  let uploadedPath = null;
+  if (pendingColloquioFile) {
+    $("colloquio-doc-progress").hidden = false;
+    try {
+      const ext = (pendingColloquioFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `colloqui/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingColloquioFile, {
+        upsert: false, contentType: pendingColloquioFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      uploadedPath = path;
+      documento_path = path;
+    } catch (err) {
+      $("colloquio-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("colloquio-doc-progress").hidden = true;
+  }
+
+  const row = {
+    id,
+    dipendente_id: dipId,
+    data,
+    condotto_da: $("colloquio-condotto").value.trim() || null,
+    esito: $("colloquio-esito").value.trim() || null,
+    obiettivi: $("colloquio-obiettivi").value.trim() || null,
+    documento_path,
+  };
+  const ok = await sbUpsert("colloqui", row);
+  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  if (uploadedPath && oldPath) await deleteDoc(oldPath);   // il vecchio solo a salvataggio riuscito
+  pendingColloquioFile = null;
+  closeModal("modal-colloquio");
+  renderDipColloqui(dipId);
+}
+
+async function deleteColloquio() {
+  const id = $("colloquio-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questo colloquio e il verbale allegato?")) return;
+  const dipId = $("colloquio-dip-id").value;
+  const prev = state.colloqui.find((x) => x.id === id);
+  // Prima la riga, poi il file (come eliminaCedolino).
+  if (!await sbDelete("colloqui", id)) return;
+  if (prev?.documento_path) await deleteDoc(prev.documento_path);
+  closeModal("modal-colloquio");
+  renderDipColloqui(dipId);
+}
+
+// ============================================================
+// 5.5 · CANDIDATURE
+// Il registro serve a UNA cosa sola: poter cancellare i CV alla scadenza del
+// termine di conservazione. Il foglio dell'archivio lo dice meglio di
+// chiunque: «Se non e' programmata non avviene mai».
+// Non e' una tabella di persone: nessun dipendente_id, quindi fuori da
+// TABELLE_FIGLIE_DIP e dentro collegaDocumentiAiDati con la colonna vuota.
+// ============================================================
+function mesiConservazioneCV() {
+  return parametroInt(state.parametri, "candidature_mesi_conservazione", 12);
+}
+
+function candidatureScadute() {
+  return candidatureDaCancellare(state.candidature, mesiConservazioneCV());
+}
+
+function renderContatoreCandidature() {
+  const n = candidatureScadute().length;
+  $("count-candidature").textContent = n;
+  $("count-candidature").hidden = n === 0;
+}
+
+let pendingCandidaturaFile = null;
+
+function openCandidatureModal() {
+  resetFormCandidatura();
+  fillSelect($("candidature-canale"),
+    (window.CANALI_CANDIDATURA || []).map((c) => ({ id: c, nome: c })), { placeholder: "—" });
+  fillSelect($("candidature-esito"),
+    (window.ESITI_CANDIDATURA || []).map((c) => ({ id: c, nome: c })), { placeholder: "—" });
+  renderRigheCandidature();
+  openModal("modal-candidature");
+}
+
+function resetFormCandidatura() {
+  $("candidature-id").value = "";
+  $("candidature-ricevuto").value = localISO(new Date());
+  $("candidature-nominativo").value = "";
+  $("candidature-posizione").value = "";
+  $("candidature-canale").value = "";
+  $("candidature-esito").value = "";
+  $("candidature-note").value = "";
+  $("candidature-doc-file").value = "";
+  $("candidature-doc-file").disabled = false;
+  $("candidature-doc-upload-label").textContent = "Allega il CV";
+  $("candidature-doc-progress").hidden = true;
+  $("candidature-salva").textContent = "Aggiungi";
+  $("candidature-annulla-modifica").hidden = true;
+  pendingCandidaturaFile = null;
+}
+
+function renderRigheCandidature() {
+  const mesi = mesiConservazioneCV();
+  const scadute = new Set(candidatureScadute().map((c) => c.id));
+  const righe = state.candidature.slice()
+    .sort((a, b) => (b.ricevuto_il || "").localeCompare(a.ricevuto_il || ""));
+  $("candidature-riassunto").innerHTML =
+    `I CV si conservano <strong>${mesi} mesi</strong> dalla data di ricezione (parametro
+     <em>candidature_mesi_conservazione</em>). Da cancellare adesso:
+     <strong>${scadute.size}</strong> su ${righe.length}.`;
+  $("candidature-empty").hidden = righe.length > 0;
+  $("candidature-rows").innerHTML = righe.map((c) => {
+    const scadenza = scadenzaConservazioneCandidatura(c.ricevuto_il, mesi);
+    // Gia' cancellata = pratica chiusa, non un semaforo: si dice quando.
+    const stato = c.cancellato_il
+      ? `<span class="stato ok">cancellata il ${fmtDate(c.cancellato_il)}</span>`
+      : `<span class="stato ${scadute.has(c.id) ? "scaduto" : "ok"}">${scadute.has(c.id) ? "da cancellare" : "in conservazione"}</span>`;
+    const azioni = [
+      c.documento_path ? `<button type="button" class="ghost-btn cand-cv" data-id="${esc(c.id)}">📎 CV</button>` : "",
+      c.cancellato_il ? "" : `<button type="button" class="ghost-btn cand-canc" data-id="${esc(c.id)}">🧹 Segna cancellata</button>`,
+      `<button type="button" class="ghost-btn danger cand-del" data-id="${esc(c.id)}">🗑</button>`,
+    ].join("");
+    return `<div class="cand-riga">
+      <div class="cand-testa">
+        <div>
+          <strong class="cand-nome" data-id="${esc(c.id)}">${esc(c.nominativo)}</strong>
+          <div class="cand-meta">${esc(c.posizione || "—")}${c.canale ? " · " + esc(c.canale) : ""}${c.esito ? " · " + esc(c.esito) : ""}</div>
+        </div>
+        ${stato}
+      </div>
+      <div class="cand-date">
+        Ricevuta il ${fmtDate(c.ricevuto_il)} · da cancellare entro ${scadenza ? fmtDate(scadenza) : "—"}
+        ${c.note ? ` · <span class="muted">${esc(c.note)}</span>` : ""}
+      </div>
+      <div class="cand-azioni">${azioni}</div>
+    </div>`;
+  }).join("");
+
+  els(".cand-nome", $("candidature-rows")).forEach((n) =>
+    n.addEventListener("click", () => caricaCandidaturaNelForm(n.dataset.id)));
+  els(".cand-cv", $("candidature-rows")).forEach((b) => b.addEventListener("click", async () => {
+    const c = state.candidature.find((x) => x.id === b.dataset.id);
+    if (c?.documento_path) await openSignedDoc(c.documento_path);
+  }));
+  els(".cand-canc", $("candidature-rows")).forEach((b) =>
+    b.addEventListener("click", () => segnaCandidaturaCancellata(b.dataset.id)));
+  els(".cand-del", $("candidature-rows")).forEach((b) =>
+    b.addEventListener("click", () => eliminaCandidatura(b.dataset.id)));
+}
+
+function caricaCandidaturaNelForm(id) {
+  const c = state.candidature.find((x) => x.id === id);
+  if (!c) return;
+  resetFormCandidatura();
+  // Su una riga gia' segnata cancellata il caricamento si SPEGNE, non si
+  // nasconde: `.doc-upload` dichiara il suo display con !important, e nasconderla
+  // con `hidden` non avrebbe nessun effetto visibile (la trappola delle Fasi 4b
+  // e 4c). Il motivo per cui si spegne: una riga "cancellata il ..." con un CV
+  // nuovo nel bucket sarebbe esattamente la bugia che questa voce esiste per
+  // evitare.
+  $("candidature-doc-file").disabled = !!c.cancellato_il;
+  if (c.cancellato_il) {
+    $("candidature-doc-upload-label").textContent =
+      `CV cancellato il ${fmtDate(c.cancellato_il)}: non se ne allegano altri`;
+  }
+  $("candidature-id").value = c.id;
+  $("candidature-ricevuto").value = c.ricevuto_il || "";
+  $("candidature-nominativo").value = c.nominativo || "";
+  $("candidature-posizione").value = c.posizione || "";
+  $("candidature-canale").value = c.canale || "";
+  $("candidature-esito").value = c.esito || "";
+  $("candidature-note").value = c.note || "";
+  $("candidature-salva").textContent = "Salva le modifiche";
+  $("candidature-annulla-modifica").hidden = false;
+}
+
+async function saveCandidatura(e) {
+  e.preventDefault();
+  const nominativo = $("candidature-nominativo").value.trim();
+  const ricevuto = $("candidature-ricevuto").value;
+  if (!nominativo || !ricevuto) { alert("Nome e data di ricezione sono obbligatori."); return; }
+  const id = $("candidature-id").value || uid();
+  const prev = state.candidature.find((x) => x.id === id) || null;
+  // La guardia vera sta qui, non nel campo spento: allegare un CV a una
+  // candidatura gia' cancellata rimetterebbe nel bucket il file che la riga
+  // dichiara di aver tolto.
+  if (prev?.cancellato_il && pendingCandidaturaFile) {
+    alert("Questa candidatura risulta già cancellata: non si può allegare un CV nuovo. " +
+          "Se la persona si è ricandidata, registrala come candidatura nuova.");
+    return;
+  }
+
+  const oldPath = prev?.documento_path || null;
+  let documento_path = oldPath;
+  let uploadedPath = null;
+  if (pendingCandidaturaFile) {
+    $("candidature-doc-progress").hidden = false;
+    try {
+      const ext = (pendingCandidaturaFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `candidature/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingCandidaturaFile, {
+        upsert: false, contentType: pendingCandidaturaFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      uploadedPath = path;
+      documento_path = path;
+    } catch (err) {
+      $("candidature-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("candidature-doc-progress").hidden = true;
+  }
+
+  const row = {
+    id,
+    ricevuto_il: ricevuto,
+    nominativo,
+    posizione: $("candidature-posizione").value.trim() || null,
+    canale: $("candidature-canale").value || null,
+    esito: $("candidature-esito").value || null,
+    documento_path,
+    cancellato_il: prev?.cancellato_il || null,
+    note: $("candidature-note").value.trim() || null,
+  };
+  const ok = await sbUpsert("candidature", row);
+  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  if (uploadedPath && oldPath) await deleteDoc(oldPath);
+  resetFormCandidatura();
+  renderRigheCandidature();
+}
+
+// "Segna cancellata" TOGLIE davvero il CV dal bucket: e' il punto di tutta la
+// voce. Una riga marcata cancellata con il CV ancora nell'archivio sarebbe una
+// bugia, e la prova di conformita' diventerebbe una prova di non conformita'.
+// Il file si rimuove SOLO dopo che la riga e' stata salvata.
+async function segnaCandidaturaCancellata(id) {
+  const c = state.candidature.find((x) => x.id === id);
+  if (!c) return;
+  const conFile = !!c.documento_path;
+  if (!confirm(conFile
+    ? `Segnare la candidatura di ${c.nominativo} come cancellata? Il CV allegato verrà eliminato definitivamente.`
+    : `Segnare la candidatura di ${c.nominativo} come cancellata?`)) return;
+  const path = c.documento_path;
+  const ok = await sbUpsert("candidature", { ...c, cancellato_il: localISO(new Date()), documento_path: null });
+  if (!ok) return;
+  if (path) await deleteDoc(path);
+  renderRigheCandidature();
+}
+
+async function eliminaCandidatura(id) {
+  const c = state.candidature.find((x) => x.id === id);
+  if (!c) return;
+  if (!confirm(`Eliminare la riga di ${c.nominativo} dal registro? Sparirà anche la prova di averla cancellata.`)) return;
+  // Prima la riga, poi il file (come eliminaCedolino).
+  if (!await sbDelete("candidature", id)) return;
+  if (c.documento_path) await deleteDoc(c.documento_path);
+  if ($("candidature-id").value === id) resetFormCandidatura();
+  renderRigheCandidature();
 }
 
 // ---------- Compliance ----------
@@ -586,20 +1136,35 @@ function renderCompliance() {
   // Modalità Calendario: nasconde le liste e disegna il mese con gli stessi eventi.
   if (state.compView === "calendar") {
     $("comp-wrap").hidden = true;
+    $("comp-corsi-wrap").hidden = true;
+    $("comp-group-toggle").hidden = true;   // 5.1 · un calendario non si raggruppa per corso
     $("contratti-wrap").hidden = true;
+    $("azienda-wrap").hidden = true;        // 5.2 · come le altre liste
     $("comp-cal-wrap").hidden = false;
     // Eventi calendario = righe con una data di scadenza utile, piu' i contratti.
     const events = rows.filter((r) => r.scadenza).map((r) => ({
       a: r.adempimento, tipo: r.tipo, dip: r.dip, scadenza: r.scadenza,
     })).concat(contratti.map((r) => ({
       kind: "contratto", dip: r.dip, scadenza: r.data, etichetta: r.etichetta,
-    }))).concat(eventiPerCalendario());
+    }))).concat(eventiPerCalendario()).concat(aziendaPerCalendario());
     renderCalendar(events);
     return;
   }
-  $("comp-wrap").hidden = false;
   $("comp-cal-wrap").hidden = true;
+  $("comp-group-toggle").hidden = false;
   renderContratti(contratti);
+  renderAdempAzienda();   // 5.2 · blocco e contatore propri, fuori dai KPI delle persone
+
+  // 5.1 · Per corso: le stesse righe, raggruppate. Il blocco Contratti resta
+  // visibile — non e' una riga di corso e non c'entra con il raggruppamento.
+  if (state.compGroup === "corso") {
+    $("comp-wrap").hidden = true;
+    $("comp-corsi-wrap").hidden = false;
+    renderCompliancePerCorso(rows);
+    return;
+  }
+  $("comp-wrap").hidden = false;
+  $("comp-corsi-wrap").hidden = true;
 
   const host = $("comp-rows");
   $("comp-empty").hidden = rows.length > 0;
@@ -630,6 +1195,268 @@ function renderCompliance() {
     if (admId) openAdmModal(dipId, admId);
     else openAdmModal(dipId, null, tipoId);
   }));
+}
+
+// 5.1 · Il piano formativo dell'anno: gli stessi gap, per corso.
+// Adattatore, come computeGaps: il raggruppamento e la scadenza piu' vicina
+// stanno in common.js (con i test); qui resta solo l'ORDINE, che e'
+// presentazione — prima i corsi con qualcuno scaduto, poi la scadenza piu'
+// vicina, poi il nome.
+function renderCompliancePerCorso(righe) {
+  const gruppi = raggruppaGapPerTipo(righe).sort((a, b) => {
+    if (a.scaduti !== b.scaduti) return b.scaduti - a.scaduti;
+    const sa = a.primaScadenza || "9999-99-99";
+    const sb = b.primaScadenza || "9999-99-99";
+    if (sa !== sb) return sa.localeCompare(sb);
+    return (a.tipo.nome || "").localeCompare(b.tipo.nome || "");
+  });
+  $("comp-corsi-empty").hidden = gruppi.length > 0;
+  $("comp-corsi-rows").innerHTML = gruppi.map((g) => {
+    const cat = g.tipo.categoria;
+    const pills = [];
+    if (g.scaduti) pills.push(`<span class="gap-pill scaduto">${g.scaduti} scaduti</span>`);
+    if (g.inScadenza) pills.push(`<span class="gap-pill in_scadenza">${g.inScadenza} in scad.</span>`);
+    if (g.ok) pills.push(`<span class="gap-pill ok">${g.ok} in regola</span>`);
+    // Le persone, con la loro data: e' l'elenco che si manda all'ente per
+    // prenotare l'edizione. Ordinate come le righe arrivano (gia' per gravita').
+    const persone = g.righe.map((r) => `<span class="corso-persona ${r.stato}"
+        data-dip="${esc(r.dip.id)}" data-tipo="${esc(g.tipo.id)}" data-ad="${r.adempimento ? esc(r.adempimento.id) : ""}"
+        title="${esc(STATO_INFO[r.stato].label)}${r.scadenza ? " — scade il " + fmtDate(r.scadenza) : ""}"
+      >${esc(r.dip.cognome)} ${esc(r.dip.nome)}${r.scadenza ? ` <em>${fmtDate(r.scadenza)}</em>` : ""}</span>`).join("");
+    return `<div class="corso-card">
+      <div class="corso-head">
+        <div>
+          <div class="corso-nome">${esc(g.tipo.nome)}</div>
+          <div class="corso-meta">
+            <span class="chip cat-${cat}">${CAT_BY_KEY[cat]?.icon || ""} ${CAT_BY_KEY[cat]?.label || cat}</span>
+            <span>${g.totale} ${g.totale === 1 ? "persona" : "persone"}</span>
+          </div>
+        </div>
+        <div class="corso-scadenza">
+          <div class="corso-scadenza-lbl">Prima scadenza</div>
+          <div class="corso-scadenza-val">${g.primaScadenza ? fmtDate(g.primaScadenza) : "—"}</div>
+        </div>
+      </div>
+      <div class="corso-pills">${pills.join("")}</div>
+      <div class="corso-persone">${persone}</div>
+    </div>`;
+  }).join("");
+  // Cliccando una persona si apre il SUO adempimento, come nella lista.
+  els(".corso-persona", $("comp-corsi-rows")).forEach((elP) => elP.addEventListener("click", () => {
+    if (elP.dataset.ad) openAdmModal(elP.dataset.dip, elP.dataset.ad);
+    else openAdmModal(elP.dataset.dip, null, elP.dataset.tipo);
+  }));
+}
+
+// ============================================================
+// 5.2 · ADEMPIMENTI DELL'AZIENDA
+// Non passano dal motore gap, che e' per persona: sono una lista con date.
+// Hanno un blocco e un contatore PROPRI, e non entrano nei KPI delle persone —
+// altrimenti il semaforo della sicurezza mescolerebbe cose diverse.
+// ============================================================
+function righeAdempAzienda() {
+  return state.adempAzienda
+    .map((r) => ({ riga: r, stato: statoAdempimentoAzienda(r) }))
+    .sort((a, b) => {
+      const so = STATO_INFO[a.stato].order - STATO_INFO[b.stato].order;
+      if (so !== 0) return so;
+      const sa = a.riga.prossima || "9999-99-99";
+      const sb = b.riga.prossima || "9999-99-99";
+      if (sa !== sb) return sa.localeCompare(sb);
+      return (a.riga.nome || "").localeCompare(b.riga.nome || "");
+    });
+}
+
+// Le voci con una data entrano nel calendario delle Scadenze, con GLI STESSI
+// filtri della lista: le due modalita' sono la stessa vista, e devono dare la
+// stessa risposta allo stesso filtro. Senza, filtrando per una persona il
+// calendario mostrerebbe le sue scadenze insieme a tutte quelle dell'azienda,
+// mentre la lista le nasconde.
+function aziendaPerCalendario() {
+  const { perPersona, stato: filtroStato } = filtriBloccoAzienda();
+  if (perPersona) return [];
+  return state.adempAzienda
+    .filter((r) => r.prossima && matchSearch(r.nome || ""))
+    .filter((r) => !filtroStato || statoAdempimentoAzienda(r) === filtroStato)
+    .map((r) => ({ kind: "azienda", riga: r, scadenza: r.prossima }));
+}
+
+function etichettaPeriodicita(mesi) {
+  if (mesi == null) return "una volta sola";
+  const n = Number(mesi);
+  if (n === 1) return "ogni mese";
+  if (n === 12) return "ogni anno";
+  if (n === 24) return "ogni 2 anni";
+  return `ogni ${n} mesi`;
+}
+
+// Che cosa resta visibile del blocco aziendale, dati i filtri della barra.
+// Due regole diverse, perche' i filtri sono di due specie:
+//   - dipendente / mansione / incarico sono filtri PER PERSONA, e queste righe
+//     non sono di nessuno: mentre se ne guarda una sola, il blocco si nasconde,
+//     o mostrerebbe righe che con lei non c'entrano;
+//   - lo stato (il click sui KPI) NON e' un filtro per persona: anche queste
+//     righe hanno un semaforo, quindi si filtrano invece di sparire. Nasconderle
+//     su "Scaduti" toglierebbe di mezzo proprio quelle che si stava cercando.
+function filtriBloccoAzienda() {
+  const f = state.compFilter;
+  return { perPersona: !!(f.dipendente || f.mansione || f.incarico), stato: f.stato || "" };
+}
+
+function renderAdempAzienda() {
+  const { perPersona, stato: filtroStato } = filtriBloccoAzienda();
+  const righe = perPersona ? [] : righeAdempAzienda()
+    .filter((x) => matchSearch(x.riga.nome || ""))
+    .filter((x) => !filtroStato || x.stato === filtroStato);
+  // 5.4 · La riga calcolata dei colloqui dell'anno, in cima al blocco.
+  let colloqui = perPersona ? null : rigaColloquiDellAnno();
+  if (colloqui && filtroStato && colloqui.stato !== filtroStato) colloqui = null;
+
+  // Il blocco sparisce SOLO quando si sta guardando una persona sola. Con zero
+  // righe resta, con il suo "Nessuna voce": nasconderlo porterebbe via anche il
+  // bottone "+ Nuova voce", e non ci sarebbe piu' nessun modo di aggiungerne una.
+  $("azienda-wrap").hidden = perPersona;
+  // Il contatore e' PROPRIO: quante voci non sono a posto, colloqui compresi.
+  $("azienda-count").textContent =
+    righe.filter((x) => x.stato !== "ok").length + (colloqui && colloqui.stato !== "ok" ? 1 : 0);
+  $("azienda-colloqui").innerHTML = colloqui ? colloqui.html : "";
+  if (colloqui) collegaClickColloqui();
+
+  $("azienda-rows").innerHTML = (righe.length === 0
+    ? `<div class="muted" style="padding:12px 16px">${
+        filtroStato || state.search
+          ? "Nessuna voce corrisponde ai filtri scelti."
+          : "Nessun adempimento dell'azienda. Aggiungine uno con «+ Nuova voce»."}</div>`
+    : "") + righe.map(({ riga, stato }) => {
+    const doc = riga.documento_path
+      ? `<button type="button" class="hist-doc az-doc-btn" data-path="${esc(riga.documento_path)}" title="Apri il documento">📎</button>`
+      : "";
+    return `<div class="comp-row azienda-cols" data-az="${esc(riga.id)}">
+      <div><strong>${esc(riga.nome)}</strong> ${doc}</div>
+      <div>${esc(etichettaPeriodicita(riga.periodicita_mesi))}</div>
+      <div>${riga.ultima_esecuzione ? fmtDate(riga.ultima_esecuzione) : '<span class="muted">mai</span>'}</div>
+      <div>${riga.prossima ? fmtDate(riga.prossima) : '<span class="muted">senza data</span>'}</div>
+      <div><span class="stato ${stato}">${STATO_INFO[stato].label}</span></div>
+    </div>`;
+  }).join("");
+
+  els(".comp-row", $("azienda-rows")).forEach((row) =>
+    row.addEventListener("click", () => openAziendaModal(row.dataset.az)));
+  els(".az-doc-btn", $("azienda-rows")).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await openSignedDoc(btn.dataset.path);
+  }));
+}
+
+let pendingAziendaFile = null;
+
+function openAziendaModal(id) {
+  const r = id ? state.adempAzienda.find((x) => x.id === id) : null;
+  $("azienda-title").textContent = r ? "Adempimento dell'azienda" : "Nuovo adempimento dell'azienda";
+  $("azienda-id").value = r ? r.id : "";
+  $("azienda-nome").value = r?.nome || "";
+  $("azienda-periodicita").value = r?.periodicita_mesi == null ? "" : r.periodicita_mesi;
+  $("azienda-prossima").value = r?.prossima || "";
+  $("azienda-ultima").value = r?.ultima_esecuzione || "";
+  $("azienda-note").value = r?.note || "";
+  $("azienda-delete").hidden = !r;
+  pendingAziendaFile = null;
+  $("azienda-doc-file").value = "";
+  $("azienda-doc-upload-label").textContent = "Carica un file";
+  $("azienda-doc-progress").hidden = true;
+  $("azienda-doc-current").hidden = !r?.documento_path;
+  // textContent scrive testo, non HTML: passarlo da esc() raddoppierebbe le
+  // fughe e un nome con la & si leggerebbe "&amp;".
+  if (r?.documento_path) $("azienda-doc-current-name").textContent = r.nome || "Documento";
+  openModal("modal-azienda");
+}
+
+// "Fatto", con la data e l'allegato, come per le persone. Non salva da solo:
+// riempie i campi e lascia premere Salva, cosi' l'allegato scelto nella stessa
+// apertura viene caricato insieme.
+function segnaFattoAzienda() {
+  const oggi = localISO(new Date());
+  const quando = prompt("Quando è stata fatta? (giorno/mese/anno)", fmtDate(oggi));
+  if (quando == null) return;
+  const testo = quando.trim();
+  let dataISO = oggi;
+  const m = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/.exec(testo);
+  if (m) dataISO = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  else if (/^\d{4}-\d{2}-\d{2}$/.test(testo)) dataISO = testo;
+  // Una risposta VUOTA non vale "oggi": chi cancella il campo per riscriverlo e
+  // poi conferma non sta dicendo "oggi", e non deve trovarsi una data che non
+  // ha scritto, con l'avviso che gliela conferma.
+  else { alert("Data non riconosciuta. Scrivila come 03/09/2026."); return; }
+  if (!parseISO(dataISO)) { alert("Data non valida."); return; }
+
+  $("azienda-ultima").value = dataISO;
+  const mesi = $("azienda-periodicita").value === "" ? null : Number($("azienda-periodicita").value);
+  const prossima = prossimaEsecuzioneAzienda({ dataFatto: dataISO, periodicitaMesi: mesi });
+  $("azienda-prossima").value = prossima || "";
+  alert(prossima
+    ? `Segnata come fatta il ${fmtDate(dataISO)}. La prossima è il ${fmtDate(prossima)}.\nPremi Salva per registrarla.`
+    : `Segnata come fatta il ${fmtDate(dataISO)}. Non si ripete.\nPremi Salva per registrarla.`);
+}
+
+async function saveAziendaAdemp(e) {
+  e.preventDefault();
+  const id = $("azienda-id").value || uid();
+  const prev = state.adempAzienda.find((x) => x.id === id) || null;
+  const nome = $("azienda-nome").value.trim();
+  if (!nome) { alert("Il nome dell'adempimento è obbligatorio."); return; }
+
+  // Il file si carica DOPO aver validato: niente upload orfano se manca il nome.
+  const oldPath = prev?.documento_path || null;
+  let documento_path = oldPath;
+  let uploadedPath = null;
+  if (pendingAziendaFile) {
+    $("azienda-doc-progress").hidden = false;
+    try {
+      const ext = (pendingAziendaFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `azienda/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingAziendaFile, {
+        upsert: false, contentType: pendingAziendaFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      uploadedPath = path;
+      documento_path = path;
+    } catch (err) {
+      $("azienda-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("azienda-doc-progress").hidden = true;
+  }
+
+  const mesi = $("azienda-periodicita").value === "" ? null : Number($("azienda-periodicita").value);
+  const row = {
+    id,
+    nome,
+    periodicita_mesi: Number.isFinite(mesi) ? mesi : null,
+    ultima_esecuzione: $("azienda-ultima").value || null,
+    prossima: $("azienda-prossima").value || null,
+    documento_path,
+    note: $("azienda-note").value.trim() || null,
+  };
+
+  const ok = await sbUpsert("adempimenti_azienda", row);
+  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  // Il file vecchio si toglie SOLO a salvataggio riuscito.
+  if (uploadedPath && oldPath) await deleteDoc(oldPath);
+  pendingAziendaFile = null;
+  closeModal("modal-azienda");
+}
+
+async function deleteAziendaAdemp() {
+  const id = $("azienda-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questo adempimento dell'azienda e il documento allegato?")) return;
+  const prev = state.adempAzienda.find((x) => x.id === id);
+  // Prima la riga, poi il file (come eliminaCedolino): se la riga non si
+  // cancella, il file e' ancora al suo posto e la riga continua a puntarci.
+  if (!await sbDelete("adempimenti_azienda", id)) return;
+  if (prev?.documento_path) await deleteDoc(prev.documento_path);
+  closeModal("modal-azienda");
 }
 
 // ---------- Dipendenti ----------
@@ -740,6 +1567,10 @@ function renderCalendar(all) {
       if (x.kind === "contratto") {
         return `<div class="cal-event contratto" data-dipcard="${esc(x.dip.id)}" title="${esc(x.etichetta)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.etichetta)}</div>`;
       }
+      // 5.2 · Un adempimento dell'azienda: cliccandolo si apre la sua modale.
+      if (x.kind === "azienda") {
+        return `<div class="cal-event azienda" data-azienda="${esc(x.riga.id)}" title="${esc(x.riga.nome)}">🏢 ${esc(x.riga.nome)}</div>`;
+      }
       // 4.2 · Ferie e permessi approvati: cliccandoli si apre l'evento.
       if (x.kind === "evento") {
         const t = tipoEvento(x.ev.tipo);
@@ -755,6 +1586,7 @@ function renderCalendar(all) {
   els(".cal-event", grid).forEach((ev) => ev.addEventListener("click", (e) => {
     e.stopPropagation();
     if (ev.dataset.dipcard) openDipModal(ev.dataset.dipcard);
+    else if (ev.dataset.azienda) openAziendaModal(ev.dataset.azienda);
     else if (ev.dataset.evento) openEventoModal(null, ev.dataset.evento);
     else if (ev.dataset.ad) openAdmModal(ev.dataset.dip, ev.dataset.ad);
     else openAdmModal(ev.dataset.dip, null, ev.dataset.tipo);
@@ -777,6 +1609,7 @@ function renderConfig() {
   $("cfg-onboarding").hidden = state.configTab !== "onboarding";
   $("cfg-modelli").hidden = state.configTab !== "modelli";
   $("cfg-parametri").hidden = state.configTab !== "parametri";
+  $("cfg-competenze").hidden = state.configTab !== "competenze";
   if (state.configTab === "ruoli") renderRuoliTable();
   else if (state.configTab === "categorie") renderCategorieTable();
   else if (state.configTab === "tipi") renderTipiTable();
@@ -784,6 +1617,7 @@ function renderConfig() {
   else if (state.configTab === "onboarding") renderOnboardingItemsTable();
   else if (state.configTab === "modelli") renderModelliTable();
   else if (state.configTab === "parametri") renderParametriTable();
+  else if (state.configTab === "competenze") renderCompetenzeTable();
 }
 
 // ============================================================
@@ -1326,6 +2160,15 @@ function openDipModal(id) {
   // Provvedimenti disciplinari del dipendente.
   if (d) renderDipProvvedimenti(d.id);
   else $("dip-provv-section").hidden = true;
+
+  // 5.3 · La griglia delle competenze. Su una scheda nuova non si mostra: i
+  // livelli sono righe di un'altra tabella e vogliono una persona che esista.
+  if (d) renderDipCompetenze(d.id);
+  else $("dip-competenze-section").hidden = true;
+
+  // 5.4 · I colloqui della persona.
+  if (d) renderDipColloqui(d.id);
+  else $("dip-colloqui-section").hidden = true;
 
   // 3.2 · Cedolini della persona.
   if (d) renderDipCedolini(d.id);
@@ -2827,6 +3670,13 @@ const TABELLE_FIGLIE_DIP = [
   // Senza questa riga la scheda di un infortunio resterebbe nel bucket per
   // sempre, senza padrone — un dato sanitario orfano.
   { table: "eventi",                store: "eventi",           doc: "documento_path" },
+  // 5.3 · Nessun documento (doc: null, come accettazioni): serve comunque, o
+  // eliminaDipendenteCompleto lascerebbe i livelli in memoria dopo aver
+  // cancellato la persona.
+  { table: "competenze",            store: "competenze",       doc: null },
+  // 5.4 · Il verbale del colloquio e' un documento come gli altri: senza questa
+  // riga la foreign key cancellerebbe la riga e lascerebbe il PDF nel bucket.
+  { table: "colloqui",              store: "colloqui",         doc: "documento_path" },
 ];
 
 // Tutti i PDF di un dipendente: cicli correnti, storico archiviato, moduli DPI,
@@ -4592,6 +5442,7 @@ const TABELLE_CONFIGURAZIONE = [
   ["onboarding_items", "onboardItems"],
   ["documenti_template", "modelli"],
   ["dpi_tipi", "dpiTipi"],
+  ["competenze_catalogo", "competenzeCatalogo"],   // 5.3 · e' un catalogo come gli altri
 ];
 
 function scaricaConfigurazione() {
@@ -4696,6 +5547,26 @@ function collegaDocumentiAiDati(prefissoDip) {
       `${tipoEvento(ev.tipo).label} del ${fmtDate(ev.dal)}`, ev.dal, "corrente");
   }
 
+  // 5.4 · I verbali dei colloqui.
+  for (const c of state.colloqui) {
+    segna(c.documento_path, dipById(c.dipendente_id), "Colloquio",
+      c.esito || "Colloquio annuale", c.data, "corrente");
+  }
+  // 5.5 · I CV dei candidati. Non sono di nessun DIPENDENTE: colonna vuota,
+  // come per gli scambi con il consulente. Senza questo ciclo l'indice del
+  // backup li darebbe per "non collegati", cioe' file senza padrone.
+  for (const c of state.candidature) {
+    segna(c.documento_path, null, "Candidatura",
+      `${c.nominativo || ""}${c.posizione ? " — " + c.posizione : ""}`, c.ricevuto_il, "corrente");
+  }
+  // 5.2 · Gli adempimenti dell'azienda non sono di NESSUNA persona: la colonna
+  // Dipendente resta vuota di proposito, come per gli scambi con il consulente.
+  // Senza questo ciclo l'indice del backup li darebbe per "non collegati".
+  for (const a of state.adempAzienda) {
+    segna(a.documento_path, null, "Adempimento aziendale", a.nome || "",
+      a.ultima_esecuzione, "corrente");
+  }
+
   // Fallback per i file del portale: portal/{prefisso}/... . Serve ai documenti
   // caricati dal dipendente e non ancora validati dall'HR, che non sono
   // referenziati da nessuna riga.
@@ -4796,6 +5667,7 @@ function setView(v) {
   $("view-compliance").hidden = v !== "compliance";
   $("view-eventi").hidden = v !== "eventi";
   $("view-cariche").hidden = v !== "cariche";
+  $("view-competenze").hidden = v !== "competenze";
   $("view-dipendenti").hidden = v !== "dipendenti";
   $("view-storico").hidden = v !== "storico";
   $("view-consulente").hidden = v !== "consulente";
@@ -4836,6 +5708,8 @@ function clearFilters() {
   $("search").value = "";
   state.compFilter = { dipendente: "", mansione: "", incarico: "", stato: "" };
   state.compView = "list";
+  state.compGroup = "persona";   // 5.1 · come compView: "pulisci" riporta alla vista di partenza
+  els("#comp-group-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x.dataset.cgroup === "persona"));
   populateFilters();
   $("btn-clear-filters").hidden = true;
   renderAll();
@@ -4943,10 +5817,76 @@ function wireEvents() {
     updateClearBtn(); renderCompliance();
   }));
 
+  // 5.5 · Candidature.
+  $("btn-candidature").addEventListener("click", openCandidatureModal);
+  $("candidature-close").addEventListener("click", () => closeModal("modal-candidature"));
+  $("candidature-form").addEventListener("submit", saveCandidatura);
+  $("candidature-annulla-modifica").addEventListener("click", () => {
+    resetFormCandidatura();
+    renderRigheCandidature();
+  });
+  $("candidature-doc-file").addEventListener("change", (e) => {
+    pendingCandidaturaFile = e.target.files[0] || null;
+    $("candidature-doc-upload-label").textContent = pendingCandidaturaFile ? pendingCandidaturaFile.name : "Allega il CV";
+  });
+
+  // 5.4 · Colloqui annuali.
+  $("dip-colloqui-toggle").addEventListener("click", () => toggleSection("dip-colloqui-toggle", "dip-colloqui-list"));
+  $("dip-colloqui-add").addEventListener("click", (e) => {
+    e.stopPropagation();   // il bottone sta dentro il toggle: senza, apre e chiude la sezione
+    const id = $("dip-id").value;
+    if (id) openColloquioModal(id, null);   // mai su una scheda non ancora salvata
+  });
+  $("colloquio-close").addEventListener("click", () => closeModal("modal-colloquio"));
+  $("colloquio-cancel").addEventListener("click", () => closeModal("modal-colloquio"));
+  $("colloquio-form").addEventListener("submit", saveColloquio);
+  $("colloquio-delete").addEventListener("click", deleteColloquio);
+  $("colloquio-doc-file").addEventListener("change", (e) => {
+    pendingColloquioFile = e.target.files[0] || null;
+    $("colloquio-doc-upload-label").textContent = pendingColloquioFile ? pendingColloquioFile.name : "Carica un file";
+  });
+  $("colloquio-doc-open").addEventListener("click", async () => {
+    const c = state.colloqui.find((x) => x.id === $("colloquio-id").value);
+    if (c?.documento_path) await openSignedDoc(c.documento_path);
+  });
+
+  // 5.3 · Catalogo delle competenze (Configurazione) e vista Competenze.
+  $("add-competenza").addEventListener("click", () => openCompetenzaModal(null));
+  $("competenza-close").addEventListener("click", () => closeModal("modal-competenza"));
+  $("competenza-cancel").addEventListener("click", () => closeModal("modal-competenza"));
+  $("competenza-form").addEventListener("submit", saveCompetenza);
+  $("competenza-delete").addEventListener("click", deleteCompetenza);
+  $("dip-competenze-toggle").addEventListener("click", () => toggleSection("dip-competenze-toggle", "dip-competenze-list"));
+
+  // 5.2 · Adempimenti dell'azienda.
+  $("azienda-add").addEventListener("click", () => openAziendaModal(null));
+  $("azienda-close").addEventListener("click", () => closeModal("modal-azienda"));
+  $("azienda-cancel").addEventListener("click", () => closeModal("modal-azienda"));
+  $("azienda-form").addEventListener("submit", saveAziendaAdemp);
+  $("azienda-delete").addEventListener("click", deleteAziendaAdemp);
+  $("azienda-fatto").addEventListener("click", segnaFattoAzienda);
+  $("azienda-doc-file").addEventListener("change", (e) => {
+    pendingAziendaFile = e.target.files[0] || null;
+    $("azienda-doc-upload-label").textContent = pendingAziendaFile ? pendingAziendaFile.name : "Carica un file";
+  });
+  $("azienda-doc-open").addEventListener("click", async () => {
+    const r = state.adempAzienda.find((x) => x.id === $("azienda-id").value);
+    if (r?.documento_path) await openSignedDoc(r.documento_path);
+  });
+
   // Toggle Lista / Calendario dentro il tab Scadenze (ex-Compliance).
   els("#comp-view-toggle .vt-btn").forEach((b) => b.addEventListener("click", () => {
     state.compView = b.dataset.compview;
     els("#comp-view-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x === b));
+    renderCompliance();
+  }));
+
+  // 5.1 · Toggle Per persona / Per corso. Cambia solo come si guardano le
+  // stesse righe, quindi renderCompliance() diretto e' lecito (nessuna
+  // mutazione di dati, nessuna cache dei gap da invalidare).
+  els("#comp-group-toggle .vt-btn").forEach((b) => b.addEventListener("click", () => {
+    state.compGroup = b.dataset.cgroup;
+    els("#comp-group-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x === b));
     renderCompliance();
   }));
   $("cal-prev").addEventListener("click", () => { state.calRef = new Date(state.calRef.getFullYear(), state.calRef.getMonth() - 1, 1); renderCompliance(); });
