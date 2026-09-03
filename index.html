@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HR Overland — Compliance personale</title>
-<link rel="stylesheet" href="style.css?v=b11">
+<link rel="stylesheet" href="style.css?v=b12">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous" defer></script>
 </head>
@@ -139,6 +139,25 @@
         <select id="filter-dipendente"><option value="">Tutti i dipendenti</option></select>
         <select id="filter-mansione"><option value="">Tutte le mansioni</option></select>
         <select id="filter-incarico"><option value="">Tutti gli incarichi</option></select>
+      </div>
+
+      <!-- 5.1 · Le stesse righe, per persona o per corso. Sta QUI e non nella
+           topbar perche' ha senso solo dentro le Scadenze, e in modalita'
+           Calendario non ne ha nessuno: li' si nasconde. -->
+      <div class="view-toggle comp-group-toggle" id="comp-group-toggle">
+        <button type="button" class="vt-btn active" data-cgroup="persona">👤 Per persona</button>
+        <button type="button" class="vt-btn" data-cgroup="corso">📚 Per corso</button>
+      </div>
+
+      <!-- 5.1 · Il piano formativo: un gruppo per corso, con quante persone,
+           i tre conteggi e la scadenza piu' vicina — la data con cui si
+           prenota un'edizione con l'ente per tutti insieme. -->
+      <div class="comp-wrap" id="comp-corsi-wrap" hidden>
+        <div id="comp-corsi-rows"></div>
+        <div id="comp-corsi-empty" class="empty" hidden>
+          <div class="empty-ico">📚</div>
+          <div>Nessun corso da programmare per i filtri scelti.</div>
+        </div>
       </div>
 
       <div class="comp-wrap" id="comp-wrap">
@@ -1286,6 +1305,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
 <script src="data.js?v=c4"></script>
 <script src="common.js?v=c10"></script>
-<script src="app.js?v=c11"></script>
+<script src="app.js?v=c12"></script>
 </body>
 </html>

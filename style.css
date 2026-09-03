@@ -1746,6 +1746,65 @@ body.self-service { background: var(--bg); }
   border-left-color: #0f766e;
 }
 .ev-row .hist-note .stato { font-size: 11px; }
+/* ============================================================
+   5.1 · Il piano formativo: le stesse righe, per corso.
+   Il toggle porta la classe .view-toggle, quindi `hidden` lo nasconde gia'
+   grazie a `.view-toggle[hidden]` (riga 476): qui NON serve una regola nuova.
+   ============================================================ */
+.comp-group-toggle {
+  margin: 0 22px 12px;
+  align-self: flex-start;
+}
+#comp-corsi-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+  padding: 0 22px 22px;
+}
+.corso-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow);
+}
+.corso-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.corso-nome { font-weight: 700; font-size: 15px; }
+.corso-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.corso-scadenza { text-align: right; flex: 0 0 auto; }
+.corso-scadenza-lbl { color: var(--ink-soft); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.corso-scadenza-val { font-weight: 700; font-size: 15px; margin-top: 2px; }
+.corso-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 10px; }
+.corso-persone { display: flex; flex-wrap: wrap; gap: 6px; }
+.corso-persona {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--gray-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+.corso-persona em { font-style: normal; color: var(--ink-soft); font-size: 11px; }
+.corso-persona:hover { border-color: var(--brand); }
+.corso-persona.scaduto     { background: var(--red-soft);    border-color: #fca5a5; }
+.corso-persona.in_scadenza { background: var(--orange-soft); border-color: #fdba74; }
+.corso-persona.ok          { background: var(--green-soft);  border-color: #86efac; }
+
 /* ---------- 4b · L'attributo `hidden` deve nascondere davvero ----------
    `.modal-body label { display: flex }` (riga 833) e `.me-fieldset { display:
    flex }` (blocco che apre a riga 1109, `display` alla 1115) sono regole

@@ -28,6 +28,7 @@ const state = {
   eventi: [],             // 4.1 · ferie, permessi, malattie, infortuni, straordinari
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
+  compGroup: "persona",      // 5.1 · "persona" | "corso" — le stesse righe, raggruppate
   configTab: "ruoli",
   dipTab: "anagrafica",      // 2.3 · linguetta aperta nella scheda dipendente
   scambiAnno: new Date().getFullYear(),   // 3.3 · anno mostrato nella vista Consulente
@@ -586,6 +587,8 @@ function renderCompliance() {
   // Modalità Calendario: nasconde le liste e disegna il mese con gli stessi eventi.
   if (state.compView === "calendar") {
     $("comp-wrap").hidden = true;
+    $("comp-corsi-wrap").hidden = true;
+    $("comp-group-toggle").hidden = true;   // 5.1 · un calendario non si raggruppa per corso
     $("contratti-wrap").hidden = true;
     $("comp-cal-wrap").hidden = false;
     // Eventi calendario = righe con una data di scadenza utile, piu' i contratti.
@@ -597,9 +600,20 @@ function renderCompliance() {
     renderCalendar(events);
     return;
   }
-  $("comp-wrap").hidden = false;
   $("comp-cal-wrap").hidden = true;
+  $("comp-group-toggle").hidden = false;
   renderContratti(contratti);
+
+  // 5.1 · Per corso: le stesse righe, raggruppate. Il blocco Contratti resta
+  // visibile — non e' una riga di corso e non c'entra con il raggruppamento.
+  if (state.compGroup === "corso") {
+    $("comp-wrap").hidden = true;
+    $("comp-corsi-wrap").hidden = false;
+    renderCompliancePerCorso(rows);
+    return;
+  }
+  $("comp-wrap").hidden = false;
+  $("comp-corsi-wrap").hidden = true;
 
   const host = $("comp-rows");
   $("comp-empty").hidden = rows.length > 0;
@@ -629,6 +643,57 @@ function renderCompliance() {
     const tipoId = el2.dataset.tipo;
     if (admId) openAdmModal(dipId, admId);
     else openAdmModal(dipId, null, tipoId);
+  }));
+}
+
+// 5.1 · Il piano formativo dell'anno: gli stessi gap, per corso.
+// Adattatore, come computeGaps: il raggruppamento e la scadenza piu' vicina
+// stanno in common.js (con i test); qui resta solo l'ORDINE, che e'
+// presentazione — prima i corsi con qualcuno scaduto, poi la scadenza piu'
+// vicina, poi il nome.
+function renderCompliancePerCorso(righe) {
+  const gruppi = raggruppaGapPerTipo(righe).sort((a, b) => {
+    if (a.scaduti !== b.scaduti) return b.scaduti - a.scaduti;
+    const sa = a.primaScadenza || "9999-99-99";
+    const sb = b.primaScadenza || "9999-99-99";
+    if (sa !== sb) return sa.localeCompare(sb);
+    return (a.tipo.nome || "").localeCompare(b.tipo.nome || "");
+  });
+  $("comp-corsi-empty").hidden = gruppi.length > 0;
+  $("comp-corsi-rows").innerHTML = gruppi.map((g) => {
+    const cat = g.tipo.categoria;
+    const pills = [];
+    if (g.scaduti) pills.push(`<span class="gap-pill scaduto">${g.scaduti} scaduti</span>`);
+    if (g.inScadenza) pills.push(`<span class="gap-pill in_scadenza">${g.inScadenza} in scad.</span>`);
+    if (g.ok) pills.push(`<span class="gap-pill ok">${g.ok} in regola</span>`);
+    // Le persone, con la loro data: e' l'elenco che si manda all'ente per
+    // prenotare l'edizione. Ordinate come le righe arrivano (gia' per gravita').
+    const persone = g.righe.map((r) => `<span class="corso-persona ${r.stato}"
+        data-dip="${esc(r.dip.id)}" data-tipo="${esc(g.tipo.id)}" data-ad="${r.adempimento ? esc(r.adempimento.id) : ""}"
+        title="${esc(STATO_INFO[r.stato].label)}${r.scadenza ? " — scade il " + fmtDate(r.scadenza) : ""}"
+      >${esc(r.dip.cognome)} ${esc(r.dip.nome)}${r.scadenza ? ` <em>${fmtDate(r.scadenza)}</em>` : ""}</span>`).join("");
+    return `<div class="corso-card">
+      <div class="corso-head">
+        <div>
+          <div class="corso-nome">${esc(g.tipo.nome)}</div>
+          <div class="corso-meta">
+            <span class="chip cat-${cat}">${CAT_BY_KEY[cat]?.icon || ""} ${CAT_BY_KEY[cat]?.label || cat}</span>
+            <span>${g.totale} ${g.totale === 1 ? "persona" : "persone"}</span>
+          </div>
+        </div>
+        <div class="corso-scadenza">
+          <div class="corso-scadenza-lbl">Prima scadenza</div>
+          <div class="corso-scadenza-val">${g.primaScadenza ? fmtDate(g.primaScadenza) : "—"}</div>
+        </div>
+      </div>
+      <div class="corso-pills">${pills.join("")}</div>
+      <div class="corso-persone">${persone}</div>
+    </div>`;
+  }).join("");
+  // Cliccando una persona si apre il SUO adempimento, come nella lista.
+  els(".corso-persona", $("comp-corsi-rows")).forEach((elP) => elP.addEventListener("click", () => {
+    if (elP.dataset.ad) openAdmModal(elP.dataset.dip, elP.dataset.ad);
+    else openAdmModal(elP.dataset.dip, null, elP.dataset.tipo);
   }));
 }
 
@@ -4836,6 +4901,9 @@ function clearFilters() {
   $("search").value = "";
   state.compFilter = { dipendente: "", mansione: "", incarico: "", stato: "" };
   state.compView = "list";
+  state.compGroup = "persona";   // 5.1 · come compView: "pulisci" riporta alla vista di partenza
+  els("#comp-view-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x.dataset.compview === "list"));
+  els("#comp-group-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x.dataset.cgroup === "persona"));
   populateFilters();
   $("btn-clear-filters").hidden = true;
   renderAll();
@@ -4947,6 +5015,15 @@ function wireEvents() {
   els("#comp-view-toggle .vt-btn").forEach((b) => b.addEventListener("click", () => {
     state.compView = b.dataset.compview;
     els("#comp-view-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x === b));
+    renderCompliance();
+  }));
+
+  // 5.1 · Toggle Per persona / Per corso. Cambia solo come si guardano le
+  // stesse righe, quindi renderCompliance() diretto e' lecito (nessuna
+  // mutazione di dati, nessuna cache dei gap da invalidare).
+  els("#comp-group-toggle .vt-btn").forEach((b) => b.addEventListener("click", () => {
+    state.compGroup = b.dataset.cgroup;
+    els("#comp-group-toggle .vt-btn").forEach((x) => x.classList.toggle("active", x === b));
     renderCompliance();
   }));
   $("cal-prev").addEventListener("click", () => { state.calRef = new Date(state.calRef.getFullYear(), state.calRef.getMonth() - 1, 1); renderCompliance(); });

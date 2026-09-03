@@ -830,8 +830,44 @@ function calcolaGap({ dip, ruoloIds, requisiti, adempimenti, trovaTipo, giorniOn
   return rows;
 }
 
+// ============================================================
+// 5.1 · Il piano formativo: le stesse righe del motore gap, raggruppate per
+// corso invece che per persona. Serve a prenotare un'edizione con l'ente per
+// tutte le persone insieme, e a gennaio e' il piano formativo dell'anno.
+//
+// Sta qui e non in app.js per una ragione sola: "la scadenza piu' vicina" e' una
+// regola su date, e sbagliarla non da' nessun errore — da' una data di
+// prenotazione sbagliata all'ente, e nessuno se ne accorge.
+//
+// NON ordina: l'ordinamento per gravita' e' presentazione e resta in app.js,
+// come gia' per calcolaGap e calcolaCariche. L'ordine dei gruppi qui e' quello
+// di prima apparizione, cioe' deterministico ma senza significato.
+// ============================================================
+function raggruppaGapPerTipo(righe) {
+  const byTipo = new Map();
+  for (const r of righe || []) {
+    if (!r || !r.tipo) continue;
+    let g = byTipo.get(r.tipo.id);
+    if (!g) {
+      g = { tipo: r.tipo, righe: [], totale: 0, scaduti: 0, inScadenza: 0, ok: 0, primaScadenza: null };
+      byTipo.set(r.tipo.id, g);
+    }
+    g.righe.push(r);
+    g.totale++;
+    if (r.stato === "scaduto") g.scaduti++;
+    else if (r.stato === "in_scadenza") g.inScadenza++;
+    else if (r.stato === "ok") g.ok++;
+    // Le righe senza scadenza non abbassano la prima scadenza del gruppo: una
+    // persona per cui la data non si sa ancora non anticipa il corso di tutti.
+    if (r.scadenza && (g.primaScadenza === null || r.scadenza < g.primaScadenza)) {
+      g.primaScadenza = r.scadenza;
+    }
+  }
+  return [...byTipo.values()];
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { classificaStato, calcolaGap, avvisoScadenza,
+  module.exports = { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,

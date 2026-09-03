@@ -15,7 +15,7 @@ globalThis.window = {
 };
 globalThis.document = { addEventListener: () => {} };
 
-const { classificaStato, calcolaGap, avvisoScadenza,
+const { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
@@ -927,5 +927,47 @@ const s2 = saldoDichiarato({ dip: { id: "d1", saldo_al: "2026-06-30" },
 assert.equal(s2.ferie, null);
 assert.equal(s2.par, null);
 assert.equal(s2.ferieDopo, 2);
+
+// ============================================================
+// 5.1 · raggruppaGapPerTipo — le righe del motore gap, per corso.
+// La cosa che si puo' sbagliare in silenzio e' "la scadenza piu' vicina":
+// sbagliata, da' all'ente una data di prenotazione sbagliata e nessuno se ne
+// accorge, perche' la pagina si disegna lo stesso.
+// ============================================================
+const tCarr = { id: "t-carr", nome: "Carrelli", categoria: "abilitazione" };
+const tVis = { id: "t-vis", nome: "Visita medica", categoria: "sanitario" };
+const righeGap = [
+  { dip: { id: "d1" }, tipo: tCarr, stato: "scaduto",     scadenza: "2026-03-01" },
+  { dip: { id: "d2" }, tipo: tCarr, stato: "in_scadenza", scadenza: "2026-10-15" },
+  { dip: { id: "d3" }, tipo: tCarr, stato: "ok",          scadenza: null },
+  { dip: { id: "d1" }, tipo: tVis,  stato: "ok",          scadenza: "2027-01-01" },
+];
+const gruppi = raggruppaGapPerTipo(righeGap);
+assert.equal(gruppi.length, 2);                       // due corsi, non quattro righe
+const gCarr = gruppi.find((g) => g.tipo.id === "t-carr");
+assert.equal(gCarr.totale, 3);
+assert.equal(gCarr.righe.length, 3);
+assert.equal(gCarr.scaduti, 1);
+assert.equal(gCarr.inScadenza, 1);
+assert.equal(gCarr.ok, 1);
+// I conteggi per stato sommano al totale: nessuna riga si perde per strada.
+assert.equal(gCarr.scaduti + gCarr.inScadenza + gCarr.ok, gCarr.totale);
+// La prima scadenza e' la minore, e la riga SENZA scadenza non la abbassa.
+assert.equal(gCarr.primaScadenza, "2026-03-01");
+// Un gruppo di sole righe senza scadenza non ne ha una.
+const soloSenzaData = raggruppaGapPerTipo([
+  { dip: { id: "d1" }, tipo: tVis, stato: "scaduto", scadenza: null },
+  { dip: { id: "d2" }, tipo: tVis, stato: "scaduto", scadenza: null },
+]);
+assert.equal(soloSenzaData.length, 1);
+assert.equal(soloSenzaData[0].primaScadenza, null);
+assert.equal(soloSenzaData[0].totale, 2);
+// L'ordine in cui arrivano le righe non cambia la prima scadenza.
+const alContrario = raggruppaGapPerTipo(righeGap.slice().reverse());
+assert.equal(alContrario.find((g) => g.tipo.id === "t-carr").primaScadenza, "2026-03-01");
+// Elenco vuoto, e input strani, non fanno cadere la pagina.
+assert.deepEqual(raggruppaGapPerTipo([]), []);
+assert.deepEqual(raggruppaGapPerTipo(null), []);
+assert.deepEqual(raggruppaGapPerTipo([null, { dip: {} }]), []);   // righe senza tipo: ignorate
 
 console.log("OK tutti i test common.js");
