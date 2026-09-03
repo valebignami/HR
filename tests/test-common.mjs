@@ -17,6 +17,7 @@ globalThis.document = { addEventListener: () => {} };
 
 const { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
         statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
+        conteggioColloquiAnno,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
@@ -1057,5 +1058,78 @@ const soglia3 = coperturaCompetenze({
 assert.equal(soglia3[0].scoperta, true);
 // Elenchi vuoti o mancanti non fanno cadere la pagina.
 assert.deepEqual(coperturaCompetenze({ dipendenti: null, competenze: null, catalogo: null }), []);
+
+// ============================================================
+// 5.4 · conteggioColloquiAnno. Tutti i casi passano `oggiISO`: senza, il caso
+// "tutti fatti prima del limite e' verde" comincerebbe a fallire da solo il
+// giorno in cui il 30 novembre entra nei 60 giorni della soglia.
+// ============================================================
+const dipColl = [
+  { id: "d1", cognome: "Rossi", nome: "Ada", attivo: true },
+  { id: "d2", cognome: "Bianchi", nome: "Bea", attivo: true },
+  { id: "d3", cognome: "Verdi", nome: "Ciro", attivo: false },   // cessato
+];
+// Nessun colloquio: nessuno fatto, e non e' verde.
+const c0 = conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [], anno: 2026, meseLimite: 11, oggiISO: "2026-09-03" });
+assert.equal(c0.attesi, 2);          // il cessato non e' atteso
+assert.equal(c0.fatti, 0);
+assert.deepEqual(c0.mancanti.map((d) => d.id), ["d1", "d2"]);
+assert.equal(c0.scadenza, "2026-11-30");   // ULTIMO giorno del mese limite
+assert.notEqual(c0.stato, "ok");
+
+// Tutti fatti, ben prima del limite: verde.
+const c1 = conteggioColloquiAnno({
+  dipendenti: dipColl,
+  colloqui: [{ dipendente_id: "d1", data: "2026-03-10" }, { dipendente_id: "d2", data: "2026-04-02" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-05-01" });
+assert.equal(c1.fatti, 2);
+assert.equal(c1.mancanti.length, 0);
+assert.equal(c1.stato, "ok");
+
+// Due colloqui alla STESSA persona non coprono il collega: si contano le
+// persone, non le righe.
+const c2 = conteggioColloquiAnno({
+  dipendenti: dipColl,
+  colloqui: [{ dipendente_id: "d1", data: "2026-03-10" }, { dipendente_id: "d1", data: "2026-09-01" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-09-03" });
+assert.equal(c2.fatti, 1);
+assert.deepEqual(c2.mancanti.map((d) => d.id), ["d2"]);
+
+// Un colloquio dell'anno PRECEDENTE non copre quest'anno.
+const c3 = conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [{ dipendente_id: "d1", data: "2025-11-20" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-09-03" });
+assert.equal(c3.fatti, 0);
+
+// Il colloquio di un CESSATO non conta ne' come fatto ne' come mancante.
+const c4 = conteggioColloquiAnno({
+  dipendenti: dipColl,
+  colloqui: [{ dipendente_id: "d1", data: "2026-01-10" }, { dipendente_id: "d2", data: "2026-01-11" },
+             { dipendente_id: "d3", data: "2026-01-12" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-05-01" });
+assert.equal(c4.attesi, 2);
+assert.equal(c4.fatti, 2);
+
+// Nessuno in forza: non e' "tutto fatto", e la riga non diventa verde.
+const c5 = conteggioColloquiAnno({
+  dipendenti: [{ id: "d3", attivo: false }], colloqui: [], anno: 2026, meseLimite: 11,
+  oggiISO: "2026-05-01" });
+assert.equal(c5.attesi, 0);
+assert.notEqual(c5.stato, "ok");
+
+// Passato il limite con qualcuno che manca: rossa.
+const c6 = conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [{ dipendente_id: "d1", data: "2026-02-02" }],
+  anno: 2026, meseLimite: 11, oggiISO: "2026-12-15" });
+assert.equal(c6.stato, "scaduto");
+
+// La scadenza in un anno bisestile, con febbraio come limite: 29, non 28.
+assert.equal(conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [], anno: 2028, meseLimite: 2, oggiISO: "2028-01-01" }).scadenza,
+  "2028-02-29");
+// Un mese limite fuori scala non inventa una data.
+assert.equal(conteggioColloquiAnno({
+  dipendenti: dipColl, colloqui: [], anno: 2026, meseLimite: 0, oggiISO: "2026-01-01" }).scadenza, null);
 
 console.log("OK tutti i test common.js");

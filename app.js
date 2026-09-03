@@ -29,6 +29,7 @@ const state = {
   adempAzienda: [],       // 5.2 · le scadenze dell'AZIENDA, non delle persone
   competenzeCatalogo: [], // 5.3 · il catalogo delle lavorazioni
   competenze: [],         // 5.3 · il livello di ogni persona su ogni lavorazione
+  colloqui: [],           // 5.4 · i colloqui annuali, uno per persona per anno
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   compGroup: "persona",      // 5.1 · "persona" | "corso" — le stesse righe, raggruppate
@@ -45,7 +46,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi", "adempimenti_azienda", "competenze_catalogo", "competenze"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi", "adempimenti_azienda", "competenze_catalogo", "competenze", "colloqui"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -89,6 +90,8 @@ const STORE_BY_TABLE = {
   // 5.3 · Competenze: catalogo e livelli. Nessuna delle due in realtime.
   competenze_catalogo: "competenzeCatalogo",
   competenze: "competenze",
+  // 5.4 · I colloqui annuali. Nemmeno questa in realtime.
+  colloqui: "colloqui",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -704,6 +707,159 @@ async function salvaLivelloCompetenza(dipId, competenzaId, livello) {
   renderDipCompetenze(dipId);
 }
 
+// ============================================================
+// 5.4 · COLLOQUI ANNUALI
+// "Colloqui dell'anno: 9/15 fatti", con chi manca, nel blocco degli
+// adempimenti aziendali e NON fra le scadenze di sicurezza (piano, voce 5.4).
+// ============================================================
+function meseLimiteColloqui() { return parametroInt(state.parametri, "colloqui_mese_limite", 11); }
+
+// La riga calcolata in cima al blocco aziendale. Restituisce null quando non
+// c'e' niente da dire (nessuna persona in forza e nessun colloquio).
+function rigaColloquiDellAnno() {
+  const anno = new Date().getFullYear();
+  const c = conteggioColloquiAnno({
+    dipendenti: state.dipendenti,
+    colloqui: state.colloqui,
+    anno,
+    meseLimite: meseLimiteColloqui(),
+  });
+  if (c.attesi === 0 && state.colloqui.length === 0) return null;
+  const chiManca = c.mancanti.length
+    ? `<div class="colloqui-mancanti">Mancano:
+        ${c.mancanti.slice().sort((a, b) => (a.cognome || "").localeCompare(b.cognome || ""))
+          .map((d) => `<span class="chip colloqui-chip" data-dipcolloquio="${esc(d.id)}"
+             title="Apri la scheda di ${esc(d.cognome)} ${esc(d.nome)}">${esc(d.cognome)} ${esc(d.nome)}</span>`).join("")}
+       </div>`
+    : "";
+  return {
+    stato: c.stato,
+    html: `<div class="comp-row azienda-cols colloqui-riga">
+        <div><strong>🗣 Colloqui dell'anno ${anno}</strong>: ${c.fatti}/${c.attesi} fatti${chiManca}</div>
+        <div>ogni anno</div>
+        <div><span class="muted">—</span></div>
+        <div>${c.scadenza ? fmtDate(c.scadenza) : '<span class="muted">senza data</span>'}</div>
+        <div><span class="stato ${c.stato}">${STATO_INFO[c.stato].label}</span></div>
+      </div>`,
+  };
+}
+
+// I cognomi di chi manca aprono la sua scheda, sulla linguetta Crescita.
+function collegaClickColloqui() {
+  els(".colloqui-chip", $("azienda-colloqui")).forEach((chip) => chip.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    openDipModal(chip.dataset.dipcolloquio);
+    mostraLinguetta("crescita");
+  }));
+}
+
+function renderDipColloqui(dipId) {
+  const list = state.colloqui
+    .filter((c) => c.dipendente_id === dipId)
+    .sort((a, b) => (b.data || "").localeCompare(a.data || ""));
+  $("dip-colloqui-section").hidden = false;
+  $("dip-colloqui-count").textContent = list.length;
+  const host = $("dip-colloqui-list");
+  host.innerHTML = list.length === 0
+    // "Non si inventano colloqui mai avvenuti": la sezione parte vuota, e lo dice.
+    ? '<div class="muted" style="padding:8px 0">Nessun colloquio registrato.</div>'
+    : list.map((c) => `<div class="hist-row colloquio-row" data-id="${esc(c.id)}">
+        <div class="hist-date">${fmtDate(c.data)}</div>
+        <div><strong>${esc(c.esito || "Colloquio")}</strong>${c.condotto_da ? ` <span class="muted">— ${esc(c.condotto_da)}</span>` : ""}</div>
+        <div class="hist-meta">${c.obiettivi ? `<span class="hist-note">${esc(c.obiettivi).slice(0, 80)}${c.obiettivi.length > 80 ? "…" : ""}</span>` : ""}</div>
+        ${c.documento_path ? `<button type="button" class="hist-doc colloquio-doc-btn" data-path="${esc(c.documento_path)}" title="Apri il verbale">📎</button>` : '<span class="hist-doc disabled">—</span>'}
+      </div>`).join("");
+  els(".colloquio-row", host).forEach((row) =>
+    row.addEventListener("click", () => openColloquioModal(dipId, row.dataset.id)));
+  els(".colloquio-doc-btn", host).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await openSignedDoc(btn.dataset.path);
+  }));
+}
+
+let pendingColloquioFile = null;
+
+function openColloquioModal(dipId, colloquioId) {
+  const c = colloquioId ? state.colloqui.find((x) => x.id === colloquioId) : null;
+  const dip = dipById(dipId);
+  $("colloquio-title").textContent = c ? "Colloquio annuale" : "Nuovo colloquio";
+  $("colloquio-id").value = c ? c.id : "";
+  $("colloquio-dip-id").value = dipId;
+  $("colloquio-target").textContent = dip ? `${dip.cognome} ${dip.nome}` : "—";
+  $("colloquio-data").value = c?.data || localISO(new Date());
+  $("colloquio-condotto").value = c?.condotto_da || "";
+  $("colloquio-esito").value = c?.esito || "";
+  $("colloquio-obiettivi").value = c?.obiettivi || "";
+  $("colloquio-delete").hidden = !c;
+  pendingColloquioFile = null;
+  $("colloquio-doc-file").value = "";
+  $("colloquio-doc-upload-label").textContent = "Carica un file";
+  $("colloquio-doc-progress").hidden = true;
+  $("colloquio-doc-current").hidden = !c?.documento_path;
+  if (c?.documento_path) $("colloquio-doc-current-name").textContent = `Verbale ${fmtDate(c.data)}`;
+  openModal("modal-colloquio");
+}
+
+async function saveColloquio(e) {
+  e.preventDefault();
+  const id = $("colloquio-id").value || uid();
+  const dipId = $("colloquio-dip-id").value;
+  const prev = state.colloqui.find((x) => x.id === id) || null;
+  const data = $("colloquio-data").value;
+  if (!data) { alert("La data del colloquio è obbligatoria."); return; }
+
+  const oldPath = prev?.documento_path || null;
+  let documento_path = oldPath;
+  let uploadedPath = null;
+  if (pendingColloquioFile) {
+    $("colloquio-doc-progress").hidden = false;
+    try {
+      const ext = (pendingColloquioFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `colloqui/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingColloquioFile, {
+        upsert: false, contentType: pendingColloquioFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      uploadedPath = path;
+      documento_path = path;
+    } catch (err) {
+      $("colloquio-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("colloquio-doc-progress").hidden = true;
+  }
+
+  const row = {
+    id,
+    dipendente_id: dipId,
+    data,
+    condotto_da: $("colloquio-condotto").value.trim() || null,
+    esito: $("colloquio-esito").value.trim() || null,
+    obiettivi: $("colloquio-obiettivi").value.trim() || null,
+    documento_path,
+  };
+  const ok = await sbUpsert("colloqui", row);
+  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  if (uploadedPath && oldPath) await deleteDoc(oldPath);   // il vecchio solo a salvataggio riuscito
+  pendingColloquioFile = null;
+  closeModal("modal-colloquio");
+  renderDipColloqui(dipId);
+}
+
+async function deleteColloquio() {
+  const id = $("colloquio-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questo colloquio e il verbale allegato?")) return;
+  const dipId = $("colloquio-dip-id").value;
+  const prev = state.colloqui.find((x) => x.id === id);
+  // Prima la riga, poi il file (come eliminaCedolino).
+  if (!await sbDelete("colloqui", id)) return;
+  if (prev?.documento_path) await deleteDoc(prev.documento_path);
+  closeModal("modal-colloquio");
+  renderDipColloqui(dipId);
+}
+
 // ---------- Compliance ----------
 function matchSearch(text) {
   if (!state.search) return true;
@@ -917,10 +1073,15 @@ function renderAdempAzienda() {
   const f = state.compFilter;
   const filtroPersona = !!(f.dipendente || f.mansione || f.incarico || f.stato);
   const righe = filtroPersona ? [] : righeAdempAzienda().filter((x) => matchSearch(x.riga.nome || ""));
+  // 5.4 · La riga calcolata dei colloqui dell'anno, in cima al blocco.
+  const colloqui = filtroPersona ? null : rigaColloquiDellAnno();
 
-  $("azienda-wrap").hidden = righe.length === 0;
-  // Il contatore e' PROPRIO: quante voci non sono a posto.
-  $("azienda-count").textContent = righe.filter((x) => x.stato !== "ok").length;
+  $("azienda-wrap").hidden = righe.length === 0 && !colloqui;
+  // Il contatore e' PROPRIO: quante voci non sono a posto, colloqui compresi.
+  $("azienda-count").textContent =
+    righe.filter((x) => x.stato !== "ok").length + (colloqui && colloqui.stato !== "ok" ? 1 : 0);
+  $("azienda-colloqui").innerHTML = colloqui ? colloqui.html : "";
+  if (colloqui) collegaClickColloqui();
 
   $("azienda-rows").innerHTML = righe.map(({ riga, stato }) => {
     const doc = riga.documento_path
@@ -1755,6 +1916,10 @@ function openDipModal(id) {
   // livelli sono righe di un'altra tabella e vogliono una persona che esista.
   if (d) renderDipCompetenze(d.id);
   else $("dip-competenze-section").hidden = true;
+
+  // 5.4 · I colloqui della persona.
+  if (d) renderDipColloqui(d.id);
+  else $("dip-colloqui-section").hidden = true;
 
   // 3.2 · Cedolini della persona.
   if (d) renderDipCedolini(d.id);
@@ -3260,6 +3425,9 @@ const TABELLE_FIGLIE_DIP = [
   // eliminaDipendenteCompleto lascerebbe i livelli in memoria dopo aver
   // cancellato la persona.
   { table: "competenze",            store: "competenze",       doc: null },
+  // 5.4 · Il verbale del colloquio e' un documento come gli altri: senza questa
+  // riga la foreign key cancellerebbe la riga e lascerebbe il PDF nel bucket.
+  { table: "colloqui",              store: "colloqui",         doc: "documento_path" },
 ];
 
 // Tutti i PDF di un dipendente: cicli correnti, storico archiviato, moduli DPI,
@@ -5130,6 +5298,11 @@ function collegaDocumentiAiDati(prefissoDip) {
       `${tipoEvento(ev.tipo).label} del ${fmtDate(ev.dal)}`, ev.dal, "corrente");
   }
 
+  // 5.4 · I verbali dei colloqui.
+  for (const c of state.colloqui) {
+    segna(c.documento_path, dipById(c.dipendente_id), "Colloquio",
+      c.esito || "Colloquio annuale", c.data, "corrente");
+  }
   // 5.2 · Gli adempimenti dell'azienda non sono di NESSUNA persona: la colonna
   // Dipendente resta vuota di proposito, come per gli scambi con il consulente.
   // Senza questo ciclo l'indice del backup li darebbe per "non collegati".
@@ -5388,6 +5561,26 @@ function wireEvents() {
     state.compFilter.stato = (s === "all") ? "" : (state.compFilter.stato === s ? "" : s);
     updateClearBtn(); renderCompliance();
   }));
+
+  // 5.4 · Colloqui annuali.
+  $("dip-colloqui-toggle").addEventListener("click", () => toggleSection("dip-colloqui-toggle", "dip-colloqui-list"));
+  $("dip-colloqui-add").addEventListener("click", (e) => {
+    e.stopPropagation();   // il bottone sta dentro il toggle: senza, apre e chiude la sezione
+    const id = $("dip-id").value;
+    if (id) openColloquioModal(id, null);   // mai su una scheda non ancora salvata
+  });
+  $("colloquio-close").addEventListener("click", () => closeModal("modal-colloquio"));
+  $("colloquio-cancel").addEventListener("click", () => closeModal("modal-colloquio"));
+  $("colloquio-form").addEventListener("submit", saveColloquio);
+  $("colloquio-delete").addEventListener("click", deleteColloquio);
+  $("colloquio-doc-file").addEventListener("change", (e) => {
+    pendingColloquioFile = e.target.files[0] || null;
+    $("colloquio-doc-upload-label").textContent = pendingColloquioFile ? pendingColloquioFile.name : "Carica un file";
+  });
+  $("colloquio-doc-open").addEventListener("click", async () => {
+    const c = state.colloqui.find((x) => x.id === $("colloquio-id").value);
+    if (c?.documento_path) await openSignedDoc(c.documento_path);
+  });
 
   // 5.3 · Catalogo delle competenze (Configurazione) e vista Competenze.
   $("add-competenza").addEventListener("click", () => openCompetenzaModal(null));

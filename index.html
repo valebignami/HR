@@ -766,6 +766,16 @@
         </div>
       </div>
 
+      <div id="dip-colloqui-section" class="history-section" hidden>
+        <button type="button" class="history-toggle" id="dip-colloqui-toggle" aria-expanded="false">
+          <span class="history-arrow">▸</span>
+          <span>🗣 Colloqui annuali</span>
+          <span class="history-count" id="dip-colloqui-count">0</span>
+          <button type="button" class="ghost-btn" id="dip-colloqui-add" style="margin-left:8px">+ Nuovo colloquio</button>
+        </button>
+        <div id="dip-colloqui-list" hidden></div>
+      </div>
+
       </div><!-- /crescita -->
 
       <div class="dip-tab-panel" id="dip-tab-storia" data-dtab="storia" hidden>
@@ -1137,6 +1147,53 @@
         <button type="button" class="ghost-btn danger" id="provv-delete" hidden>🗑 Elimina</button>
         <div class="modal-foot-spacer"></div>
         <button type="button" class="ghost-btn" id="provv-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE COLLOQUIO ANNUALE (5.4) ============ -->
+<div id="modal-colloquio" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="colloquio-title">Nuovo colloquio</h2>
+      <button class="icon-btn" id="colloquio-close">✕</button>
+    </div>
+    <form id="colloquio-form" class="modal-body">
+      <input type="hidden" id="colloquio-id">
+      <input type="hidden" id="colloquio-dip-id">
+      <div class="done-target" id="colloquio-target">—</div>
+      <div class="row">
+        <label><span>Data *</span><input type="date" id="colloquio-data" required></label>
+        <label><span>Condotto da</span>
+          <input type="text" id="colloquio-condotto" placeholder="Es. Resp. Produzione"></label>
+      </div>
+      <label><span>Esito sintetico</span>
+        <input type="text" id="colloquio-esito" placeholder="Es. Positivo"></label>
+      <label><span>Formazione concordata e obiettivi</span>
+        <textarea id="colloquio-obiettivi" rows="3" placeholder="Es. Carroponte; aggiornamento agenti chimici"></textarea></label>
+      <p class="cfg-hint">Le valutazioni e il verbale per esteso stanno nel documento allegato e
+        nel fascicolo della persona: qui si registra <strong>che</strong> il colloquio è
+        avvenuto e cosa se ne è concordato.</p>
+      <fieldset class="recur doc-block">
+        <legend>Verbale del colloquio (PDF / immagine)</legend>
+        <div id="colloquio-doc-current" class="doc-current" hidden>
+          <span id="colloquio-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="colloquio-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="colloquio-doc-upload-label">Carica un file</span>
+          <input type="file" id="colloquio-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="colloquio-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="colloquio-delete" hidden>🗑 Elimina</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="colloquio-cancel">Annulla</button>
         <button type="submit" class="primary-btn">Salva</button>
       </div>
     </form>

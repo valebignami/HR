@@ -936,9 +936,49 @@ function coperturaCompetenze({ dipendenti, competenze, catalogo, sogliaAutonomi 
   });
 }
 
+// ============================================================
+// 5.4 · «Colloqui dell'anno: 9/15 fatti», con l'elenco di chi manca.
+// Sta nel blocco degli adempimenti aziendali e NON fra le scadenze di
+// sicurezza, come chiede il piano: e' un impegno dell'azienda verso tutti, non
+// un obbligo di legge su una persona.
+// ============================================================
+function conteggioColloquiAnno({ dipendenti, colloqui, anno, meseLimite, oggiISO }) {
+  const attesiList = (dipendenti || []).filter((d) => d && d.attivo !== false);
+  const annoNum = Number(anno);
+  // Chi ha ALMENO un colloquio nell'anno conta UNO: si contano le persone, non
+  // le righe, o due colloqui alla stessa persona coprirebbero un collega.
+  const conColloquio = new Set();
+  for (const c of colloqui || []) {
+    if (!c || !c.data) continue;
+    if (Number(String(c.data).slice(0, 4)) !== annoNum) continue;
+    conColloquio.add(c.dipendente_id);
+  }
+  const mancanti = attesiList.filter((d) => !conColloquio.has(d.id));
+  const fatti = attesiList.length - mancanti.length;
+
+  // L'ULTIMO giorno del mese limite: "entro novembre" vuol dire fino al 30
+  // compreso. new Date(anno, mese, 0) e' l'ultimo giorno del mese `mese`
+  // contato da 1, e passa da localISO — mai new Date("YYYY-MM-DD"), che e' UTC.
+  const m = Number(meseLimite);
+  const scadenza = (Number.isFinite(annoNum) && Number.isFinite(m) && m >= 1 && m <= 12)
+    ? localISO(new Date(annoNum, m, 0))
+    : null;
+
+  return {
+    fatti,
+    attesi: attesiList.length,
+    mancanti,
+    scadenza,
+    // Zero persone in forza non e' "tutto fatto": e' niente da fare, e la riga
+    // non deve diventare verde raccontando un lavoro che nessuno ha svolto.
+    stato: classificaStato(attesiList.length > 0 && mancanti.length === 0, scadenza, oggiISO),
+  };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
     statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
+    conteggioColloquiAnno,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,

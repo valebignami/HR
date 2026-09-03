@@ -1860,6 +1860,23 @@ body.self-service { background: var(--bg); }
 .cmp-riga.liv-2 { border-left-color: var(--green); }
 .cmp-riga.liv-3 { border-left-color: var(--brand); }
 
+/* ============================================================
+   5.4 · Colloqui: la riga calcolata in cima al blocco aziendale.
+   Riusa .comp-row/.azienda-cols; niente contenitore nuovo da nascondere.
+   ============================================================ */
+.colloqui-riga { background: var(--gray-soft); cursor: default; }
+.colloqui-mancanti {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.colloqui-chip { cursor: pointer; }
+.colloqui-chip:hover { border-color: var(--brand); color: var(--brand-ink); }
+
 /* ---------- 4b · L'attributo `hidden` deve nascondere davvero ----------
    `.modal-body label { display: flex }` (riga 833) e `.me-fieldset { display:
    flex }` (blocco che apre a riga 1109, `display` alla 1115) sono regole
