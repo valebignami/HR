@@ -96,6 +96,10 @@
         <button class="ghost-btn" id="btn-cedolini-mese" title="Carica i cedolini di un mese: una riga per dipendente, un file per riga.">🧾 Cedolini</button>
         <span class="mod-count" id="count-link-cedolini" title="Collegamenti dei cedolini scaduti o in scadenza: rinnovali da Configurazione." hidden>0</span>
       </div>
+      <div class="sidebar-cedolini">
+        <button class="ghost-btn" id="btn-candidature" title="Il registro dei CV ricevuti: serve a poterli cancellare alla scadenza del termine di conservazione.">📄 Candidature</button>
+        <span class="mod-count" id="count-candidature" title="Candidature oltre il termine di conservazione, da cancellare." hidden>0</span>
+      </div>
       <button class="ghost-btn" id="btn-backup-dati" title="Tutti i dati dell'app in Excel + JSON. Salvalo nella cartella Backup app dell'archivio.">💾 Backup dati</button>
       <button class="ghost-btn" id="btn-backup-documenti" title="Tutti i documenti caricati nell'app, con l'indice di chi e cosa. Salvalo nella cartella Backup app dell'archivio.">📦 Backup documenti</button>
       <div class="sidebar-user">
@@ -1153,6 +1157,53 @@
   </div>
 </div>
 
+<!-- ============ MODALE CANDIDATURE (5.5) ============
+     Una modale sola, con il modulo dentro: e' la forma della modale Cedolini,
+     l'unico altro posto dell'app dove si lavora su un elenco che non appartiene
+     a una persona. -->
+<div id="modal-candidature" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>📄 Candidature ricevute</h2>
+      <button class="icon-btn" id="candidature-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="cfg-hint" id="candidature-riassunto">—</p>
+      <form id="candidature-form" class="cand-form">
+        <input type="hidden" id="candidature-id">
+        <div class="row">
+          <label><span>Ricevuta il *</span><input type="date" id="candidature-ricevuto" required></label>
+          <label><span>Nome e cognome *</span><input type="text" id="candidature-nominativo" required></label>
+        </div>
+        <div class="row">
+          <label><span>Posizione</span><input type="text" id="candidature-posizione" placeholder="Es. Operatore di produzione"></label>
+          <label><span>Canale</span><select id="candidature-canale"><option value="">—</option></select></label>
+        </div>
+        <div class="row">
+          <label><span>Esito</span><select id="candidature-esito"><option value="">—</option></select></label>
+          <label class="doc-upload">
+            <span id="candidature-doc-upload-label">Allega il CV</span>
+            <input type="file" id="candidature-doc-file" accept=".pdf,image/*,.doc,.docx">
+          </label>
+        </div>
+        <label><span>Note</span><textarea id="candidature-note" rows="2"></textarea></label>
+        <div id="candidature-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+        <div class="cand-form-foot">
+          <button type="button" class="ghost-btn" id="candidature-annulla-modifica" hidden>Annulla la modifica</button>
+          <button type="submit" class="primary-btn" id="candidature-salva">Aggiungi</button>
+        </div>
+      </form>
+      <div class="cand-lista">
+        <div id="candidature-rows"></div>
+        <div id="candidature-empty" class="empty" hidden>
+          <div class="empty-ico">📄</div>
+          <div>Nessuna candidatura registrata.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ============ MODALE COLLOQUIO ANNUALE (5.4) ============ -->
 <div id="modal-colloquio" class="modal" hidden>
   <div class="modal-card small">
@@ -1508,7 +1559,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.6/dist/umd/supabase.min.js" integrity="sha384-GyhLKJoRcMXYwIJUTyx0/uSPYliVPdRYYXJm3G6zyMjKShNs8jLM7WaLpk8Vr4W/" crossorigin="anonymous"></script>
-<script src="data.js?v=c4"></script>
+<script src="data.js?v=c5"></script>
 <script src="common.js?v=c10"></script>
 <script src="app.js?v=c12"></script>
 </body>

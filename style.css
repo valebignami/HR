@@ -1877,6 +1877,44 @@ body.self-service { background: var(--bg); }
 .colloqui-chip { cursor: pointer; }
 .colloqui-chip:hover { border-color: var(--brand); color: var(--brand-ink); }
 
+/* ============================================================
+   5.5 · Candidature: modulo in cima, elenco sotto, una modale sola.
+   #count-candidature e' uno .mod-count, che non dichiara nessun `display`
+   (e' uno span inline): `hidden` lo nasconde da solo, come gia' fa
+   #count-link-cedolini dalla Fase 3. Nessuna regola [hidden] nuova.
+   ============================================================ */
+.cand-form {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: var(--gray-soft);
+  margin-bottom: 16px;
+}
+.cand-form-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.cand-lista { display: flex; flex-direction: column; gap: 10px; }
+.cand-riga {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--panel);
+}
+.cand-testa {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cand-nome { cursor: pointer; }
+.cand-nome:hover { color: var(--brand-ink); text-decoration: underline; }
+.cand-meta { color: var(--ink-soft); font-size: 12px; margin-top: 2px; }
+.cand-date { color: var(--ink-soft); font-size: 12px; margin-top: 8px; }
+.cand-azioni { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
 /* ---------- 4b · L'attributo `hidden` deve nascondere davvero ----------
    `.modal-body label { display: flex }` (riga 833) e `.me-fieldset { display:
    flex }` (blocco che apre a riga 1109, `display` alla 1115) sono regole

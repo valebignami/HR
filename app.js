@@ -30,6 +30,7 @@ const state = {
   competenzeCatalogo: [], // 5.3 · il catalogo delle lavorazioni
   competenze: [],         // 5.3 · il livello di ogni persona su ogni lavorazione
   colloqui: [],           // 5.4 · i colloqui annuali, uno per persona per anno
+  candidature: [],        // 5.5 · i CV ricevuti, per poterli cancellare a scadenza
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   compGroup: "persona",      // 5.1 · "persona" | "corso" — le stesse righe, raggruppate
@@ -46,7 +47,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi", "adempimenti_azienda", "competenze_catalogo", "competenze", "colloqui"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi", "adempimenti_azienda", "competenze_catalogo", "competenze", "colloqui", "candidature"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -92,6 +93,9 @@ const STORE_BY_TABLE = {
   competenze: "competenze",
   // 5.4 · I colloqui annuali. Nemmeno questa in realtime.
   colloqui: "colloqui",
+  // 5.5 · Le candidature. Non e' una tabella di persone: nessun dipendente_id,
+  // quindi resta fuori da TABELLE_FIGLIE_DIP, come scambi_consulente.
+  candidature: "candidature",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -491,6 +495,8 @@ function renderCounts() {
   // Cariche aziendali sotto soglia.
   const sottoSoglia = caricheStato().filter((c) => c.sottoSoglia).length;
   $("count-cariche").textContent = sottoSoglia;
+  // 5.5 · I CV oltre il termine di conservazione, da cancellare.
+  renderContatoreCandidature();
   // 5.3 · Le lavorazioni con meno di due persone autonome.
   $("count-competenze").textContent = coperturaAziendale().filter((c) => c.scoperta).length;
   // Storico: totale eventi (correnti + archiviati).
@@ -858,6 +864,197 @@ async function deleteColloquio() {
   if (prev?.documento_path) await deleteDoc(prev.documento_path);
   closeModal("modal-colloquio");
   renderDipColloqui(dipId);
+}
+
+// ============================================================
+// 5.5 · CANDIDATURE
+// Il registro serve a UNA cosa sola: poter cancellare i CV alla scadenza del
+// termine di conservazione. Il foglio dell'archivio lo dice meglio di
+// chiunque: «Se non e' programmata non avviene mai».
+// Non e' una tabella di persone: nessun dipendente_id, quindi fuori da
+// TABELLE_FIGLIE_DIP e dentro collegaDocumentiAiDati con la colonna vuota.
+// ============================================================
+function mesiConservazioneCV() {
+  return parametroInt(state.parametri, "candidature_mesi_conservazione", 12);
+}
+
+function candidatureScadute() {
+  return candidatureDaCancellare(state.candidature, mesiConservazioneCV());
+}
+
+function renderContatoreCandidature() {
+  const n = candidatureScadute().length;
+  $("count-candidature").textContent = n;
+  $("count-candidature").hidden = n === 0;
+}
+
+let pendingCandidaturaFile = null;
+
+function openCandidatureModal() {
+  resetFormCandidatura();
+  fillSelect($("candidature-canale"),
+    (window.CANALI_CANDIDATURA || []).map((c) => ({ id: c, nome: c })), { placeholder: "—" });
+  fillSelect($("candidature-esito"),
+    (window.ESITI_CANDIDATURA || []).map((c) => ({ id: c, nome: c })), { placeholder: "—" });
+  renderRigheCandidature();
+  openModal("modal-candidature");
+}
+
+function resetFormCandidatura() {
+  $("candidature-id").value = "";
+  $("candidature-ricevuto").value = localISO(new Date());
+  $("candidature-nominativo").value = "";
+  $("candidature-posizione").value = "";
+  $("candidature-canale").value = "";
+  $("candidature-esito").value = "";
+  $("candidature-note").value = "";
+  $("candidature-doc-file").value = "";
+  $("candidature-doc-upload-label").textContent = "Allega il CV";
+  $("candidature-doc-progress").hidden = true;
+  $("candidature-salva").textContent = "Aggiungi";
+  $("candidature-annulla-modifica").hidden = true;
+  pendingCandidaturaFile = null;
+}
+
+function renderRigheCandidature() {
+  const mesi = mesiConservazioneCV();
+  const scadute = new Set(candidatureScadute().map((c) => c.id));
+  const righe = state.candidature.slice()
+    .sort((a, b) => (b.ricevuto_il || "").localeCompare(a.ricevuto_il || ""));
+  $("candidature-riassunto").innerHTML =
+    `I CV si conservano <strong>${mesi} mesi</strong> dalla data di ricezione (parametro
+     <em>candidature_mesi_conservazione</em>). Da cancellare adesso:
+     <strong>${scadute.size}</strong> su ${righe.length}.`;
+  $("candidature-empty").hidden = righe.length > 0;
+  $("candidature-rows").innerHTML = righe.map((c) => {
+    const scadenza = scadenzaConservazioneCandidatura(c.ricevuto_il, mesi);
+    // Gia' cancellata = pratica chiusa, non un semaforo: si dice quando.
+    const stato = c.cancellato_il
+      ? `<span class="stato ok">cancellata il ${fmtDate(c.cancellato_il)}</span>`
+      : `<span class="stato ${scadute.has(c.id) ? "scaduto" : "ok"}">${scadute.has(c.id) ? "da cancellare" : "in conservazione"}</span>`;
+    const azioni = [
+      c.documento_path ? `<button type="button" class="ghost-btn cand-cv" data-id="${esc(c.id)}">📎 CV</button>` : "",
+      c.cancellato_il ? "" : `<button type="button" class="ghost-btn cand-canc" data-id="${esc(c.id)}">🧹 Segna cancellata</button>`,
+      `<button type="button" class="ghost-btn danger cand-del" data-id="${esc(c.id)}">🗑</button>`,
+    ].join("");
+    return `<div class="cand-riga">
+      <div class="cand-testa">
+        <div>
+          <strong class="cand-nome" data-id="${esc(c.id)}">${esc(c.nominativo)}</strong>
+          <div class="cand-meta">${esc(c.posizione || "—")}${c.canale ? " · " + esc(c.canale) : ""}${c.esito ? " · " + esc(c.esito) : ""}</div>
+        </div>
+        ${stato}
+      </div>
+      <div class="cand-date">
+        Ricevuta il ${fmtDate(c.ricevuto_il)} · da cancellare entro ${scadenza ? fmtDate(scadenza) : "—"}
+        ${c.note ? ` · <span class="muted">${esc(c.note)}</span>` : ""}
+      </div>
+      <div class="cand-azioni">${azioni}</div>
+    </div>`;
+  }).join("");
+
+  els(".cand-nome", $("candidature-rows")).forEach((n) =>
+    n.addEventListener("click", () => caricaCandidaturaNelForm(n.dataset.id)));
+  els(".cand-cv", $("candidature-rows")).forEach((b) => b.addEventListener("click", async () => {
+    const c = state.candidature.find((x) => x.id === b.dataset.id);
+    if (c?.documento_path) await openSignedDoc(c.documento_path);
+  }));
+  els(".cand-canc", $("candidature-rows")).forEach((b) =>
+    b.addEventListener("click", () => segnaCandidaturaCancellata(b.dataset.id)));
+  els(".cand-del", $("candidature-rows")).forEach((b) =>
+    b.addEventListener("click", () => eliminaCandidatura(b.dataset.id)));
+}
+
+function caricaCandidaturaNelForm(id) {
+  const c = state.candidature.find((x) => x.id === id);
+  if (!c) return;
+  resetFormCandidatura();
+  $("candidature-id").value = c.id;
+  $("candidature-ricevuto").value = c.ricevuto_il || "";
+  $("candidature-nominativo").value = c.nominativo || "";
+  $("candidature-posizione").value = c.posizione || "";
+  $("candidature-canale").value = c.canale || "";
+  $("candidature-esito").value = c.esito || "";
+  $("candidature-note").value = c.note || "";
+  $("candidature-salva").textContent = "Salva le modifiche";
+  $("candidature-annulla-modifica").hidden = false;
+}
+
+async function saveCandidatura(e) {
+  e.preventDefault();
+  const nominativo = $("candidature-nominativo").value.trim();
+  const ricevuto = $("candidature-ricevuto").value;
+  if (!nominativo || !ricevuto) { alert("Nome e data di ricezione sono obbligatori."); return; }
+  const id = $("candidature-id").value || uid();
+  const prev = state.candidature.find((x) => x.id === id) || null;
+
+  const oldPath = prev?.documento_path || null;
+  let documento_path = oldPath;
+  let uploadedPath = null;
+  if (pendingCandidaturaFile) {
+    $("candidature-doc-progress").hidden = false;
+    try {
+      const ext = (pendingCandidaturaFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `candidature/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingCandidaturaFile, {
+        upsert: false, contentType: pendingCandidaturaFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      uploadedPath = path;
+      documento_path = path;
+    } catch (err) {
+      $("candidature-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("candidature-doc-progress").hidden = true;
+  }
+
+  const row = {
+    id,
+    ricevuto_il: ricevuto,
+    nominativo,
+    posizione: $("candidature-posizione").value.trim() || null,
+    canale: $("candidature-canale").value || null,
+    esito: $("candidature-esito").value || null,
+    documento_path,
+    cancellato_il: prev?.cancellato_il || null,
+    note: $("candidature-note").value.trim() || null,
+  };
+  const ok = await sbUpsert("candidature", row);
+  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  if (uploadedPath && oldPath) await deleteDoc(oldPath);
+  resetFormCandidatura();
+  renderRigheCandidature();
+}
+
+// "Segna cancellata" TOGLIE davvero il CV dal bucket: e' il punto di tutta la
+// voce. Una riga marcata cancellata con il CV ancora nell'archivio sarebbe una
+// bugia, e la prova di conformita' diventerebbe una prova di non conformita'.
+// Il file si rimuove SOLO dopo che la riga e' stata salvata.
+async function segnaCandidaturaCancellata(id) {
+  const c = state.candidature.find((x) => x.id === id);
+  if (!c) return;
+  const conFile = !!c.documento_path;
+  if (!confirm(conFile
+    ? `Segnare la candidatura di ${c.nominativo} come cancellata? Il CV allegato verrà eliminato definitivamente.`
+    : `Segnare la candidatura di ${c.nominativo} come cancellata?`)) return;
+  const path = c.documento_path;
+  const ok = await sbUpsert("candidature", { ...c, cancellato_il: localISO(new Date()), documento_path: null });
+  if (!ok) return;
+  if (path) await deleteDoc(path);
+  renderRigheCandidature();
+}
+
+async function eliminaCandidatura(id) {
+  const c = state.candidature.find((x) => x.id === id);
+  if (!c) return;
+  if (!confirm(`Eliminare la riga di ${c.nominativo} dal registro? Sparirà anche la prova di averla cancellata.`)) return;
+  // Prima la riga, poi il file (come eliminaCedolino).
+  if (!await sbDelete("candidature", id)) return;
+  if (c.documento_path) await deleteDoc(c.documento_path);
+  if ($("candidature-id").value === id) resetFormCandidatura();
+  renderRigheCandidature();
 }
 
 // ---------- Compliance ----------
@@ -5303,6 +5500,13 @@ function collegaDocumentiAiDati(prefissoDip) {
     segna(c.documento_path, dipById(c.dipendente_id), "Colloquio",
       c.esito || "Colloquio annuale", c.data, "corrente");
   }
+  // 5.5 · I CV dei candidati. Non sono di nessun DIPENDENTE: colonna vuota,
+  // come per gli scambi con il consulente. Senza questo ciclo l'indice del
+  // backup li darebbe per "non collegati", cioe' file senza padrone.
+  for (const c of state.candidature) {
+    segna(c.documento_path, null, "Candidatura",
+      `${c.nominativo || ""}${c.posizione ? " — " + c.posizione : ""}`, c.ricevuto_il, "corrente");
+  }
   // 5.2 · Gli adempimenti dell'azienda non sono di NESSUNA persona: la colonna
   // Dipendente resta vuota di proposito, come per gli scambi con il consulente.
   // Senza questo ciclo l'indice del backup li darebbe per "non collegati".
@@ -5561,6 +5765,19 @@ function wireEvents() {
     state.compFilter.stato = (s === "all") ? "" : (state.compFilter.stato === s ? "" : s);
     updateClearBtn(); renderCompliance();
   }));
+
+  // 5.5 · Candidature.
+  $("btn-candidature").addEventListener("click", openCandidatureModal);
+  $("candidature-close").addEventListener("click", () => closeModal("modal-candidature"));
+  $("candidature-form").addEventListener("submit", saveCandidatura);
+  $("candidature-annulla-modifica").addEventListener("click", () => {
+    resetFormCandidatura();
+    renderRigheCandidature();
+  });
+  $("candidature-doc-file").addEventListener("change", (e) => {
+    pendingCandidaturaFile = e.target.files[0] || null;
+    $("candidature-doc-upload-label").textContent = pendingCandidaturaFile ? pendingCandidaturaFile.name : "Allega il CV";
+  });
 
   // 5.4 · Colloqui annuali.
   $("dip-colloqui-toggle").addEventListener("click", () => toggleSection("dip-colloqui-toggle", "dip-colloqui-list"));

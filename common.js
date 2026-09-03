@@ -975,10 +975,38 @@ function conteggioColloquiAnno({ dipendenti, colloqui, anno, meseLimite, oggiISO
   };
 }
 
+// ============================================================
+// 5.5 · Candidature: il registro serve a UNA cosa sola, cancellare i CV alla
+// scadenza del termine di conservazione. Il foglio dell'archivio lo dice
+// meglio di chiunque: «Se non e' programmata non avviene mai».
+// La colonna "da cancellare entro" non si memorizza: si calcola, cosi'
+// cambiare il termine nei parametri aggiorna TUTTE le righe insieme invece di
+// lasciarne indietro qualcuna con il numero vecchio.
+// ============================================================
+function scadenzaConservazioneCandidatura(ricevutoIl, mesiConservazione) {
+  if (!ricevutoIl) return null;
+  return addMonths(ricevutoIl, mesiConservazione);
+}
+
+// Da cancellare = il termine e' PASSATO e nessuno l'ha ancora cancellata.
+// Il giorno esatto della scadenza NON e' ancora da cancellare: quel giorno il
+// CV e' stato tenuto esattamente il tempo dichiarato, non di piu'. E' la stessa
+// soglia di classificaStato, che chiama "scaduto" solo cio' che ha
+// daysUntil < 0.
+function candidatureDaCancellare(candidature, mesiConservazione, oggiISO) {
+  return (candidature || []).filter((c) => {
+    if (!c || c.cancellato_il) return false;
+    const scadenza = scadenzaConservazioneCandidatura(c.ricevuto_il, mesiConservazione);
+    if (!scadenza) return false;                  // senza data di ricezione non si sa
+    const gg = daysUntil(scadenza, oggiISO);
+    return gg != null && gg < 0;
+  });
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
     statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
-    conteggioColloquiAnno,
+    conteggioColloquiAnno, scadenzaConservazioneCandidatura, candidatureDaCancellare,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,

@@ -17,7 +17,7 @@ globalThis.document = { addEventListener: () => {} };
 
 const { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
         statoAdempimentoAzienda, prossimaEsecuzioneAzienda, coperturaCompetenze,
-        conteggioColloquiAnno,
+        conteggioColloquiAnno, scadenzaConservazioneCandidatura, candidatureDaCancellare,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
@@ -1131,5 +1131,40 @@ assert.equal(conteggioColloquiAnno({
 // Un mese limite fuori scala non inventa una data.
 assert.equal(conteggioColloquiAnno({
   dipendenti: dipColl, colloqui: [], anno: 2026, meseLimite: 0, oggiISO: "2026-01-01" }).scadenza, null);
+
+// ============================================================
+// 5.5 · Candidature da cancellare. La riga sbagliata qui non da' nessun
+// errore: da' un CV conservato oltre il termine dichiarato al candidato,
+// oppure uno cancellato prima del tempo.
+// ============================================================
+assert.equal(scadenzaConservazioneCandidatura("2026-01-15", 12), "2027-01-15");
+// Il clamp a fine mese di addMonths vale anche qui.
+assert.equal(scadenzaConservazioneCandidatura("2028-02-29", 12), "2029-02-28");
+assert.equal(scadenzaConservazioneCandidatura("2026-08-31", 12), "2027-08-31");
+// Senza data di ricezione non si sa niente: non si inventa una scadenza.
+assert.equal(scadenzaConservazioneCandidatura(null, 12), null);
+assert.equal(scadenzaConservazioneCandidatura("2026-01-15", null), null);
+
+const cands = [
+  { id: "k1", nominativo: "Ada",  ricevuto_il: "2025-01-10" },                        // scaduta da un pezzo
+  { id: "k2", nominativo: "Bea",  ricevuto_il: "2025-09-03" },                         // scade OGGI
+  { id: "k3", nominativo: "Ciro", ricevuto_il: "2026-06-01" },                         // ancora in corso
+  { id: "k4", nominativo: "Dina", ricevuto_il: "2024-01-01", cancellato_il: "2025-02-01" }, // gia' cancellata
+  { id: "k5", nominativo: "Ezio", ricevuto_il: null },                                 // senza data
+];
+const daCanc = candidatureDaCancellare(cands, 12, "2026-09-03");
+// Solo la prima: quella che scade oggi NON e' ancora da cancellare, quella
+// gia' cancellata non torna mai, e quella senza data non si puo' giudicare.
+assert.deepEqual(daCanc.map((c) => c.id), ["k1"]);
+// Il giorno DOPO la scadenza, quella di Bea entra.
+assert.deepEqual(
+  candidatureDaCancellare(cands, 12, "2026-09-04").map((c) => c.id).sort(), ["k1", "k2"]);
+// Una gia' cancellata non compare nemmeno se scaduta da anni.
+assert.equal(candidatureDaCancellare([cands[3]], 12, "2030-01-01").length, 0);
+// Elenco vuoto o mancante: nessun errore.
+assert.deepEqual(candidatureDaCancellare([], 12, "2026-09-03"), []);
+assert.deepEqual(candidatureDaCancellare(null, 12, "2026-09-03"), []);
+// Cambiare il termine cambia l'elenco: con 24 mesi Ada non e' ancora scaduta.
+assert.deepEqual(candidatureDaCancellare(cands, 24, "2026-09-03").map((c) => c.id), []);
 
 console.log("OK tutti i test common.js");
