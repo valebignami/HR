@@ -1773,8 +1773,27 @@ body.self-service { background: var(--bg); }
       stessa trappola;
    2) valgono per i `label` dentro `.modal-body`, non per ogni `label` del
       progetto: `.me-fieldset label` (riga 1125) e `.login-form label` (riga
-      1383) sono la stessa forma su selettori che oggi nessuno nasconde.
-   Restano scoperti .me-doc-form e .doc-block, stessa causa, altri selettori:
-   sono la Fase 4c del piano. */
+      1383) sono la stessa forma su selettori che oggi nessuno nasconde. */
 .modal-body label[hidden] { display: none; }
 .me-fieldset[hidden]      { display: none; }
+/* ---------- 4c · Gli ultimi due selettori con la stessa causa ----------
+   Stessa storia delle due righe qui sopra, su altri due selettori che quelle
+   non toccano: `.me-doc-form { display: flex }` (riga 1162) e `.doc-block {
+   display: flex }` (riga 936).
+   Misurato sul sito pubblicato con `style.css?v=b10`, cioe' con la 4b gia' in
+   produzione: su 122 elementi con l'attributo `hidden` due davano ancora
+   `flex`, #onboard-wf-adempimento e #onboard-wf-genera, e un `.me-doc-form`
+   iniettato nella pagina dava `flex`.
+   Cosa si vedeva: nel portale il modulo per allegare un documento era SEMPRE
+   aperto sotto ogni riga, e il bottone Carica/Sostituisci (me.js:283) non
+   aveva nessun effetto visibile; nell'app comparivano tutti e due i moduli
+   alternativi della voce di checklist d'ingresso, "Registra l'evento" e
+   "Genera documento aziendale", mentre app.js:1736-1745 ne mostra uno solo.
+   `.doc-block` e' scritta sulla CLASSE e non sui due id perche' gli altri sei
+   `.doc-block` di index.html (righe 942, 984, 1025, 1083, 1124, 1178) non
+   portano `hidden` e nessuno glielo mette: la stringa "doc-block" non compare
+   ne' in app.js ne' in me.js. Controllato prima di scriverla.
+   Restano validi i due limiti elencati qui sopra: `!important` e i `label`
+   fuori da `.modal-body`. */
+.me-doc-form[hidden] { display: none; }
+.doc-block[hidden]   { display: none; }
