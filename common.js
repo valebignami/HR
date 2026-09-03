@@ -866,8 +866,38 @@ function raggruppaGapPerTipo(righe) {
   return [...byTipo.values()];
 }
 
+// ============================================================
+// 5.2 · Gli adempimenti dell'AZIENDA, non delle persone.
+// Non passano dal motore gap (che e' per persona) e non ne hanno bisogno: sono
+// una lista con date. Ma il semaforo e' LO STESSO delle persone, come chiede il
+// piano, e per questo passa da classificaStato e non da un confronto scritto a
+// mano dentro il render.
+// ============================================================
+
+// `prossima` e' la data che comanda; `ultima_esecuzione` dice se e' mai stata
+// fatta. Conseguenza voluta, ereditata da classificaStato: una voce MAI segnata
+// come fatta non e' mai verde, nemmeno se la sua data e' lontana. Vuol dire
+// "non me l'hai ancora detto", non "sei fuori legge".
+// Mai fatta e senza data => "scaduto": e' una cosa da fare senza scadenza nota,
+// e deve restare in cima finche' qualcuno non la guarda.
+function statoAdempimentoAzienda(riga, oggiISO) {
+  if (!riga) return "scaduto";
+  return classificaStato(!!riga.ultima_esecuzione, riga.prossima || null, oggiISO);
+}
+
+// Quando torna, dopo che e' stata fatta. Periodicita' nulla = una tantum: fatta
+// una volta, non torna, e la prossima e' null (che per una voce gia' fatta
+// classificaStato legge come "ok, non scade").
+// Passa da addMonths, quindi eredita il clamp a fine mese gia' testato.
+function prossimaEsecuzioneAzienda({ dataFatto, periodicitaMesi }) {
+  if (!dataFatto) return null;
+  if (periodicitaMesi == null || !Number.isFinite(Number(periodicitaMesi))) return null;
+  return addMonths(dataFatto, Number(periodicitaMesi));
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
+    statoAdempimentoAzienda, prossimaEsecuzioneAzienda,
     assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze, righeContrattuali,
     isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA, PREFISSO_ID_PROVA,
     scadenzaOnboardingItem, itemsOnboardingDaSincronizzare, incarichiDaRevocare,

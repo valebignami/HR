@@ -1805,6 +1805,22 @@ body.self-service { background: var(--bg); }
 .corso-persona.in_scadenza { background: var(--orange-soft); border-color: #fdba74; }
 .corso-persona.ok          { background: var(--green-soft);  border-color: #86efac; }
 
+/* ============================================================
+   5.2 · Adempimenti dell'azienda: stesso blocco dei Contratti, cinque colonne.
+   #azienda-wrap non dichiara nessun `display` proprio (.contratti-wrap non ne
+   ha), quindi `hidden` lo nasconde da solo: nessuna regola [hidden] nuova.
+   ============================================================ */
+.comp-head.azienda-cols, .comp-row.azienda-cols {
+  grid-template-columns: minmax(220px, 2.4fr) 130px 130px 130px 130px;
+}
+.azienda-wrap .comp-row { cursor: pointer; }
+.leg-chip.azienda, .cal-event.azienda {
+  background: #e0f2fe;
+  color: #075985;
+  border-left-color: #075985;
+}
+.az-doc-btn { margin-left: 6px; }
+
 /* ---------- 4b · L'attributo `hidden` deve nascondere davvero ----------
    `.modal-body label { display: flex }` (riga 833) e `.me-fieldset { display:
    flex }` (blocco che apre a riga 1109, `display` alla 1115) sono regole

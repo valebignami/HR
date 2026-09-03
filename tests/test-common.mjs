@@ -16,6 +16,7 @@ globalThis.window = {
 globalThis.document = { addEventListener: () => {} };
 
 const { classificaStato, calcolaGap, avvisoScadenza, raggruppaGapPerTipo,
+        statoAdempimentoAzienda, prossimaEsecuzioneAzienda,
         assegnazioneAttiva, calcolaCariche, caricheScoperte, ricalcolaScadenze,
         righeContrattuali,
         isDatoDiProva, isDipendenteDiCollaudo, dipendentiDiProva, NOTA_DATI_PROVA,
@@ -969,5 +970,43 @@ assert.equal(alContrario.find((g) => g.tipo.id === "t-carr").primaScadenza, "202
 assert.deepEqual(raggruppaGapPerTipo([]), []);
 assert.deepEqual(raggruppaGapPerTipo(null), []);
 assert.deepEqual(raggruppaGapPerTipo([null, { dip: {} }]), []);   // righe senza tipo: ignorate
+
+// ============================================================
+// 5.2 · Adempimenti aziendali. Tutti i casi con una data passano `oggiISO`
+// esplicito: senza, questi test comincerebbero a fallire da soli il giorno in
+// cui la scadenza scritta qui entra nei 60 giorni.
+// ============================================================
+const OGGI_AZ = "2026-09-03";
+// Mai fatta e senza data: e' una cosa da fare, e sta in cima.
+assert.equal(statoAdempimentoAzienda({ nome: "x" }, OGGI_AZ), "scaduto");
+assert.equal(statoAdempimentoAzienda(null, OGGI_AZ), "scaduto");
+// Mai fatta ma con una data: MAI verde, come per le persone.
+assert.equal(statoAdempimentoAzienda({ prossima: "2027-01-31" }, OGGI_AZ), "in_scadenza");
+assert.equal(statoAdempimentoAzienda({ prossima: "2026-01-31" }, OGGI_AZ), "scaduto");
+// Fatta, con la prossima lontana: verde.
+assert.equal(statoAdempimentoAzienda(
+  { ultima_esecuzione: "2026-01-31", prossima: "2027-01-31" }, OGGI_AZ), "ok");
+// Fatta, con la prossima dentro i 60 giorni: gialla.
+assert.equal(statoAdempimentoAzienda(
+  { ultima_esecuzione: "2025-10-31", prossima: "2026-10-31" }, OGGI_AZ), "in_scadenza");
+// Fatta, con la prossima passata: rossa.
+assert.equal(statoAdempimentoAzienda(
+  { ultima_esecuzione: "2025-01-31", prossima: "2026-01-31" }, OGGI_AZ), "scaduto");
+// Una tantum gia' fatta: nessuna prossima, ed e' a posto.
+assert.equal(statoAdempimentoAzienda(
+  { ultima_esecuzione: "2025-06-01", prossima: null }, OGGI_AZ), "ok");
+
+// prossimaEsecuzioneAzienda
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-10-20", periodicitaMesi: 12 }), "2027-10-20");
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-09-03", periodicitaMesi: 6 }), "2027-03-03");
+// Una tantum: fatta una volta, non torna.
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-10-20", periodicitaMesi: null }), null);
+// Senza la data del fatto non c'e' niente da calcolare.
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: null, periodicitaMesi: 12 }), null);
+// Una periodicita' non numerica non diventa "fra zero mesi": non si calcola.
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-10-20", periodicitaMesi: "boh" }), null);
+// Il clamp a fine mese di addMonths vale anche qui: 31/01 + 1 mese = 28/02.
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2026-01-31", periodicitaMesi: 1 }), "2026-02-28");
+assert.equal(prossimaEsecuzioneAzienda({ dataFatto: "2028-01-31", periodicitaMesi: 1 }), "2028-02-29");
 
 console.log("OK tutti i test common.js");

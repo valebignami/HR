@@ -195,6 +195,28 @@
         </div>
       </div>
 
+      <!-- 5.2 · Gli adempimenti dell'AZIENDA. Blocco e contatore PROPRI: le sue
+           righe non entrano nei KPI delle persone, o il semaforo della
+           sicurezza mescolerebbe cose diverse. -->
+      <div class="contratti-wrap azienda-wrap" id="azienda-wrap" hidden>
+        <div class="list">
+          <div class="contratti-titolo">
+            <span>🏢 Adempimenti dell'azienda</span>
+            <span class="history-count" id="azienda-count">0</span>
+            <button type="button" class="ghost-btn" id="azienda-add" style="margin-left:8px">+ Nuova voce</button>
+          </div>
+          <div id="azienda-colloqui"></div>
+          <div class="comp-head azienda-cols">
+            <div>Adempimento</div>
+            <div>Ogni</div>
+            <div>Ultima volta</div>
+            <div>Prossima</div>
+            <div>Stato</div>
+          </div>
+          <div id="azienda-rows"></div>
+        </div>
+      </div>
+
       <section class="calendar-wrap" id="comp-cal-wrap" hidden>
         <div class="cal-toolbar">
           <button class="icon-btn cal-nav" id="cal-prev">‹</button>
@@ -208,6 +230,7 @@
             <span class="leg"><i class="leg-chip dpi"></i>DPI</span>
             <span class="leg"><i class="leg-chip contratto"></i>Contratti</span>
             <span class="leg"><i class="leg-chip evento"></i>Ferie e permessi</span>
+            <span class="leg"><i class="leg-chip azienda"></i>Azienda</span>
           </div>
         </div>
         <div class="cal-weekdays">
@@ -1060,6 +1083,53 @@
         <button type="button" class="ghost-btn danger" id="provv-delete" hidden>🗑 Elimina</button>
         <div class="modal-foot-spacer"></div>
         <button type="button" class="ghost-btn" id="provv-cancel">Annulla</button>
+        <button type="submit" class="primary-btn">Salva</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ MODALE ADEMPIMENTO AZIENDALE (5.2) ============ -->
+<div id="modal-azienda" class="modal" hidden>
+  <div class="modal-card small">
+    <div class="modal-head">
+      <h2 id="azienda-title">Nuovo adempimento dell'azienda</h2>
+      <button class="icon-btn" id="azienda-close">✕</button>
+    </div>
+    <form id="azienda-form" class="modal-body">
+      <input type="hidden" id="azienda-id">
+      <label><span>Adempimento *</span>
+        <input type="text" id="azienda-nome" required placeholder="Es. Prova di evacuazione"></label>
+      <div class="row">
+        <label><span>Si ripete ogni (mesi)</span>
+          <input type="number" id="azienda-periodicita" min="1" max="120" step="1" placeholder="12 = una volta l'anno"></label>
+        <label><span>Prossima scadenza</span><input type="date" id="azienda-prossima"></label>
+      </div>
+      <p class="cfg-hint">Lascia vuoto «si ripete ogni» per le cose che si fanno
+        <strong>una volta sola</strong>. Senza una prossima scadenza la voce resta in cima,
+        come una cosa da fare di cui non si sa ancora la data.</p>
+      <label><span>Ultima volta che è stata fatta</span>
+        <input type="date" id="azienda-ultima" readonly></label>
+      <fieldset class="recur doc-block">
+        <legend>Documento (verbale, ricevuta, attestato)</legend>
+        <div id="azienda-doc-current" class="doc-current" hidden>
+          <span id="azienda-doc-current-name" class="doc-name">—</span>
+          <div class="doc-current-actions">
+            <button type="button" class="ghost-btn" id="azienda-doc-open">📎 Apri</button>
+          </div>
+        </div>
+        <label class="doc-upload">
+          <span id="azienda-doc-upload-label">Carica un file</span>
+          <input type="file" id="azienda-doc-file" accept=".pdf,image/*">
+        </label>
+        <div id="azienda-doc-progress" class="doc-progress" hidden>⏳ Caricamento…</div>
+      </fieldset>
+      <label><span>Note</span><textarea id="azienda-note" rows="3"></textarea></label>
+      <div class="modal-foot">
+        <button type="button" class="ghost-btn danger" id="azienda-delete" hidden>🗑 Elimina</button>
+        <button type="button" class="ghost-btn" id="azienda-fatto">✔ Segna come fatta</button>
+        <div class="modal-foot-spacer"></div>
+        <button type="button" class="ghost-btn" id="azienda-cancel">Annulla</button>
         <button type="submit" class="primary-btn">Salva</button>
       </div>
     </form>

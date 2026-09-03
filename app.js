@@ -26,6 +26,7 @@ const state = {
   cedolini: [],           // 3.2 · cedolini caricati dall'HR, letti dal dipendente nel portale
   scambiConsulente: [],   // 3.3 · registro degli scambi con il consulente del lavoro
   eventi: [],             // 4.1 · ferie, permessi, malattie, infortuni, straordinari
+  adempAzienda: [],       // 5.2 · le scadenze dell'AZIENDA, non delle persone
   view: "compliance",
   compView: "list",          // "list" | "calendar" — toggle dentro il tab Scadenze
   compGroup: "persona",      // 5.1 · "persona" | "corso" — le stesse righe, raggruppate
@@ -42,7 +43,7 @@ const state = {
   user: null,
 };
 
-const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi"];
+const TABLES = ["categorie", "ruoli", "tipi_requisito", "requisiti_ruolo", "dipendenti", "dipendente_ruoli", "adempimenti", "provvedimenti", "onboarding_items", "onboarding_progressi", "accettazioni", "documenti_template", "dpi_tipi", "dpi_consegne", "storico_modifiche", "parametri", "cedolini", "scambi_consulente", "eventi", "adempimenti_azienda"];
 
 // Tabelle sottoscritte in realtime. LISTA SEPARATA da TABLES, e volutamente
 // scritta per esteso (1.6): fino alla Fase 1 subscribeRealtime iterava TABLES,
@@ -80,6 +81,9 @@ const STORE_BY_TABLE = {
   scambi_consulente: "scambiConsulente",
   // 4.1 · L'unica tabella nuova che entra ANCHE in REALTIME_TABLES, qui sopra.
   eventi: "eventi",
+  // 5.2 · Gli adempimenti dell'azienda. In TABLES e qui, NON in REALTIME_TABLES:
+  // li scrive solo l'HR, dalla sua app.
+  adempimenti_azienda: "adempAzienda",
 };
 
 // Tabelle salvate dal backup dei dati: TUTTE quelle del database, non solo le 14
@@ -590,19 +594,21 @@ function renderCompliance() {
     $("comp-corsi-wrap").hidden = true;
     $("comp-group-toggle").hidden = true;   // 5.1 · un calendario non si raggruppa per corso
     $("contratti-wrap").hidden = true;
+    $("azienda-wrap").hidden = true;        // 5.2 · come le altre liste
     $("comp-cal-wrap").hidden = false;
     // Eventi calendario = righe con una data di scadenza utile, piu' i contratti.
     const events = rows.filter((r) => r.scadenza).map((r) => ({
       a: r.adempimento, tipo: r.tipo, dip: r.dip, scadenza: r.scadenza,
     })).concat(contratti.map((r) => ({
       kind: "contratto", dip: r.dip, scadenza: r.data, etichetta: r.etichetta,
-    }))).concat(eventiPerCalendario());
+    }))).concat(eventiPerCalendario()).concat(aziendaPerCalendario());
     renderCalendar(events);
     return;
   }
   $("comp-cal-wrap").hidden = true;
   $("comp-group-toggle").hidden = false;
   renderContratti(contratti);
+  renderAdempAzienda();   // 5.2 · blocco e contatore propri, fuori dai KPI delle persone
 
   // 5.1 · Per corso: le stesse righe, raggruppate. Il blocco Contratti resta
   // visibile — non e' una riga di corso e non c'entra con il raggruppamento.
@@ -695,6 +701,180 @@ function renderCompliancePerCorso(righe) {
     if (elP.dataset.ad) openAdmModal(elP.dataset.dip, elP.dataset.ad);
     else openAdmModal(elP.dataset.dip, null, elP.dataset.tipo);
   }));
+}
+
+// ============================================================
+// 5.2 · ADEMPIMENTI DELL'AZIENDA
+// Non passano dal motore gap, che e' per persona: sono una lista con date.
+// Hanno un blocco e un contatore PROPRI, e non entrano nei KPI delle persone —
+// altrimenti il semaforo della sicurezza mescolerebbe cose diverse.
+// ============================================================
+function righeAdempAzienda() {
+  return state.adempAzienda
+    .map((r) => ({ riga: r, stato: statoAdempimentoAzienda(r) }))
+    .sort((a, b) => {
+      const so = STATO_INFO[a.stato].order - STATO_INFO[b.stato].order;
+      if (so !== 0) return so;
+      const sa = a.riga.prossima || "9999-99-99";
+      const sb = b.riga.prossima || "9999-99-99";
+      if (sa !== sb) return sa.localeCompare(sb);
+      return (a.riga.nome || "").localeCompare(b.riga.nome || "");
+    });
+}
+
+// Le voci con una data entrano nel calendario delle Scadenze.
+function aziendaPerCalendario() {
+  return state.adempAzienda
+    .filter((r) => r.prossima && matchSearch(r.nome || ""))
+    .map((r) => ({ kind: "azienda", riga: r, scadenza: r.prossima }));
+}
+
+function etichettaPeriodicita(mesi) {
+  if (mesi == null) return "una volta sola";
+  const n = Number(mesi);
+  if (n === 1) return "ogni mese";
+  if (n === 12) return "ogni anno";
+  if (n === 24) return "ogni 2 anni";
+  return `ogni ${n} mesi`;
+}
+
+function renderAdempAzienda() {
+  // I filtri per PERSONA non si applicano a queste righe — non sono di
+  // nessuno. Ma lasciarle visibili mentre si sta guardando una sola persona
+  // mostrerebbe righe che con lei non c'entrano: il blocco si nasconde.
+  const f = state.compFilter;
+  const filtroPersona = !!(f.dipendente || f.mansione || f.incarico || f.stato);
+  const righe = filtroPersona ? [] : righeAdempAzienda().filter((x) => matchSearch(x.riga.nome || ""));
+
+  $("azienda-wrap").hidden = righe.length === 0;
+  // Il contatore e' PROPRIO: quante voci non sono a posto.
+  $("azienda-count").textContent = righe.filter((x) => x.stato !== "ok").length;
+
+  $("azienda-rows").innerHTML = righe.map(({ riga, stato }) => {
+    const doc = riga.documento_path
+      ? `<button type="button" class="hist-doc az-doc-btn" data-path="${esc(riga.documento_path)}" title="Apri il documento">📎</button>`
+      : "";
+    return `<div class="comp-row azienda-cols" data-az="${esc(riga.id)}">
+      <div><strong>${esc(riga.nome)}</strong> ${doc}</div>
+      <div>${esc(etichettaPeriodicita(riga.periodicita_mesi))}</div>
+      <div>${riga.ultima_esecuzione ? fmtDate(riga.ultima_esecuzione) : '<span class="muted">mai</span>'}</div>
+      <div>${riga.prossima ? fmtDate(riga.prossima) : '<span class="muted">senza data</span>'}</div>
+      <div><span class="stato ${stato}">${STATO_INFO[stato].label}</span></div>
+    </div>`;
+  }).join("");
+
+  els(".comp-row", $("azienda-rows")).forEach((row) =>
+    row.addEventListener("click", () => openAziendaModal(row.dataset.az)));
+  els(".az-doc-btn", $("azienda-rows")).forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    await openSignedDoc(btn.dataset.path);
+  }));
+}
+
+let pendingAziendaFile = null;
+
+function openAziendaModal(id) {
+  const r = id ? state.adempAzienda.find((x) => x.id === id) : null;
+  $("azienda-title").textContent = r ? "Adempimento dell'azienda" : "Nuovo adempimento dell'azienda";
+  $("azienda-id").value = r ? r.id : "";
+  $("azienda-nome").value = r?.nome || "";
+  $("azienda-periodicita").value = r?.periodicita_mesi == null ? "" : r.periodicita_mesi;
+  $("azienda-prossima").value = r?.prossima || "";
+  $("azienda-ultima").value = r?.ultima_esecuzione || "";
+  $("azienda-note").value = r?.note || "";
+  $("azienda-delete").hidden = !r;
+  pendingAziendaFile = null;
+  $("azienda-doc-file").value = "";
+  $("azienda-doc-upload-label").textContent = "Carica un file";
+  $("azienda-doc-progress").hidden = true;
+  $("azienda-doc-current").hidden = !r?.documento_path;
+  if (r?.documento_path) $("azienda-doc-current-name").textContent = esc(r.nome || "Documento");
+  openModal("modal-azienda");
+}
+
+// "Fatto", con la data e l'allegato, come per le persone. Non salva da solo:
+// riempie i campi e lascia premere Salva, cosi' l'allegato scelto nella stessa
+// apertura viene caricato insieme.
+function segnaFattoAzienda() {
+  const oggi = localISO(new Date());
+  const quando = prompt("Quando è stata fatta? (giorno/mese/anno)", fmtDate(oggi));
+  if (quando == null) return;
+  const testo = quando.trim();
+  let dataISO = oggi;
+  const m = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/.exec(testo);
+  if (m) dataISO = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  else if (/^\d{4}-\d{2}-\d{2}$/.test(testo)) dataISO = testo;
+  else if (testo !== "") { alert("Data non riconosciuta. Scrivila come 03/09/2026."); return; }
+  if (!parseISO(dataISO)) { alert("Data non valida."); return; }
+
+  $("azienda-ultima").value = dataISO;
+  const mesi = $("azienda-periodicita").value === "" ? null : Number($("azienda-periodicita").value);
+  const prossima = prossimaEsecuzioneAzienda({ dataFatto: dataISO, periodicitaMesi: mesi });
+  $("azienda-prossima").value = prossima || "";
+  alert(prossima
+    ? `Segnata come fatta il ${fmtDate(dataISO)}. La prossima è il ${fmtDate(prossima)}.\nPremi Salva per registrarla.`
+    : `Segnata come fatta il ${fmtDate(dataISO)}. Non si ripete.\nPremi Salva per registrarla.`);
+}
+
+async function saveAziendaAdemp(e) {
+  e.preventDefault();
+  const id = $("azienda-id").value || uid();
+  const prev = state.adempAzienda.find((x) => x.id === id) || null;
+  const nome = $("azienda-nome").value.trim();
+  if (!nome) { alert("Il nome dell'adempimento è obbligatorio."); return; }
+
+  // Il file si carica DOPO aver validato: niente upload orfano se manca il nome.
+  const oldPath = prev?.documento_path || null;
+  let documento_path = oldPath;
+  let uploadedPath = null;
+  if (pendingAziendaFile) {
+    $("azienda-doc-progress").hidden = false;
+    try {
+      const ext = (pendingAziendaFile.name.split(".").pop() || "bin").toLowerCase();
+      const path = `azienda/${id}/${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from(STORAGE_BUCKET).upload(path, pendingAziendaFile, {
+        upsert: false, contentType: pendingAziendaFile.type || "application/octet-stream",
+      });
+      if (error) throw error;
+      uploadedPath = path;
+      documento_path = path;
+    } catch (err) {
+      $("azienda-doc-progress").hidden = true;
+      alert("Errore upload: " + err.message);
+      return;
+    }
+    $("azienda-doc-progress").hidden = true;
+  }
+
+  const mesi = $("azienda-periodicita").value === "" ? null : Number($("azienda-periodicita").value);
+  const row = {
+    id,
+    nome,
+    periodicita_mesi: Number.isFinite(mesi) ? mesi : null,
+    ultima_esecuzione: $("azienda-ultima").value || null,
+    prossima: $("azienda-prossima").value || null,
+    documento_path,
+    note: $("azienda-note").value.trim() || null,
+  };
+
+  const ok = await sbUpsert("adempimenti_azienda", row);
+  if (!ok) { if (uploadedPath) await deleteDoc(uploadedPath); return; }
+  // Il file vecchio si toglie SOLO a salvataggio riuscito.
+  if (uploadedPath && oldPath) await deleteDoc(oldPath);
+  pendingAziendaFile = null;
+  closeModal("modal-azienda");
+}
+
+async function deleteAziendaAdemp() {
+  const id = $("azienda-id").value;
+  if (!id) return;
+  if (!confirm("Eliminare questo adempimento dell'azienda e il documento allegato?")) return;
+  const prev = state.adempAzienda.find((x) => x.id === id);
+  // Prima la riga, poi il file (come eliminaCedolino): se la riga non si
+  // cancella, il file e' ancora al suo posto e la riga continua a puntarci.
+  if (!await sbDelete("adempimenti_azienda", id)) return;
+  if (prev?.documento_path) await deleteDoc(prev.documento_path);
+  closeModal("modal-azienda");
 }
 
 // ---------- Dipendenti ----------
@@ -805,6 +985,10 @@ function renderCalendar(all) {
       if (x.kind === "contratto") {
         return `<div class="cal-event contratto" data-dipcard="${esc(x.dip.id)}" title="${esc(x.etichetta)} — ${esc(x.dip.cognome)}">${esc(x.dip.cognome)}: ${esc(x.etichetta)}</div>`;
       }
+      // 5.2 · Un adempimento dell'azienda: cliccandolo si apre la sua modale.
+      if (x.kind === "azienda") {
+        return `<div class="cal-event azienda" data-azienda="${esc(x.riga.id)}" title="${esc(x.riga.nome)}">🏢 ${esc(x.riga.nome)}</div>`;
+      }
       // 4.2 · Ferie e permessi approvati: cliccandoli si apre l'evento.
       if (x.kind === "evento") {
         const t = tipoEvento(x.ev.tipo);
@@ -820,6 +1004,7 @@ function renderCalendar(all) {
   els(".cal-event", grid).forEach((ev) => ev.addEventListener("click", (e) => {
     e.stopPropagation();
     if (ev.dataset.dipcard) openDipModal(ev.dataset.dipcard);
+    else if (ev.dataset.azienda) openAziendaModal(ev.dataset.azienda);
     else if (ev.dataset.evento) openEventoModal(null, ev.dataset.evento);
     else if (ev.dataset.ad) openAdmModal(ev.dataset.dip, ev.dataset.ad);
     else openAdmModal(ev.dataset.dip, null, ev.dataset.tipo);
@@ -4761,6 +4946,14 @@ function collegaDocumentiAiDati(prefissoDip) {
       `${tipoEvento(ev.tipo).label} del ${fmtDate(ev.dal)}`, ev.dal, "corrente");
   }
 
+  // 5.2 · Gli adempimenti dell'azienda non sono di NESSUNA persona: la colonna
+  // Dipendente resta vuota di proposito, come per gli scambi con il consulente.
+  // Senza questo ciclo l'indice del backup li darebbe per "non collegati".
+  for (const a of state.adempAzienda) {
+    segna(a.documento_path, null, "Adempimento aziendale", a.nome || "",
+      a.ultima_esecuzione, "corrente");
+  }
+
   // Fallback per i file del portale: portal/{prefisso}/... . Serve ai documenti
   // caricati dal dipendente e non ancora validati dall'HR, che non sono
   // referenziati da nessuna riga.
@@ -5010,6 +5203,22 @@ function wireEvents() {
     state.compFilter.stato = (s === "all") ? "" : (state.compFilter.stato === s ? "" : s);
     updateClearBtn(); renderCompliance();
   }));
+
+  // 5.2 · Adempimenti dell'azienda.
+  $("azienda-add").addEventListener("click", () => openAziendaModal(null));
+  $("azienda-close").addEventListener("click", () => closeModal("modal-azienda"));
+  $("azienda-cancel").addEventListener("click", () => closeModal("modal-azienda"));
+  $("azienda-form").addEventListener("submit", saveAziendaAdemp);
+  $("azienda-delete").addEventListener("click", deleteAziendaAdemp);
+  $("azienda-fatto").addEventListener("click", segnaFattoAzienda);
+  $("azienda-doc-file").addEventListener("change", (e) => {
+    pendingAziendaFile = e.target.files[0] || null;
+    $("azienda-doc-upload-label").textContent = pendingAziendaFile ? pendingAziendaFile.name : "Carica un file";
+  });
+  $("azienda-doc-open").addEventListener("click", async () => {
+    const r = state.adempAzienda.find((x) => x.id === $("azienda-id").value);
+    if (r?.documento_path) await openSignedDoc(r.documento_path);
+  });
 
   // Toggle Lista / Calendario dentro il tab Scadenze (ex-Compliance).
   els("#comp-view-toggle .vt-btn").forEach((b) => b.addEventListener("click", () => {
